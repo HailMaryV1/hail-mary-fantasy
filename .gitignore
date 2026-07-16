@@ -1,0 +1,16 @@
+.env
+.env.*
+auth_state.json
+discovered_calls.json
+token.txt
+__pycache__/
+*.pyc
+node_modules/
+
+# Generated/regenerable output, not source
+player_match_review.csv
+raw_response.json
+players.csv
+
+# Local tool config, not project source
+.claude/

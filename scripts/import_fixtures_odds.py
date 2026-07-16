@@ -1,0 +1,178 @@
+"""
+import_fixtures_odds.py
+------------------------
+Pulls fixtures + match-winner (h2h) odds from The Odds API for every
+competition configured in game_competitions, resolves team names
+against the teams table (auto-creating teams we've never seen before -
+cup fixtures pull in lower-league/European opponents the players/
+game_players tables don't need to know about), and stores results in
+fixtures / fixture_odds.
+
+Competitions with no scheduled fixtures yet (e.g. Champions League
+before the season's draw) simply return nothing - not an error.
+
+Safe to re-run: fixtures are upserted by their Odds API event id.
+fixture_odds are NOT upserted - each run appends a new snapshot per
+bookmaker, so odds movement over time is preserved rather than
+overwritten. Intended to run on a schedule (e.g. daily) once live.
+
+RUN:
+    python3 scripts/import_fixtures_odds.py
+"""
+
+import json
+import os
+import urllib.error
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+
+import psycopg2
+
+ROOT = Path(__file__).resolve().parent.parent
+ODDS_BASE = "https://api.the-odds-api.com/v4"
+
+# Known Odds API spellings that differ from our canonical team names.
+# Discovered empirically - extend this if a competition surfaces a new
+# team under a different spelling than what's already in `teams`,
+# otherwise a duplicate team row gets created instead of matching the
+# existing one.
+ODDS_NAME_OVERRIDES = {
+    "Brighton and Hove Albion": "Brighton",
+}
+
+
+def load_env():
+    for line in (ROOT / ".env").read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+def season_for(kickoff: datetime) -> str:
+    year = kickoff.year
+    if kickoff.month >= 7:
+        return f"{year}/{str(year + 1)[-2:]}"
+    return f"{year - 1}/{str(year)[-2:]}"
+
+
+def fetch_odds(competition, api_key):
+    url = f"{ODDS_BASE}/sports/{competition}/odds?apiKey={api_key}&regions=uk&markets=h2h"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        print(f"  [warn] {competition}: HTTP {e.code} - {e.read()[:200]}")
+        return []
+
+
+def resolve_team_id(cur, name):
+    cur.execute(
+        "select team_id from team_aliases where source = 'oddsapi' and external_name = %s",
+        (name,),
+    )
+    row = cur.fetchone()
+    if row:
+        return row[0]
+
+    canonical_name = ODDS_NAME_OVERRIDES.get(name, name)
+    cur.execute("select id from teams where name = %s", (canonical_name,))
+    row = cur.fetchone()
+    if row:
+        team_id = row[0]
+    else:
+        cur.execute("insert into teams (name) values (%s) returning id", (canonical_name,))
+        team_id = cur.fetchone()[0]
+        print(f"  [new team] {canonical_name}")
+
+    cur.execute(
+        "insert into team_aliases (team_id, source, external_name) values (%s, 'oddsapi', %s) on conflict do nothing",
+        (team_id, name),
+    )
+    return team_id
+
+
+def upsert_fixture(cur, external_id, competition, season, home_team_id, away_team_id, kickoff_at):
+    cur.execute(
+        """
+        insert into fixtures (external_id, competition, season, home_team_id, away_team_id, kickoff_at)
+        values (%s, %s, %s, %s, %s, %s)
+        on conflict (external_id) do update
+            set competition = excluded.competition,
+                season = excluded.season,
+                home_team_id = excluded.home_team_id,
+                away_team_id = excluded.away_team_id,
+                kickoff_at = excluded.kickoff_at
+        returning id
+        """,
+        (external_id, competition, season, home_team_id, away_team_id, kickoff_at),
+    )
+    return cur.fetchone()[0]
+
+
+def insert_odds(cur, fixture_id, bookmaker, home_price, draw_price, away_price):
+    cur.execute(
+        """
+        insert into fixture_odds (fixture_id, bookmaker, home_price, draw_price, away_price)
+        values (%s, %s, %s, %s, %s)
+        on conflict (fixture_id, bookmaker, fetched_at) do nothing
+        """,
+        (fixture_id, bookmaker, home_price, draw_price, away_price),
+    )
+
+
+def main():
+    load_env()
+    api_key = os.environ["ODDS_API_KEY"]
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn.autocommit = False
+    cur = conn.cursor()
+
+    try:
+        cur.execute("select distinct competition from game_competitions order by competition")
+        competitions = [r[0] for r in cur.fetchall()]
+
+        total_fixtures = 0
+        total_odds = 0
+
+        for competition in competitions:
+            events = fetch_odds(competition, api_key)
+            print(f"{competition}: {len(events)} fixtures with odds")
+
+            for event in events:
+                kickoff = datetime.fromisoformat(event["commence_time"].replace("Z", "+00:00"))
+                home_id = resolve_team_id(cur, event["home_team"])
+                away_id = resolve_team_id(cur, event["away_team"])
+                fixture_id = upsert_fixture(
+                    cur, event["id"], competition, season_for(kickoff), home_id, away_id, kickoff
+                )
+                total_fixtures += 1
+
+                for bookmaker in event.get("bookmakers", []):
+                    market = next((m for m in bookmaker["markets"] if m["key"] == "h2h"), None)
+                    if not market:
+                        continue
+                    prices = {o["name"]: o["price"] for o in market["outcomes"]}
+                    home_price = prices.get(event["home_team"])
+                    away_price = prices.get(event["away_team"])
+                    draw_price = prices.get("Draw")
+                    if not (home_price and away_price and draw_price):
+                        continue
+                    insert_odds(cur, fixture_id, bookmaker["key"], home_price, draw_price, away_price)
+                    total_odds += 1
+
+        conn.commit()
+        print(f"\nDone: {total_fixtures} fixtures upserted, {total_odds} odds rows inserted.")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()
