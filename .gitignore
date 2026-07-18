@@ -1,7 +1,9 @@
 .env
 .env.*
 auth_state.json
+auth_state_fanteam.json
 discovered_calls.json
+discovered_calls_fanteam.json
 token.txt
 __pycache__/
 *.pyc
@@ -11,6 +13,8 @@ node_modules/
 player_match_review.csv
 raw_response.json
 players.csv
+fanteam_players_raw.json
+fanteam_fixtures_raw.json
 
 # Local tool config, not project source
 .claude/
