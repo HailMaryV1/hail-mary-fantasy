@@ -126,13 +126,13 @@ export default async function AnalysisPage({ params }: { params: Promise<{ id: s
     .sort((a, b) => a.teamName.localeCompare(b.teamName));
 
   return (
-    <div className="min-h-screen bg-zinc-50 px-6 py-10 dark:bg-black">
+    <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-2xl">
-        <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">{squad.name}: look ahead</h1>
-        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+        <h1 className="text-2xl font-semibold text-white">{squad.name}: look ahead</h1>
+        <p className="mt-1 text-sm text-navy-300">
           {game.display_name} · next 3 fixtures per team in your squad
         </p>
-        <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
+        <p className="mt-1 text-xs text-amber-400">
           Fixture dates are the real season calendar, always shown. Difficulty (attack/clean-sheet)
           only shows once bookmaker odds exist for that match - typically not posted until close to
           matchday, so far-future fixtures may show as &quot;odds not posted yet&quot;.
@@ -140,18 +140,18 @@ export default async function AnalysisPage({ params }: { params: Promise<{ id: s
 
         <div className="mt-6 flex flex-col gap-3">
           {teamSummaries.map(({ teamId, teamName, next3, attackClass, csClass }) => (
-            <div key={teamId} className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+            <div key={teamId} className="rounded-xl border border-navy-700 bg-navy-900 p-4">
               <div className="flex items-center justify-between">
-                <p className="font-medium text-black dark:text-zinc-50">{teamName}</p>
+                <p className="font-medium text-white">{teamName}</p>
                 <div className="flex gap-1">
                   {attackClass && (
                     <span
                       className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                         attackClass.color === "green"
-                          ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400"
+                          ? "bg-emerald-950 text-emerald-400"
                           : attackClass.color === "red"
-                            ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400"
-                            : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                            ? "bg-red-950 text-red-400"
+                            : "bg-navy-800 text-navy-300"
                       }`}
                     >
                       Attack: {attackClass.label}
@@ -161,10 +161,10 @@ export default async function AnalysisPage({ params }: { params: Promise<{ id: s
                     <span
                       className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                         csClass.color === "green"
-                          ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400"
+                          ? "bg-emerald-950 text-emerald-400"
                           : csClass.color === "red"
-                            ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400"
-                            : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                            ? "bg-red-950 text-red-400"
+                            : "bg-navy-800 text-navy-300"
                       }`}
                     >
                       Defence: {csClass.label}
@@ -172,7 +172,7 @@ export default async function AnalysisPage({ params }: { params: Promise<{ id: s
                   )}
                 </div>
               </div>
-              <div className="mt-2 flex flex-col gap-1 text-sm text-zinc-600 dark:text-zinc-400">
+              <div className="mt-2 flex flex-col gap-1 text-sm text-navy-300">
                 {next3.map((fx) => (
                   <div key={fx.fixture_id} className="flex items-center justify-between">
                     <span>

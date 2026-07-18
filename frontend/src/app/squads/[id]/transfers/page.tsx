@@ -1,10 +1,19 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
+import { getSeasonTiming } from "@/lib/gameweek";
 import TransferPlanner from "./TransferPlanner";
+import TransferBoard from "./TransferBoard";
+import RecentTransfers from "./RecentTransfers";
+
+// See rankings/page.tsx for why this is needed - Supabase's .rpc() POSTs
+// to a fixed URL regardless of parameters, so Next's fetch Data Cache can
+// serve a stale horizon's response for a different horizon's request.
+export const dynamic = "force-dynamic";
 
 type SquadPlayerRow = {
   game_player_id: number;
+  is_starting: boolean;
   game_players: {
     price: number;
     players: { full_name: string; position: "GK" | "DEF" | "MID" | "FWD"; team_id: number; teams: { name: string } };
@@ -80,6 +89,9 @@ export default async function TransfersPage({
     .limit(1)
     .maybeSingle();
   const currentGameweek: number | null = gwRow?.gameweek ?? null;
+  const hasCalendar = currentGameweek !== null;
+
+  const { seasonStarted, planningGameweek } = await getSeasonTiming(supabase, squad.game_id);
 
   const wc1Active = squad.wildcard_1_used_gameweek === currentGameweek;
   const wc2Active = squad.wildcard_2_used_gameweek === currentGameweek;
@@ -100,7 +112,7 @@ export default async function TransfersPage({
 
   const { data: squadPlayersRaw } = await supabase
     .from("squad_players")
-    .select("game_player_id, game_players(price, players(full_name, position, team_id, teams(name)))")
+    .select("game_player_id, is_starting, game_players(price, players(full_name, position, team_id, teams(name)))")
     .eq("squad_id", squadId)
     .returns<SquadPlayerRow[]>();
 
@@ -111,6 +123,7 @@ export default async function TransfersPage({
     team_id: sp.game_players.players.team_id,
     team_name: sp.game_players.players.teams.name,
     price: Number(sp.game_players.price),
+    is_starting: sp.is_starting,
   }));
 
   const { data: pool } = await supabase
@@ -126,16 +139,34 @@ export default async function TransfersPage({
   const clubCounts = new Map<number, number>();
   squadPlayers.forEach((p) => clubCounts.set(p.team_id, (clubCounts.get(p.team_id) ?? 0) + 1));
 
-  // Score players over the selected horizon (same player_score_by_horizon
-  // RPC the rankings page uses) instead of just next gameweek, so
-  // recommendations reflect "best swap over the next N gameweeks" rather
-  // than one week's fixture swing. Falls back to game_player_pool's latest
-  // single projection for games with no published gameweek calendar yet
-  // (Dream Team) - same fallback the rankings page uses.
-  const { data: horizonData, error: horizonError } = await supabase
-    .rpc("player_score_by_horizon", { p_game_slug: game.slug, p_num_gameweeks: activeHorizon.gameweeks })
-    .returns<HorizonRow[]>();
-  const horizonAvailable = !horizonError && horizonData && horizonData.length > 0;
+  // Score source depends on where we are relative to the season:
+  //   - no calendar at all (Dream Team): fall back to the latest single
+  //     projection, same as always.
+  //   - calendar exists but the season hasn't started: always Gameweek 1
+  //     alone - "build the best 11 + bench 4 from the first GW score,"
+  //     the horizon toggle doesn't mean anything yet.
+  //   - season has started: the selected horizon window starting at
+  //     planningGameweek (the next gameweek transfers can still actually
+  //     affect - see lib/gameweek.ts), via the explicit-start RPC variant
+  //     since the auto-anchoring one would still point at a gameweek
+  //     that's already partway through.
+  let horizonData: HorizonRow[] | null = null;
+  if (hasCalendar && !seasonStarted) {
+    const { data } = await supabase
+      .rpc("player_score_by_horizon", { p_game_slug: game.slug, p_num_gameweeks: 1 })
+      .returns<HorizonRow[]>();
+    horizonData = data;
+  } else if (hasCalendar && seasonStarted && planningGameweek !== null) {
+    const { data } = await supabase
+      .rpc("player_score_by_horizon_from", {
+        p_game_slug: game.slug,
+        p_start_gameweek: planningGameweek,
+        p_num_gameweeks: activeHorizon.gameweeks,
+      })
+      .returns<HorizonRow[]>();
+    horizonData = data;
+  }
+  const horizonAvailable = hasCalendar && horizonData !== null && horizonData.length > 0;
 
   const scoreById = horizonAvailable
     ? new Map(horizonData!.map((r) => [r.game_player_id, r.avg_score]))
@@ -180,70 +211,148 @@ export default async function TransfersPage({
 
   recommendations.sort((a, b) => b.delta - a.delta);
 
+  const squadMembersWithScore = squadPlayers.map((p) => ({ ...p, score: scoreById.get(p.game_player_id) ?? null }));
+  const poolCandidates = (pool ?? [])
+    .filter((p) => !squadIds.has(p.game_player_id))
+    .map((p) => ({ ...p, score: scoreById.get(p.game_player_id) ?? null }));
+  const clubCountsObj: Record<number, number> = {};
+  clubCounts.forEach((count, teamId) => (clubCountsObj[teamId] = count));
+
+  // Pre-season only: recent transfers, undoable since they're free/
+  // unlimited right now (see squads/actions.ts's reverseTransfer).
+  let recentTransfers: { id: number; outName: string; inName: string }[] = [];
+  if (hasCalendar && !seasonStarted) {
+    const { data: transferRows } = await supabase
+      .from("squad_transfers")
+      .select("id, out_game_player_id, in_game_player_id")
+      .eq("squad_id", squadId)
+      .order("created_at", { ascending: false })
+      .limit(10);
+
+    if (transferRows && transferRows.length > 0) {
+      const involvedIds = Array.from(new Set(transferRows.flatMap((t) => [t.out_game_player_id, t.in_game_player_id])));
+      const { data: namedPlayers } = await supabase
+        .from("game_players")
+        .select("id, players(full_name)")
+        .in("id", involvedIds)
+        .returns<{ id: number; players: { full_name: string } }[]>();
+      const nameById = new Map((namedPlayers ?? []).map((p) => [p.id, p.players.full_name]));
+      recentTransfers = transferRows.map((t) => ({
+        id: t.id,
+        outName: nameById.get(t.out_game_player_id) ?? "Unknown",
+        inName: nameById.get(t.in_game_player_id) ?? "Unknown",
+      }));
+    }
+  }
+
+  const targetLabel =
+    hasCalendar && seasonStarted && planningGameweek !== null
+      ? `Targeting Gameweek${activeHorizon.gameweeks > 1 ? "s" : ""} ${planningGameweek}${
+          activeHorizon.gameweeks > 1 ? ` – ${planningGameweek + activeHorizon.gameweeks - 1}` : ""
+        }`
+      : null;
+
   return (
-    <div className="min-h-screen bg-zinc-50 px-6 py-10 dark:bg-black">
-      <main className="mx-auto max-w-2xl">
-        <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">{squad.name}: transfers</h1>
-        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+    <div className="min-h-screen bg-navy-950 px-6 py-10">
+      <main className="mx-auto max-w-4xl">
+        <h1 className="text-2xl font-semibold text-white">{squad.name}: transfers</h1>
+        <p className="mt-1 text-sm text-navy-300">
           {game.display_name} · £{budgetRemaining.toFixed(1)}m in the bank
         </p>
 
-        {currentGameweek === null ? (
-          <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
+        {!hasCalendar ? (
+          <p className="mt-1 text-xs text-amber-400">
             Weekly transfer limits aren&apos;t enforced yet - no gameweek calendar exists for{" "}
             {game.display_name} until the season starts. This shows every improving swap available,
             not just what your remaining transfers this week would allow.
           </p>
+        ) : !seasonStarted ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+            <span className="rounded-full bg-sky-950 px-3 py-1 font-medium text-sky-400">
+              Unlimited transfers (pre-season)
+            </span>
+          </div>
         ) : (
           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-            <span className="rounded-full bg-zinc-100 px-3 py-1 font-medium text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+            <span className="rounded-full bg-navy-900 px-3 py-1 font-medium text-navy-300">
               GW{currentGameweek} · {squad.free_transfers} free transfer{squad.free_transfers === 1 ? "" : "s"}
             </span>
             {wildcardActiveThisWeek && (
-              <span className="rounded-full bg-green-100 px-3 py-1 font-medium text-green-700 dark:bg-green-950 dark:text-green-400">
+              <span className="rounded-full bg-emerald-950 px-3 py-1 font-medium text-emerald-400">
                 Wildcard active this gameweek - transfers are free
               </span>
             )}
           </div>
         )}
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-            Planning horizon
-          </span>
-          <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
-            {HORIZONS.map((h) => (
-              <Link
-                key={h.key}
-                href={`/squads/${squadId}/transfers?horizon=${h.key}`}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                  h.key === activeHorizon.key
-                    ? "bg-white text-black shadow-sm dark:bg-zinc-700 dark:text-white"
-                    : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
-                }`}
-              >
-                {h.label}
-              </Link>
-            ))}
-          </div>
-          {!horizonAvailable && (
-            <span className="text-xs text-amber-600 dark:text-amber-500">
-              Gameweek calendar not published for {game.display_name} yet - showing latest single projection instead.
+        {hasCalendar && !seasonStarted ? (
+          <p className="mt-3 text-xs text-navy-400">
+            Pre-season - recommendations target Gameweek 1, the first gameweek your squad will actually play.
+          </p>
+        ) : (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium uppercase tracking-wide text-navy-400">
+              Planning horizon
             </span>
-          )}
-        </div>
+            <div className="flex gap-1 rounded-lg bg-navy-900 p-1">
+              {HORIZONS.map((h) => (
+                <Link
+                  key={h.key}
+                  href={`/squads/${squadId}/transfers?horizon=${h.key}`}
+                  prefetch={false}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                    h.key === activeHorizon.key
+                      ? "bg-sky-500 text-navy-950"
+                      : "text-navy-300 hover:text-white"
+                  }`}
+                >
+                  {h.label}
+                </Link>
+              ))}
+            </div>
+            {targetLabel && <span className="text-xs text-navy-400">{targetLabel}</span>}
+            {!horizonAvailable && (
+              <span className="text-xs text-amber-400">
+                Gameweek calendar not published for {game.display_name} yet - showing latest single projection instead.
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="mt-6">
-          <TransferPlanner
+          <TransferBoard
             squadId={squadId}
-            recommendations={recommendations}
+            squadMembers={squadMembersWithScore}
+            pool={poolCandidates}
+            budgetRemaining={budgetRemaining}
+            maxPerClub={rules.max_per_club}
+            clubCounts={clubCountsObj}
             currentGameweek={currentGameweek}
+            seasonStarted={seasonStarted}
             freeTransfers={squad.free_transfers}
             wildcardActiveThisWeek={wildcardActiveThisWeek}
             wc1Available={wc1Available}
             wc2Available={wc2Available}
           />
         </div>
+
+        <h2 className="mt-10 text-sm font-semibold uppercase tracking-wide text-navy-400">
+          Recommended swaps
+        </h2>
+        <div className="mt-3">
+          <TransferPlanner
+            squadId={squadId}
+            recommendations={recommendations}
+            currentGameweek={currentGameweek}
+            seasonStarted={seasonStarted}
+            freeTransfers={squad.free_transfers}
+            wildcardActiveThisWeek={wildcardActiveThisWeek}
+            wc1Available={wc1Available}
+            wc2Available={wc2Available}
+          />
+        </div>
+
+        {hasCalendar && !seasonStarted && <RecentTransfers squadId={squadId} transfers={recentTransfers} />}
       </main>
     </div>
   );

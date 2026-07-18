@@ -1,8 +1,16 @@
 @import "tailwindcss";
 
+/*
+ * Committed to a single dark navy identity (no light-theme variant) -
+ * this app is a personal fantasy-football tool styled after
+ * betting/sports apps (FanTeam, DraftKings), which don't follow OS
+ * light/dark preference, they commit to one branded look. sky-* comes
+ * free from Tailwind v4's default palette; navy-* is custom since
+ * Tailwind has no built-in "navy".
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #050b16;
+  --foreground: #eef2f8;
 }
 
 @theme inline {
@@ -10,17 +18,21 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-navy-950: #050b16;
+  --color-navy-900: #0b1524;
+  --color-navy-800: #14203a;
+  --color-navy-700: #1e2e45;
+  --color-navy-600: #2c3e5c;
+  --color-navy-500: #46617f;
+  --color-navy-400: #7e93ab;
+  --color-navy-300: #a8b8cc;
+  --color-navy-200: #cddaeb;
+  --color-navy-100: #eef2f8;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
 }

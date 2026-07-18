@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { saveLineup } from "../../actions";
+import PitchView from "../../PitchView";
 
 type Player = {
   game_player_id: number;
@@ -24,6 +25,13 @@ type Formation = {
 type Suggestion = { formationCode: string; startingGamePlayerIds: number[]; total: number } | null;
 
 const POSITIONS = ["GK", "DEF", "MID", "FWD"] as const;
+
+function formationForCounts(counts: Record<string, number>, formations: Formation[]): string | null {
+  const match = formations.find(
+    (f) => f.gk_count === counts.GK && f.def_count === counts.DEF && f.mid_count === counts.MID && f.fwd_count === counts.FWD
+  );
+  return match?.code ?? null;
+}
 
 export default function LineupBuilder({
   squadId,
@@ -49,6 +57,7 @@ export default function LineupBuilder({
   const [starting, setStarting] = useState<Set<number>>(
     new Set(players.filter((p) => p.is_starting).map((p) => p.game_player_id))
   );
+  const [selectedBenchId, setSelectedBenchId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -58,6 +67,7 @@ export default function LineupBuilder({
   }, [formations, formationCode]);
 
   const startingPlayers = players.filter((p) => starting.has(p.game_player_id));
+  const benchPlayers = players.filter((p) => !starting.has(p.game_player_id));
   const countsByPosition = useMemo(() => {
     const counts: Record<string, number> = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
     startingPlayers.forEach((p) => (counts[p.position] += 1));
@@ -66,27 +76,67 @@ export default function LineupBuilder({
 
   const isComplete = POSITIONS.every((pos) => countsByPosition[pos] === quota[pos]);
 
-  function canToggleOn(player: Player) {
-    return countsByPosition[player.position] < quota[player.position];
-  }
+  // Once a bench player is selected, the swappable set is: every other
+  // bench player (so you can change your mind about who's coming on) plus
+  // every pitch player whose swap would leave the XI matching one of the
+  // 7 real formations - same position always qualifies (no count change),
+  // but a cross-position swap (e.g. bench DEF for a pitch MID) also
+  // qualifies whenever the resulting counts happen to match a formation
+  // (4-4-2 -> 5-3-2 in that example). GK never mixes with an outfield
+  // position since no formation has GK != 1.
+  const swappableIds = useMemo(() => {
+    if (selectedBenchId === null) return null;
+    const benchPlayer = players.find((p) => p.game_player_id === selectedBenchId);
+    if (!benchPlayer) return null;
+    const ids = new Set<number>();
+    benchPlayers.forEach((p) => ids.add(p.game_player_id));
+    startingPlayers.forEach((pitchPlayer) => {
+      if (pitchPlayer.position === benchPlayer.position) {
+        ids.add(pitchPlayer.game_player_id);
+        return;
+      }
+      const newCounts = { ...countsByPosition };
+      newCounts[benchPlayer.position] += 1;
+      newCounts[pitchPlayer.position] -= 1;
+      if (formationForCounts(newCounts, formations)) ids.add(pitchPlayer.game_player_id);
+    });
+    return ids;
+  }, [selectedBenchId, players, benchPlayers, startingPlayers, countsByPosition, formations]);
 
-  function toggle(player: Player) {
+  function handlePitchSelect(player: Player, zone: "pitch" | "bench") {
+    if (zone === "bench") {
+      setSelectedBenchId((prev) => (prev === player.game_player_id ? null : player.game_player_id));
+      return;
+    }
+    if (selectedBenchId === null) return;
+    const benchPlayer = players.find((p) => p.game_player_id === selectedBenchId);
+    if (!benchPlayer) return;
+
+    let newFormationCode = formationCode;
+    if (benchPlayer.position !== player.position) {
+      const newCounts = { ...countsByPosition };
+      newCounts[benchPlayer.position] += 1;
+      newCounts[player.position] -= 1;
+      const matched = formationForCounts(newCounts, formations);
+      if (!matched) return; // shouldn't happen (dimmed already), but guard anyway
+      newFormationCode = matched;
+    }
+
     setStarting((prev) => {
       const next = new Set(prev);
-      if (next.has(player.game_player_id)) {
-        next.delete(player.game_player_id);
-      } else {
-        if (!canToggleOn(player)) return prev;
-        next.add(player.game_player_id);
-      }
+      next.delete(player.game_player_id);
+      next.add(selectedBenchId);
       return next;
     });
+    setFormationCode(newFormationCode);
+    setSelectedBenchId(null);
   }
 
   function applySuggestion() {
     if (!suggestion) return;
     setFormationCode(suggestion.formationCode);
     setStarting(new Set(suggestion.startingGamePlayerIds));
+    setSelectedBenchId(null);
   }
 
   function handleSave() {
@@ -102,15 +152,10 @@ export default function LineupBuilder({
     });
   }
 
-  const byPosition = POSITIONS.map((pos) => ({
-    pos,
-    players: players.filter((p) => p.position === pos).sort((a, b) => (b.score ?? -1) - (a.score ?? -1)),
-  }));
-
   return (
     <div>
       <div className="mb-4">
-        <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Formation</p>
+        <p className="text-xs font-medium uppercase tracking-wide text-navy-400">Formation</p>
         <div className="mt-1 flex flex-wrap gap-1">
           {formations.map((f) => (
             <button
@@ -118,11 +163,12 @@ export default function LineupBuilder({
               onClick={() => {
                 setFormationCode(f.code);
                 setStarting(new Set());
+                setSelectedBenchId(null);
               }}
               className={`rounded-md px-2.5 py-1 text-xs font-medium ${
                 formationCode === f.code
-                  ? "bg-black text-white dark:bg-white dark:text-black"
-                  : "bg-zinc-100 text-zinc-600 hover:text-black dark:bg-zinc-900 dark:text-zinc-400"
+                  ? "bg-sky-500 text-navy-950"
+                  : "bg-navy-900 text-navy-300 hover:text-white"
               }`}
             >
               {f.code}
@@ -133,62 +179,45 @@ export default function LineupBuilder({
 
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
         {POSITIONS.map((pos) => (
-          <span key={pos} className={countsByPosition[pos] === quota[pos] ? "text-green-600 dark:text-green-400" : "text-zinc-500"}>
+          <span key={pos} className={countsByPosition[pos] === quota[pos] ? "text-emerald-400" : "text-navy-400"}>
             {pos} {countsByPosition[pos]}/{quota[pos]}
           </span>
         ))}
-        <span className="text-zinc-500">{starting.size}/{startingSize} starting</span>
+        <span className="text-navy-400">{starting.size}/{startingSize} starting</span>
       </div>
 
-      {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
-      <div className="mb-6 flex flex-wrap items-center gap-2">
+      {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         <button
           onClick={handleSave}
           disabled={!isComplete || isPending}
-          className="rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+          className="rounded-lg bg-sky-500 px-4 py-1.5 text-sm font-medium text-navy-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {isPending ? "Saving..." : "Save lineup"}
         </button>
         {suggestion && (
           <button
             onClick={applySuggestion}
-            className="rounded-lg border border-zinc-200 px-4 py-1.5 text-sm font-medium text-black hover:bg-zinc-100 dark:border-zinc-800 dark:text-zinc-50 dark:hover:bg-zinc-800"
+            className="rounded-lg border border-navy-700 bg-navy-900 px-4 py-1.5 text-sm font-medium text-white hover:bg-navy-800"
           >
             Auto-fill optimal XI ({suggestion.formationCode}, {suggestion.total.toFixed(1)} pts)
           </button>
         )}
       </div>
 
-      {byPosition.map(({ pos, players: posPlayers }) => (
-        <div key={pos} className="mb-4">
-          <p className="mb-1 text-xs font-medium uppercase tracking-wide text-zinc-500">{pos}</p>
-          <div className="flex flex-col gap-1">
-            {posPlayers.map((p) => {
-              const isStarting = starting.has(p.game_player_id);
-              const disabled = !isStarting && !canToggleOn(p);
-              return (
-                <div
-                  key={p.game_player_id}
-                  onClick={() => !disabled && toggle(p)}
-                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm ${
-                    disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-900"
-                  } ${
-                    isStarting
-                      ? "border-green-300 bg-green-50 dark:border-green-800 dark:bg-green-950/30"
-                      : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
-                  }`}
-                >
-                  <span className="text-black dark:text-zinc-50">
-                    {p.full_name} <span className="text-zinc-500">({p.team_name})</span>
-                    {p.score != null && <span className="ml-2 text-xs text-zinc-500">{p.score.toFixed(1)} pts</span>}
-                  </span>
-                  <span className="text-xs text-zinc-500">{isStarting ? "Starting" : "Bench"}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
+      <p className="mb-2 text-xs text-navy-400">
+        {selectedBenchId !== null
+          ? "Pick a pitch player to swap them for your selected substitute - any swap that leaves a valid formation is allowed, not just same-position."
+          : "Select a bench player, then a pitch player to swap them in."}
+      </p>
+
+      <PitchView
+        starting={startingPlayers}
+        bench={benchPlayers}
+        selectedId={selectedBenchId}
+        swappableIds={swappableIds}
+        onSelect={handlePitchSelect}
+      />
     </div>
   );
 }

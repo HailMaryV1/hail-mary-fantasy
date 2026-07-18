@@ -2,6 +2,9 @@
 
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
+import { getSeasonTiming } from "@/lib/gameweek";
+
+type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
 type SaveSquadArgs = {
   gameSlug: string;
@@ -247,29 +250,18 @@ async function getCurrentGameweek(
 }
 
 /**
- * Executes a single sell/buy swap, enforcing FanTeam's real transfer
- * rules (from the user's copy of FanTeam's own rules page): 1 free
- * transfer per gameweek banking up to 37, -4 points per transfer beyond
- * that, 2 wildcards (WC1 usable gameweeks 2-19, WC2 gameweeks 20-38,
- * each resets banked free transfers to zero on activation). The "+1
- * free transfer per gameweek" accrual itself isn't automated - see
- * migration 0022 - so free_transfers only ever goes down here, never
- * up, until that's built.
+ * Ownership, position-match, budget, and club-limit validation plus the
+ * actual squad_players delete+insert - the part of a transfer that's
+ * identical whether it's a normal swap (makeTransfer) or undoing one
+ * (reverseTransfer, which just calls this with the roles reversed).
+ * Extracted so those two don't duplicate the same ~40 lines of checks.
  */
-export async function makeTransfer({ squadId, outGamePlayerId, inGamePlayerId, useWildcard }: MakeTransferArgs) {
-  const supabase = await createAuthServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
-
-  const { data: squad } = await supabase
-    .from("squads")
-    .select("id, user_id, game_id, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek")
-    .eq("id", squadId)
-    .single();
-  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
-
+async function performSwap(
+  supabase: Supabase,
+  squad: { id: number; game_id: number },
+  outGamePlayerId: number,
+  inGamePlayerId: number
+): Promise<{ error?: string }> {
   const { data: rules } = await supabase
     .from("game_squad_rules")
     .select("budget, max_per_club")
@@ -280,7 +272,7 @@ export async function makeTransfer({ squadId, outGamePlayerId, inGamePlayerId, u
   const { data: squadPlayers } = await supabase
     .from("squad_players")
     .select("game_player_id, is_starting, game_players(price, position_code, players(position, team_id))")
-    .eq("squad_id", squadId);
+    .eq("squad_id", squad.id);
   if (!squadPlayers) return { error: "Couldn't load squad." };
 
   type Row = { game_player_id: number; is_starting: boolean; game_players: { price: number; players: { position: string; team_id: number } } };
@@ -320,6 +312,53 @@ export async function makeTransfer({ squadId, outGamePlayerId, inGamePlayerId, u
     }
   }
 
+  const { error: deleteError } = await supabase
+    .from("squad_players")
+    .delete()
+    .eq("squad_id", squad.id)
+    .eq("game_player_id", outGamePlayerId);
+  if (deleteError) return { error: deleteError.message };
+
+  const { error: insertError } = await supabase
+    .from("squad_players")
+    .insert({ squad_id: squad.id, game_player_id: inGamePlayerId, is_starting: outgoing.is_starting });
+  if (insertError) return { error: insertError.message };
+
+  return {};
+}
+
+/**
+ * Executes a single sell/buy swap, enforcing FanTeam's real transfer
+ * rules (from the user's copy of FanTeam's own rules page): 1 free
+ * transfer per gameweek banking up to 37, -4 points per transfer beyond
+ * that, 2 wildcards (WC1 usable gameweeks 2-19, WC2 gameweeks 20-38,
+ * each resets banked free transfers to zero on activation). The "+1
+ * free transfer per gameweek" accrual itself isn't automated - see
+ * migration 0022 - so free_transfers only ever goes down here, never
+ * up, until that's built.
+ *
+ * Before the season actually starts (season's own gameweek-1 kickoff
+ * hasn't passed yet), none of that applies - you're still building your
+ * squad, not "using" a real transfer, so it's free and unlimited (and,
+ * via reverseTransfer below, undoable).
+ */
+export async function makeTransfer({ squadId, outGamePlayerId, inGamePlayerId, useWildcard }: MakeTransferArgs) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const { data: squad } = await supabase
+    .from("squads")
+    .select("id, user_id, game_id, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek")
+    .eq("id", squadId)
+    .single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const swapResult = await performSwap(supabase, squad, outGamePlayerId, inGamePlayerId);
+  if (swapResult.error) return swapResult;
+
   // Transfer cost - only meaningful for games with a real gameweek
   // calendar (currently FanTeam). Games without one skip this entirely
   // (same as before this feature existed), not guessed at.
@@ -330,41 +369,35 @@ export async function makeTransfer({ squadId, outGamePlayerId, inGamePlayerId, u
   const squadUpdate: Record<string, number> = {};
 
   if (gameweek !== null) {
-    const wc1Active = squad.wildcard_1_used_gameweek === gameweek;
-    const wc2Active = squad.wildcard_2_used_gameweek === gameweek;
+    const { seasonStarted } = await getSeasonTiming(supabase, squad.game_id);
 
-    if (wc1Active || wc2Active) {
-      usedWildcard = true; // wildcard already active this gameweek from an earlier transfer
-    } else if (useWildcard) {
-      const wc1Window = gameweek >= 2 && gameweek <= 19;
-      const wc2Window = gameweek >= 20 && gameweek <= 38;
-      if (wc1Window && squad.wildcard_1_used_gameweek === null) {
-        squadUpdate.wildcard_1_used_gameweek = gameweek;
-      } else if (wc2Window && squad.wildcard_2_used_gameweek === null) {
-        squadUpdate.wildcard_2_used_gameweek = gameweek;
+    if (seasonStarted) {
+      const wc1Active = squad.wildcard_1_used_gameweek === gameweek;
+      const wc2Active = squad.wildcard_2_used_gameweek === gameweek;
+
+      if (wc1Active || wc2Active) {
+        usedWildcard = true; // wildcard already active this gameweek from an earlier transfer
+      } else if (useWildcard) {
+        const wc1Window = gameweek >= 2 && gameweek <= 19;
+        const wc2Window = gameweek >= 20 && gameweek <= 38;
+        if (wc1Window && squad.wildcard_1_used_gameweek === null) {
+          squadUpdate.wildcard_1_used_gameweek = gameweek;
+        } else if (wc2Window && squad.wildcard_2_used_gameweek === null) {
+          squadUpdate.wildcard_2_used_gameweek = gameweek;
+        } else {
+          return { error: "No wildcard is available to use this gameweek (wrong window or already used)." };
+        }
+        usedWildcard = true;
+        newFreeTransfers = 0; // activating a wildcard resets banked free transfers
+      } else if (squad.free_transfers > 0) {
+        newFreeTransfers = squad.free_transfers - 1;
       } else {
-        return { error: "No wildcard is available to use this gameweek (wrong window or already used)." };
+        costPoints = -4;
       }
-      usedWildcard = true;
-      newFreeTransfers = 0; // activating a wildcard resets banked free transfers
-    } else if (squad.free_transfers > 0) {
-      newFreeTransfers = squad.free_transfers - 1;
-    } else {
-      costPoints = -4;
     }
+    // Pre-season: costPoints stays 0, free_transfers stays untouched -
+    // unlimited, free transfers until the season actually kicks off.
   }
-
-  const { error: deleteError } = await supabase
-    .from("squad_players")
-    .delete()
-    .eq("squad_id", squadId)
-    .eq("game_player_id", outGamePlayerId);
-  if (deleteError) return { error: deleteError.message };
-
-  const { error: insertError } = await supabase
-    .from("squad_players")
-    .insert({ squad_id: squadId, game_player_id: inGamePlayerId, is_starting: outgoing.is_starting });
-  if (insertError) return { error: insertError.message };
 
   if (gameweek !== null) {
     await supabase.from("squad_transfers").insert({
@@ -380,6 +413,61 @@ export async function makeTransfer({ squadId, outGamePlayerId, inGamePlayerId, u
       .update({ free_transfers: newFreeTransfers, ...squadUpdate })
       .eq("id", squadId);
   }
+
+  redirect(`/squads/${squadId}/transfers`);
+}
+
+type ReverseTransferArgs = {
+  squadId: number;
+  transferId: number;
+};
+
+/**
+ * Undoes a logged transfer - only while the season hasn't started (see
+ * makeTransfer above), since that's the only window where transfers are
+ * free/unlimited and there's no real-transfer bookkeeping to preserve.
+ * Reuses performSwap with the roles reversed, then deletes the log row
+ * entirely (a true undo, not a new logged transfer).
+ */
+export async function reverseTransfer({ squadId, transferId }: ReverseTransferArgs) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const { data: squad } = await supabase
+    .from("squads")
+    .select("id, user_id, game_id")
+    .eq("id", squadId)
+    .single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { seasonStarted } = await getSeasonTiming(supabase, squad.game_id);
+  if (seasonStarted) return { error: "Transfers can only be reversed before the season starts." };
+
+  const { data: transfer } = await supabase
+    .from("squad_transfers")
+    .select("id, out_game_player_id, in_game_player_id")
+    .eq("id", transferId)
+    .eq("squad_id", squadId)
+    .single();
+  if (!transfer) return { error: "Transfer not found." };
+
+  const { data: currentlyIn } = await supabase
+    .from("squad_players")
+    .select("game_player_id")
+    .eq("squad_id", squadId)
+    .eq("game_player_id", transfer.in_game_player_id)
+    .maybeSingle();
+  if (!currentlyIn) {
+    return { error: "Can't reverse - that player is no longer in your squad (transferred out again since)." };
+  }
+
+  const swapResult = await performSwap(supabase, squad, transfer.in_game_player_id, transfer.out_game_player_id);
+  if (swapResult.error) return swapResult;
+
+  await supabase.from("squad_transfers").delete().eq("id", transferId);
 
   redirect(`/squads/${squadId}/transfers`);
 }

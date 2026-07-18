@@ -18,7 +18,7 @@ export default async function NewSquadPage({
   const { data: rules } = await supabase.from("game_squad_rules").select("*").eq("game_id", game.id).single();
   if (!rules) {
     return (
-      <div className="p-10 text-sm text-red-600">
+      <div className="min-h-screen bg-navy-950 p-10 text-sm text-red-400">
         No squad rules configured for {game.display_name} yet.
       </div>
     );
@@ -37,12 +37,12 @@ export default async function NewSquadPage({
     .limit(1000);
 
   return (
-    <div className="min-h-screen bg-zinc-50 px-6 py-10 dark:bg-black">
+    <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-3xl">
-        <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">
+        <h1 className="text-2xl font-semibold text-white">
           Build your {game.display_name} squad
         </h1>
-        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+        <p className="mt-1 text-sm text-navy-300">
           £{Number(rules.budget).toFixed(0)}m budget · {rules.squad_size} players
           {rules.max_per_club ? ` · max ${rules.max_per_club} per club` : ""}
         </p>

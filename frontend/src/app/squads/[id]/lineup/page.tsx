@@ -2,6 +2,11 @@ import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import LineupBuilder from "./LineupBuilder";
 
+// See rankings/page.tsx for why this is needed - Supabase's .rpc() POSTs
+// to a fixed URL regardless of parameters, so Next's fetch Data Cache can
+// serve a stale response for this squad's best-XI suggestion.
+export const dynamic = "force-dynamic";
+
 type SquadPlayerRow = {
   game_player_id: number;
   is_starting: boolean;
@@ -126,12 +131,12 @@ export default async function LineupPage({ params }: { params: Promise<{ id: str
       : null;
 
   return (
-    <div className="min-h-screen bg-zinc-50 px-6 py-10 dark:bg-black">
+    <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-2xl">
-        <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">
+        <h1 className="text-2xl font-semibold text-white">
           {squad.name}: starting XI
         </h1>
-        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+        <p className="mt-1 text-sm text-navy-300">
           {game.display_name} · pick {rules.starting_size} of your {rules.squad_size}
         </p>
 

@@ -53,10 +53,10 @@ export default async function CaptainPage({ params }: { params: Promise<{ id: st
     .sort((a, b) => b.hail_mary_score - a.hail_mary_score);
 
   return (
-    <div className="min-h-screen bg-zinc-50 px-6 py-10 dark:bg-black">
+    <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-2xl">
-        <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">{squad.name}: captain</h1>
-        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+        <h1 className="text-2xl font-semibold text-white">{squad.name}: captain</h1>
+        <p className="mt-1 text-sm text-navy-300">
           {game.display_name} · captain scores double, ranked by Hail Mary Score
         </p>
 

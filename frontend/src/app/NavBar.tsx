@@ -9,15 +9,20 @@ export default async function NavBar() {
   } = await supabase.auth.getUser();
 
   return (
-    <div className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-2 dark:border-zinc-800 dark:bg-black">
-      <nav className="flex items-center gap-4 text-sm font-medium">
-        <Link href="/" className="text-black hover:text-zinc-600 dark:text-zinc-50 dark:hover:text-zinc-300">
-          Hail Mary
+    <div className="flex items-center justify-between border-b border-navy-700 bg-navy-900 px-6 py-3">
+      <nav className="flex items-center gap-5 text-sm font-medium">
+        <Link href="/" className="flex items-center gap-1.5 text-white hover:text-sky-300">
+          Hail Mary<span className="text-sky-400">.</span>
         </Link>
         {user && (
-          <Link href="/squads" className="text-zinc-600 hover:text-black dark:text-zinc-400 dark:hover:text-white">
-            My Squads
-          </Link>
+          <>
+            <Link href="/rankings" className="text-navy-300 hover:text-sky-300">
+              Rankings
+            </Link>
+            <Link href="/squads" className="text-navy-300 hover:text-sky-300">
+              My Squads
+            </Link>
+          </>
         )}
       </nav>
       <AuthStatus />

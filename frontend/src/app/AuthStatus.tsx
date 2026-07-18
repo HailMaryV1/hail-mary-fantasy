@@ -10,10 +10,7 @@ export default async function AuthStatus() {
 
   if (!user) {
     return (
-      <Link
-        href="/login"
-        className="text-sm font-medium text-zinc-600 hover:text-black dark:text-zinc-400 dark:hover:text-white"
-      >
+      <Link href="/login" className="text-sm font-medium text-navy-300 hover:text-sky-300">
         Sign in
       </Link>
     );
@@ -21,11 +18,9 @@ export default async function AuthStatus() {
 
   return (
     <div className="flex items-center gap-3 text-sm">
-      <span className="text-zinc-600 dark:text-zinc-400">{user.email}</span>
+      <span className="hidden text-navy-300 sm:inline">{user.email}</span>
       <form action={signOut}>
-        <button className="font-medium text-zinc-600 hover:text-black dark:text-zinc-400 dark:hover:text-white">
-          Sign out
-        </button>
+        <button className="font-medium text-navy-300 hover:text-sky-300">Sign out</button>
       </form>
     </div>
   );

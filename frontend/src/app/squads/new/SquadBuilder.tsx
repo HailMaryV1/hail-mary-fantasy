@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { saveSquad } from "../actions";
+import Badge from "../Badge";
 
 type Player = {
   game_player_id: number;
@@ -134,22 +135,22 @@ export default function SquadBuilder({
   return (
     <div>
       <div className="mb-4">
-        <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Squad name</p>
+        <p className="text-xs font-medium uppercase tracking-wide text-navy-400">Squad name</p>
         <input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. Entry 2, Wildcard team"
-          className="mt-1 w-full max-w-xs rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-50"
+          className="mt-1 w-full max-w-xs rounded-lg border border-navy-700 bg-navy-900 px-3 py-1.5 text-sm text-white"
         />
-        <p className="mt-1 text-xs text-zinc-500">
+        <p className="mt-1 text-xs text-navy-400">
           Running more than one {gameSlug === "fanteam" ? "FanTeam" : "Dream Team"} entry? Give each squad its own name so they&apos;re easy to tell apart on the squads list.
         </p>
       </div>
 
       {rules.uses_formations && (
         <div className="mb-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Formation</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-navy-400">Formation</p>
           <div className="mt-1 flex flex-wrap gap-1">
             {formations.map((f) => (
               <button
@@ -160,8 +161,8 @@ export default function SquadBuilder({
                 }}
                 className={`rounded-md px-2.5 py-1 text-xs font-medium ${
                   formationCode === f.code
-                    ? "bg-black text-white dark:bg-white dark:text-black"
-                    : "bg-zinc-100 text-zinc-600 hover:text-black dark:bg-zinc-900 dark:text-zinc-400"
+                    ? "bg-sky-500 text-navy-950"
+                    : "bg-navy-900 text-navy-300 hover:text-white"
                 }`}
               >
                 {f.code}
@@ -171,9 +172,9 @@ export default function SquadBuilder({
         </div>
       )}
 
-      <div className="sticky top-0 z-10 -mx-6 mb-4 border-b border-zinc-200 bg-zinc-50/95 px-6 py-3 backdrop-blur dark:border-zinc-800 dark:bg-black/95">
+      <div className="sticky top-0 z-10 -mx-6 mb-4 border-b border-navy-700 bg-navy-950/95 px-6 py-3 backdrop-blur">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-          <span className={`font-semibold ${remainingBudget < 0 ? "text-red-600" : "text-black dark:text-zinc-50"}`}>
+          <span className={`font-semibold ${remainingBudget < 0 ? "text-red-400" : "text-white"}`}>
             £{remainingBudget.toFixed(1)}m left
           </span>
           {POSITIONS.map((pos) => (
@@ -181,20 +182,20 @@ export default function SquadBuilder({
               key={pos}
               className={
                 countsByPosition[pos] === quota[pos]
-                  ? "text-green-600 dark:text-green-400"
-                  : "text-zinc-500"
+                  ? "text-emerald-400"
+                  : "text-navy-400"
               }
             >
               {pos} {countsByPosition[pos]}/{quota[pos]}
             </span>
           ))}
-          <span className="text-zinc-500">{selected.size}/{rules.squad_size} players</span>
+          <span className="text-navy-400">{selected.size}/{rules.squad_size} players</span>
         </div>
-        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+        {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
         <button
           onClick={handleSave}
           disabled={!isComplete || isPending}
-          className="mt-2 rounded-lg bg-black px-4 py-1.5 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+          className="mt-2 rounded-lg bg-sky-500 px-4 py-1.5 text-sm font-medium text-navy-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {isPending ? "Saving..." : "Save squad"}
         </button>
@@ -206,17 +207,17 @@ export default function SquadBuilder({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search player..."
-          className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm text-black dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-50"
+          className="rounded-lg border border-navy-700 bg-navy-900 px-3 py-1.5 text-sm text-white"
         />
-        <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
+        <div className="flex gap-1 rounded-lg bg-navy-900 p-1">
           {(["ALL", ...POSITIONS] as const).map((p) => (
             <button
               key={p}
               onClick={() => setPositionFilter(p)}
               className={`rounded-md px-2.5 py-1 text-xs font-medium ${
                 positionFilter === p
-                  ? "bg-white text-black shadow-sm dark:bg-zinc-700 dark:text-white"
-                  : "text-zinc-500"
+                  ? "bg-sky-500 text-navy-950"
+                  : "text-navy-300"
               }`}
             >
               {p}
@@ -225,10 +226,10 @@ export default function SquadBuilder({
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="overflow-x-auto rounded-xl border border-navy-700 bg-navy-900">
         <table className="w-full text-left text-sm">
           <thead>
-            <tr className="border-b border-zinc-200 text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800">
+            <tr className="border-b border-navy-700 text-xs uppercase tracking-wide text-navy-400">
               <th className="px-4 py-2 font-medium"></th>
               <th className="px-4 py-2 font-medium">Player</th>
               <th className="px-4 py-2 font-medium">Team</th>
@@ -245,18 +246,23 @@ export default function SquadBuilder({
                 <tr
                   key={p.game_player_id}
                   onClick={() => !disabled && toggle(p)}
-                  className={`border-b border-zinc-100 last:border-0 dark:border-zinc-900 ${
-                    disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-900"
-                  } ${isSelected ? "bg-green-50 dark:bg-green-950/30" : ""}`}
+                  className={`border-b border-navy-800 last:border-0 ${
+                    disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:bg-navy-800"
+                  } ${isSelected ? "bg-sky-950/40" : ""}`}
                 >
                   <td className="px-4 py-2">
-                    <input type="checkbox" checked={isSelected} disabled={disabled} readOnly className="pointer-events-none" />
+                    <input type="checkbox" checked={isSelected} disabled={disabled} readOnly className="pointer-events-none accent-sky-500" />
                   </td>
-                  <td className="px-4 py-2 font-medium text-black dark:text-zinc-50">{p.full_name}</td>
-                  <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">{p.team_name}</td>
-                  <td className="px-4 py-2 text-zinc-600 dark:text-zinc-400">{p.position}</td>
-                  <td className="px-4 py-2 text-right text-zinc-600 dark:text-zinc-400">{Number(p.price).toFixed(1)}</td>
-                  <td className="px-4 py-2 text-right text-zinc-600 dark:text-zinc-400">
+                  <td className="px-4 py-2 font-medium text-white">
+                    <div className="flex items-center gap-2">
+                      <Badge teamName={p.team_name} size="sm" />
+                      {p.full_name}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-navy-300">{p.team_name}</td>
+                  <td className="px-4 py-2 text-navy-300">{p.position}</td>
+                  <td className="px-4 py-2 text-right text-navy-300">{Number(p.price).toFixed(1)}</td>
+                  <td className="px-4 py-2 text-right text-navy-300">
                     {p.hail_mary_score != null ? Number(p.hail_mary_score).toFixed(1) : "-"}
                   </td>
                 </tr>
@@ -265,7 +271,7 @@ export default function SquadBuilder({
           </tbody>
         </table>
         {filteredPlayers.length > 100 && (
-          <p className="border-t border-zinc-200 px-4 py-2 text-center text-xs text-zinc-500 dark:border-zinc-800">
+          <p className="border-t border-navy-700 px-4 py-2 text-center text-xs text-navy-400">
             Showing top 100 of {filteredPlayers.length} - narrow your search to see more.
           </p>
         )}
