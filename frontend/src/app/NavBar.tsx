@@ -19,6 +19,9 @@ export default async function NavBar() {
             <Link href="/rankings" className="text-navy-300 hover:text-sky-300">
               Rankings
             </Link>
+            <Link href="/fixtures" className="text-navy-300 hover:text-sky-300">
+              Fixtures
+            </Link>
             <Link href="/squads" className="text-navy-300 hover:text-sky-300">
               My Squads
             </Link>
