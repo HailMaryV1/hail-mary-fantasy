@@ -112,6 +112,16 @@ export default async function LineupPage({ params }: { params: Promise<{ id: str
     ((horizonData ?? []) as { game_player_id: number; avg_score: number }[]).map((r) => [r.game_player_id, Number(r.avg_score)])
   );
 
+  // squadPlayers comes from squad_players/game_players (not
+  // game_player_pool), so it needs its own status merge - query the same
+  // view by id instead of duplicating the "latest captured status" lookup.
+  const { data: statusRows } = await supabase
+    .from("game_player_pool")
+    .select("game_player_id, lineup, status")
+    .eq("game_slug", game.slug)
+    .in("game_player_id", (squadPlayers ?? []).map((sp) => sp.game_player_id));
+  const statusById = new Map((statusRows ?? []).map((r) => [r.game_player_id, r]));
+
   const players = (squadPlayers ?? []).map((sp) => ({
     game_player_id: sp.game_player_id,
     full_name: sp.game_players.players.full_name,
@@ -120,6 +130,8 @@ export default async function LineupPage({ params }: { params: Promise<{ id: str
     price: sp.game_players.price,
     is_starting: sp.is_starting,
     score: scoreByGamePlayerId.get(sp.game_player_id) ?? null,
+    lineup: statusById.get(sp.game_player_id)?.lineup ?? null,
+    status: statusById.get(sp.game_player_id)?.status ?? null,
   }));
 
   const suggestion =

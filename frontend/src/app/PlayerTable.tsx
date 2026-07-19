@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import StatusPill from "./StatusPill";
 
 export type ProjectionRow = {
   game_player_id: number;
@@ -11,6 +12,8 @@ export type ProjectionRow = {
   price: number;
   hail_mary_score: number;
   points_per_90: number;
+  lineup?: string | null;
+  status?: string | null;
 };
 
 type SortKey = "hail_mary_score" | "price" | "points_per_90";
@@ -157,7 +160,10 @@ export default function PlayerTable({ data, horizon }: { data: ProjectionRow[]; 
                   </td>
                   <td className="px-4 py-3 font-medium text-white">
                     <Link href={`/players/${row.game_player_id}?horizon=${horizon}`} className="block">
-                      {row.full_name}
+                      <span className="inline-flex items-center">
+                        {row.full_name}
+                        <StatusPill lineup={row.lineup} status={row.status} />
+                      </span>
                       <span className="block text-xs font-normal text-navy-400 sm:hidden">
                         {row.team_name} · {row.position}
                       </span>

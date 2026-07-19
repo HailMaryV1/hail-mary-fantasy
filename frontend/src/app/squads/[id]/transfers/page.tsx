@@ -28,6 +28,8 @@ type PoolPlayer = {
   team_name: string;
   price: number;
   hail_mary_score: number | null;
+  lineup: string | null;
+  status: string | null;
 };
 
 type HorizonRow = { game_player_id: number; avg_score: number };
@@ -116,7 +118,7 @@ export default async function TransfersPage({
     .eq("squad_id", squadId)
     .returns<SquadPlayerRow[]>();
 
-  const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
+  const squadPlayersBase = (squadPlayersRaw ?? []).map((sp) => ({
     game_player_id: sp.game_player_id,
     full_name: sp.game_players.players.full_name,
     position: sp.game_players.players.position,
@@ -131,6 +133,21 @@ export default async function TransfersPage({
     .select("*")
     .eq("game_slug", game.slug)
     .returns<PoolPlayer[]>();
+
+  // squadPlayersBase comes from squad_players/game_players (not
+  // game_player_pool), so it needs its own status merge - query the same
+  // view by id instead of duplicating the "latest captured status" lookup.
+  const { data: squadStatusRows } = await supabase
+    .from("game_player_pool")
+    .select("game_player_id, lineup, status")
+    .eq("game_slug", game.slug)
+    .in("game_player_id", squadPlayersBase.map((p) => p.game_player_id));
+  const statusById = new Map((squadStatusRows ?? []).map((r) => [r.game_player_id, r]));
+  const squadPlayers = squadPlayersBase.map((p) => ({
+    ...p,
+    lineup: statusById.get(p.game_player_id)?.lineup ?? null,
+    status: statusById.get(p.game_player_id)?.status ?? null,
+  }));
 
   const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
   const currentTotal = squadPlayers.reduce((sum, p) => sum + p.price, 0);

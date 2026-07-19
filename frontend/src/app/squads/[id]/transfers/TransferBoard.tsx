@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition } from "react";
 import { makeTransfer } from "../../actions";
 import PitchView from "../../PitchView";
 import Badge from "../../Badge";
+import StatusPill from "../../../StatusPill";
 
 const POSITIONS = ["ALL", "GK", "DEF", "MID", "FWD"] as const;
 type SortKey = "score" | "price";
@@ -17,6 +18,8 @@ type SquadMember = {
   price: number;
   is_starting: boolean;
   score: number | null;
+  lineup?: string | null;
+  status?: string | null;
 };
 
 type PoolCandidate = {
@@ -27,6 +30,8 @@ type PoolCandidate = {
   team_name: string;
   price: number;
   score: number | null;
+  lineup?: string | null;
+  status?: string | null;
 };
 
 /**
@@ -225,7 +230,10 @@ export default function TransferBoard({
                   <span className="flex items-center gap-2 text-white">
                     <Badge teamName={p.team_name} size="sm" />
                     <span>
-                      {p.full_name}
+                      <span className="inline-flex items-center">
+                        {p.full_name}
+                        <StatusPill lineup={p.lineup} status={p.status} />
+                      </span>
                       <span className="block text-xs text-navy-400">
                         {p.team_name} · {p.position} · £{Number(p.price).toFixed(1)}m
                       </span>

@@ -146,7 +146,7 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
     for pid, full_name, position, team_id in cur.fetchall():
         by_position.setdefault(position, []).append((pid, full_name, team_id))
 
-    matched, created, ambiguous, updated_team = 0, 0, 0, 0
+    matched, created, ambiguous, updated_team, status_written = 0, 0, 0, 0, 0
     seen_external_ids = set()
 
     for pc in players_data["playerChoices"]:
@@ -224,9 +224,10 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
         external_id = str(pc["realPlayerId"])
         seen_external_ids.add(external_id)
         if row:
+            game_player_id = row[0]
             cur.execute(
                 "update game_players set external_id = %s, position_code = %s, price = %s, is_active = true, updated_at = now() where id = %s",
-                (external_id, pc["position"], pc["price"], row[0]),
+                (external_id, pc["position"], pc["price"], game_player_id),
             )
         else:
             cur.execute(
@@ -236,11 +237,31 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
                 on conflict (game_id, external_id) do update
                     set player_id = excluded.player_id, position_code = excluded.position_code, price = excluded.price,
                         is_active = true, updated_at = now()
+                returning id
                 """,
                 (game_id, player_id, external_id, pc["position"], pc["price"]),
             )
+            game_player_id = cur.fetchone()[0]
+
+        # Pre-match status (lineup likelihood + availability) for this
+        # player's currently-editable gameweek - captured verbatim, upsert-
+        # overwrite per (game_player_id, gameweek) since only the latest
+        # known state matters (see migration 0027's docstring - the exact
+        # raw-string taxonomy isn't confirmed yet, so this just stores
+        # whatever FanTeam sends).
+        cur.execute(
+            """
+            insert into fanteam_player_status (game_player_id, gameweek, lineup, status, scraped_at)
+            values (%s, %s, %s, %s, now())
+            on conflict (game_player_id, gameweek) do update
+                set lineup = excluded.lineup, status = excluded.status, scraped_at = excluded.scraped_at
+            """,
+            (game_player_id, pc["gameweek"], pc.get("lineup"), pc.get("status")),
+        )
+        status_written += 1
 
     print(f"Players: {matched} matched ({updated_team} team corrected), {created} newly created, {ambiguous} ambiguous (skipped).")
+    print(f"Player status: {status_written} lineup/status rows captured.")
 
     # Anyone with an existing FanTeam game_players row whose external_id
     # wasn't in this live pull is no longer in the game (relegated,

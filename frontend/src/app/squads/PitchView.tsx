@@ -1,6 +1,7 @@
 "use client";
 
 import Kit from "./Kit";
+import StatusPill from "../StatusPill";
 
 export type PitchPlayer = {
   game_player_id: number;
@@ -9,6 +10,8 @@ export type PitchPlayer = {
   team_name: string;
   price?: number;
   score?: number | null;
+  lineup?: string | null;
+  status?: string | null;
 };
 
 type Formation = { gk: number; def: number; mid: number; fwd: number };
@@ -57,7 +60,10 @@ export default function PitchView({
         }`}
       >
         <Kit teamName={player.team_name} size="lg" />
-        <span className="w-full truncate text-[10px] font-medium text-white sm:text-xs">{player.full_name}</span>
+        <span className="flex w-full min-w-0 items-center justify-center gap-0.5">
+          <span className="min-w-0 truncate text-[10px] font-medium text-white sm:text-xs">{player.full_name}</span>
+          <StatusPill lineup={player.lineup} status={player.status} />
+        </span>
         {player.score != null && <span className="text-[10px] text-sky-400">{player.score.toFixed(1)} pts</span>}
         {player.price != null && <span className="text-[10px] text-navy-300">£{Number(player.price).toFixed(1)}m</span>}
       </button>

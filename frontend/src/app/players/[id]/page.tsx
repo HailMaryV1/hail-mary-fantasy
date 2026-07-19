@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Fragment } from "react";
 import { notFound } from "next/navigation";
 import { createServerSupabaseClient } from "@/lib/supabase";
+import StatusPill from "../../StatusPill";
+import { resolveStatusBadge } from "@/lib/playerStatus";
 
 // See rankings/page.tsx for why this is needed - Supabase's .rpc() POSTs
 // to a fixed URL regardless of parameters, so Next's fetch Data Cache can
@@ -136,6 +138,19 @@ export default async function PlayerDetail({
   const displayFixtures: HorizonFixtureRow[] = horizonFixtures ?? (fixtures ?? []).map((fx) => ({ ...fx, projection_id: fx.fixture_id, gameweek: 0, stats: null }));
   const showGameweeks = horizonFixtures !== null;
 
+  const { data: statusRow } = await supabase
+    .from("game_player_pool")
+    .select("lineup, status")
+    .eq("game_player_id", gamePlayerId)
+    .maybeSingle<{ lineup: string | null; status: string | null }>();
+  const statusBadge = resolveStatusBadge(statusRow?.lineup ?? null, statusRow?.status ?? null);
+  // Only the heavily-discounted statuses (injured/suspended/benched/not in
+  // squad/gameweek off) make the fixture-by-fixture breakdown below look
+  // wrong at a glance (it shows the pre-discount per-fixture math, since
+  // the multiplier applies once to the total - see compute_projections.py) -
+  // a light discount (might start/expected) doesn't need this called out.
+  const showStatusCaveat = statusBadge && statusBadge.tone !== "green";
+
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-2xl">
@@ -146,8 +161,9 @@ export default async function PlayerDetail({
           ← Back to rankings
         </Link>
 
-        <h1 className="mt-3 text-2xl font-semibold text-white">
+        <h1 className="mt-3 flex items-center text-2xl font-semibold text-white">
           {summary.full_name}
+          <StatusPill lineup={statusRow?.lineup} status={statusRow?.status} />
         </h1>
         <p className="mt-1 text-sm text-navy-300">
           {summary.team_name} · {summary.position} · £{Number(summary.price).toFixed(1)}
@@ -213,6 +229,12 @@ export default async function PlayerDetail({
             ? `Every fixture across the selected ${activeHorizon.gameweeks}-gameweek window, added up then averaged per gameweek.`
             : "Points/90 × fixture factor, per fixture. Fixture factor centers on 1.0 - above is a favourable fixture, below is tough."}
         </p>
+        {showStatusCaveat && (
+          <p className="mt-1 text-xs text-amber-400">
+            The fixture breakdown below is the full-fitness projection - the Hail Mary Score above is
+            discounted for this player&apos;s status ({statusBadge!.label}).
+          </p>
+        )}
 
         <div className="mt-3 overflow-x-auto rounded-xl border border-navy-700 bg-navy-900">
           <table className="w-full text-left text-sm">

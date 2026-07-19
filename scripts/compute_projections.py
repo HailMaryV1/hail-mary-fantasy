@@ -31,6 +31,18 @@ KNOWN LIMITATIONS (v1, unchanged):
     (migration 0010), falling back to the win% + half-draw% approximation
     otherwise - still mostly the approximation until matches are close.
 
+KNOWN LIMITATIONS (status multiplier, new):
+  - LINEUP_MULTIPLIERS / STATUS_MULTIPLIERS below are a best-guess mapping
+    of FanTeam's raw `lineup`/`status` strings (captured by
+    import_fanteam_live.py into fanteam_player_status - see migration
+    0027) to its own STA/BEN/NOT/EXP/MAY/NES/INJ/SUS/N-A/OFF badges - only
+    "expected"/"not_started" have been observed live so far (everyone
+    shows these, pre-season, ~5 weeks before kickoff). Every other key is
+    unverified. Unmatched values fail open to 1.0 by design - a wrong or
+    missing guess never wrongly zeroes a score. Run
+    scripts/verify_player_status_mapping.py once real variance appears
+    (close to matchday) to confirm/correct these.
+
 KNOWN LIMITATIONS (v2-decomposed, new):
   - Matrix line items with no historical data source to project from
     (shot_on_target, caused_penalty, caused_scoring_free_kick,
@@ -136,6 +148,52 @@ STAT_RATE_SCALE = {"goals_conceded_per_2": 0.5}
 # involvement_rate itself (capped [0, 1]).
 INVOLVEMENT_STATS = ("appearance", "minutes_60_plus", "played_full_match")
 
+# Guessed raw-string -> multiplier mapping for FanTeam's pre-match status
+# fields (`lineup`/`status` on each playerChoices record - see
+# scraper_fanteam.py / import_fanteam_live.py / migration 0027). ONLY
+# "expected" (lineup) and "not_started" (status) have been observed live
+# as of 2026-07-19, ~5 weeks before kickoff - every other key below is a
+# best-guess mapping to FanTeam's own STA/BEN/NOT/EXP/MAY/NES/INJ/SUS/
+# N-A/OFF badge scheme (from a user screenshot), NOT yet confirmed
+# against real variance. Any value not listed here (including both
+# values seen live today) intentionally falls through to 1.0 - fail open,
+# so a wrong or missing guess never wrongly zeroes a score. Run
+# scripts/verify_player_status_mapping.py once real variance shows up
+# (close to matchday) to confirm/correct these before fully trusting
+# them - see that script's own docstring, and KNOWN LIMITATIONS above.
+#
+# To retune: just edit the numbers below - each key is independent, no
+# other code needs to change.
+LINEUP_MULTIPLIERS = {
+    "confirmed_starting": 1.0,       # STA - confirmed starter, safest/highest
+    "expected": 0.95,                # EXP - expected but not yet confirmed (today's only observed value)
+    "might_start": 0.75,             # MAY - light discount
+    "not_expected": 0.35,            # NES - heavier discount, usually bench
+    "confirmed_benched": 0.1,        # BEN - confirmed not starting
+    "confirmed_not_in_squad": 0.0,   # NOT - confirmed out of the squad entirely
+}
+STATUS_MULTIPLIERS = {
+    "injured": 0.0,        # INJ
+    "suspended": 0.0,      # SUS
+    "not_available": 0.0,  # N/A
+    "gameweek_off": 0.0,   # OFF
+    # "not_started" (today's only observed value) is deliberately absent -
+    # unknown whether it even signals availability vs. an unrelated live
+    # match-progress flag (paired with minutes/points/totalPoints/form,
+    # all 0 pre-kickoff for an unrelated reason - see KNOWN LIMITATIONS
+    # above). Falls through to 1.0 either way, which is safe under both
+    # interpretations.
+}
+DEFAULT_STATUS_MULTIPLIER = 1.0
+
+
+def status_multiplier(lineup, status):
+    """Combined discount for one player's captured pre-match status.
+    Missing/unrecognized lineup or status independently no-op at 1.0."""
+    m = LINEUP_MULTIPLIERS.get(lineup, DEFAULT_STATUS_MULTIPLIER)
+    m *= STATUS_MULTIPLIERS.get(status, DEFAULT_STATUS_MULTIPLIER)
+    return m
+
 
 def load_env():
     for line in (ROOT / ".env").read_text().splitlines():
@@ -213,6 +271,25 @@ def fetch_scoring_rules(cur, game_id):
         (game_id,),
     )
     return {(applies_to, stat): float(points) for applies_to, stat, points in cur.fetchall()}
+
+
+def fetch_player_status(cur, game_id, gameweek):
+    """{game_player_id: (lineup, status)} for one gameweek - empty dict if
+    gameweek is None (period-mode, e.g. Dream Team, which has no live
+    status source at all) or nothing captured yet - the natural no-op
+    default that leaves every score unmultiplied."""
+    if gameweek is None:
+        return {}
+    cur.execute(
+        """
+        select gp.id, s.lineup, s.status
+        from fanteam_player_status s
+        join game_players gp on gp.id = s.game_player_id
+        where gp.game_id = %s and s.gameweek = %s
+        """,
+        (game_id, gameweek),
+    )
+    return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
 
 
 def compute_shrunk_rates(players, historical_rows):
@@ -397,6 +474,8 @@ def main():
         else:
             rows = fetch_fixtures_by_period(cur, game_id, period_start, period_end)
 
+        player_status = fetch_player_status(cur, game_id, gameweek)
+
         fixtures_by_player = {}
         all_kickoffs = []
         for player_id, fixture_id, kickoff_at, attack_score, clean_sheet_score in rows:
@@ -459,6 +538,12 @@ def main():
                     score += contribution
                     fixture_breakdown.append({**fx, "fixture_factor": factor, "contribution": contribution})
                 inputs = {"points_per_90": round(points_per_90, 3), "fixtures": fixture_breakdown}
+
+            lineup, status = player_status.get(game_player_id, (None, None))
+            multiplier = status_multiplier(lineup, status)
+            if multiplier != 1.0:
+                score *= multiplier
+            inputs["status"] = {"lineup": lineup, "status": status, "multiplier": multiplier}
 
             upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
             written += 1

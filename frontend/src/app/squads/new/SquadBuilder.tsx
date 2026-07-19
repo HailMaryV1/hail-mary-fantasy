@@ -3,6 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import { saveSquad } from "../actions";
 import Badge from "../Badge";
+import StatusPill from "../../StatusPill";
 
 type Player = {
   game_player_id: number;
@@ -12,6 +13,8 @@ type Player = {
   team_id: number;
   price: number;
   hail_mary_score: number | null;
+  lineup?: string | null;
+  status?: string | null;
 };
 
 type Formation = {
@@ -257,6 +260,7 @@ export default function SquadBuilder({
                     <div className="flex items-center gap-2">
                       <Badge teamName={p.team_name} size="sm" />
                       {p.full_name}
+                      <StatusPill lineup={p.lineup} status={p.status} />
                     </div>
                   </td>
                   <td className="px-4 py-2 text-navy-300">{p.team_name}</td>

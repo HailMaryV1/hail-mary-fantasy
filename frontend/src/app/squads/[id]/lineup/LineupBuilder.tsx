@@ -12,6 +12,8 @@ type Player = {
   price: number;
   is_starting: boolean;
   score: number | null;
+  lineup?: string | null;
+  status?: string | null;
 };
 
 type Formation = {

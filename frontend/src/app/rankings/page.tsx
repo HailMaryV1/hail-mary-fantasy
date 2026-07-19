@@ -91,6 +91,23 @@ export default async function RankingsPage({
     error = fallback.error;
   }
 
+  // Neither player_score_by_horizon nor player_projection_summary carries
+  // lineup/status - merge it in separately from game_player_pool (same
+  // view SquadBuilder/TransferBoard already read this from).
+  if (data && data.length > 0) {
+    const { data: statusRows } = await supabase
+      .from("game_player_pool")
+      .select("game_player_id, lineup, status")
+      .eq("game_slug", activeGame.slug)
+      .in("game_player_id", data.map((r) => r.game_player_id));
+    const statusById = new Map((statusRows ?? []).map((r) => [r.game_player_id, r]));
+    data = data.map((r) => ({
+      ...r,
+      lineup: statusById.get(r.game_player_id)?.lineup ?? null,
+      status: statusById.get(r.game_player_id)?.status ?? null,
+    }));
+  }
+
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-4xl">
