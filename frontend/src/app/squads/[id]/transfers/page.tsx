@@ -2,9 +2,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
+import { findBuyCandidatesForOutgoing, type TransferCandidate } from "@/lib/transferMatching";
 import TransferPlanner from "./TransferPlanner";
 import TransferBoard from "./TransferBoard";
 import RecentTransfers from "./RecentTransfers";
+import FixtureSwingPanel from "./FixtureSwingPanel";
 
 // See rankings/page.tsx for why this is needed - Supabase's .rpc() POSTs
 // to a fixed URL regardless of parameters, so Next's fetch Data Cache can
@@ -188,38 +190,52 @@ export default async function TransfersPage({
     ? new Map(horizonData!.map((r) => [r.game_player_id, r.avg_score]))
     : new Map((pool ?? []).map((p) => [p.game_player_id, p.hail_mary_score]));
 
+  // Position/budget/club-limit matching lives in lib/transferMatching.ts,
+  // shared with the watchlist "Transfer In" flow - this just adapts the
+  // page's own data shapes into TransferCandidate and reads the result back.
+  const poolCandidatesForMatching: TransferCandidate[] = (pool ?? []).map((p) => ({
+    gamePlayerId: p.game_player_id,
+    fullName: p.full_name,
+    teamId: p.team_id,
+    teamName: p.team_name,
+    price: Number(p.price),
+    score: scoreById.get(p.game_player_id) ?? 0,
+    position: p.position,
+  }));
+
   const recommendations: Recommendation[] = [];
   for (const outPlayer of squadPlayers) {
     const outScore = scoreById.get(outPlayer.game_player_id) ?? 0;
-    const affordableBudget = budgetRemaining + outPlayer.price;
-
-    const candidates = (pool ?? []).filter((p) => {
-      if (squadIds.has(p.game_player_id)) return false;
-      if (p.position !== outPlayer.position) return false;
-      if (p.price > affordableBudget) return false;
-      if (rules.max_per_club) {
-        const clubCountWithoutOut = (clubCounts.get(p.team_id) ?? 0) - (p.team_id === outPlayer.team_id ? 1 : 0);
-        if (clubCountWithoutOut + 1 > rules.max_per_club) return false;
-      }
-      return (scoreById.get(p.game_player_id) ?? 0) > outScore;
-    });
-
-    candidates.sort((a, b) => (scoreById.get(b.game_player_id) ?? 0) - (scoreById.get(a.game_player_id) ?? 0));
-    const best = candidates[0];
+    const matches = findBuyCandidatesForOutgoing(
+      poolCandidatesForMatching,
+      {
+        gamePlayerId: outPlayer.game_player_id,
+        fullName: outPlayer.full_name,
+        teamId: outPlayer.team_id,
+        teamName: outPlayer.team_name,
+        price: outPlayer.price,
+        score: outScore,
+        position: outPlayer.position,
+      },
+      squadIds,
+      budgetRemaining,
+      clubCounts,
+      rules.max_per_club
+    );
+    const best = matches[0];
     if (best) {
-      const bestScore = scoreById.get(best.game_player_id) ?? 0;
       recommendations.push({
         outGamePlayerId: outPlayer.game_player_id,
         outName: outPlayer.full_name,
         outTeam: outPlayer.team_name,
         outPrice: outPlayer.price,
         outScore,
-        inGamePlayerId: best.game_player_id,
-        inName: best.full_name,
-        inTeam: best.team_name,
-        inPrice: Number(best.price),
-        inScore: bestScore,
-        delta: bestScore - outScore,
+        inGamePlayerId: best.candidate.gamePlayerId,
+        inName: best.candidate.fullName,
+        inTeam: best.candidate.teamName,
+        inPrice: best.candidate.price,
+        inScore: best.candidate.score,
+        delta: best.delta,
         position: outPlayer.position,
       });
     }
@@ -270,7 +286,8 @@ export default async function TransfersPage({
 
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
-      <main className="mx-auto max-w-4xl">
+      <main className="mx-auto grid max-w-6xl grid-cols-1 gap-8 lg:grid-cols-[1fr_360px]">
+      <div>
         <h1 className="text-2xl font-semibold text-white">{squad.name}: transfers</h1>
         <p className="mt-1 text-sm text-navy-300">
           {game.display_name} · £{budgetRemaining.toFixed(1)}m in the bank
@@ -369,6 +386,14 @@ export default async function TransfersPage({
         </div>
 
         {hasCalendar && !seasonStarted && <RecentTransfers squadId={squadId} transfers={recentTransfers} />}
+      </div>
+
+      <FixtureSwingPanel
+        gameId={squad.game_id}
+        gameSlug={game.slug}
+        planningGameweek={planningGameweek}
+        squadPlayers={squadPlayers.map((p) => ({ game_player_id: p.game_player_id, team_name: p.team_name }))}
+      />
       </main>
     </div>
   );

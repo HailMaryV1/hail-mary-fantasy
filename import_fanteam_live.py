@@ -246,20 +246,28 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
             )
             game_player_id = cur.fetchone()[0]
 
-        # Pre-match status (lineup likelihood + availability) for this
-        # player's currently-editable gameweek - captured verbatim, upsert-
-        # overwrite per (game_player_id, gameweek) since only the latest
-        # known state matters (see migration 0027's docstring - the exact
+        # Pre-match status (lineup likelihood + availability) plus form/
+        # minutes/points (FanTeam's own recent-performance fields, also
+        # captured verbatim - see migration 0029) for this player's
+        # currently-editable gameweek - upsert-overwrite per
+        # (game_player_id, gameweek) since only the latest known state
+        # matters (see migration 0027's docstring - the exact lineup/status
         # raw-string taxonomy isn't confirmed yet, so this just stores
         # whatever FanTeam sends).
         cur.execute(
             """
-            insert into fanteam_player_status (game_player_id, gameweek, lineup, status, scraped_at)
-            values (%s, %s, %s, %s, now())
+            insert into fanteam_player_status
+                (game_player_id, gameweek, lineup, status, scraped_at, form, minutes, total_points, last_points)
+            values (%s, %s, %s, %s, now(), %s, %s, %s, %s)
             on conflict (game_player_id, gameweek) do update
-                set lineup = excluded.lineup, status = excluded.status, scraped_at = excluded.scraped_at
+                set lineup = excluded.lineup, status = excluded.status, scraped_at = excluded.scraped_at,
+                    form = excluded.form, minutes = excluded.minutes,
+                    total_points = excluded.total_points, last_points = excluded.last_points
             """,
-            (game_player_id, pc["gameweek"], pc.get("lineup"), pc.get("status")),
+            (
+                game_player_id, pc["gameweek"], pc.get("lineup"), pc.get("status"),
+                pc.get("form"), pc.get("minutes"), pc.get("totalPoints"), pc.get("lastPoints"),
+            ),
         )
         status_written += 1
 
