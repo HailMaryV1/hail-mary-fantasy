@@ -31,6 +31,9 @@ export default async function NavBar() {
             <Link href="/watchlist" className="shrink-0 text-navy-300 hover:text-sky-300">
               Watchlist
             </Link>
+            <Link href="/activity" className="shrink-0 text-navy-300 hover:text-sky-300">
+              Activity
+            </Link>
             <Link href="/squads" className="shrink-0 text-navy-300 hover:text-sky-300">
               My Squads
             </Link>

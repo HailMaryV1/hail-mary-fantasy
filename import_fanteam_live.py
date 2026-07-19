@@ -47,6 +47,9 @@ import psycopg2
 import psycopg2.extras
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "scripts"))
+from activity_log import log_event  # noqa: E402
+
 SEASON = "2026/27"
 
 # FanTeam's live API spells some team names differently from our
@@ -149,6 +152,11 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
     for pid, full_name, position, team_id in cur.fetchall():
         by_position.setdefault(position, []).append((pid, full_name, team_id))
 
+    # For activity_log summaries ("moved from X to Y") - teams table is
+    # tiny, cheap to load whole.
+    cur.execute("select id, name from teams")
+    team_name_by_id = {tid: name for tid, name in cur.fetchall()}
+
     matched, created, ambiguous, updated_team, status_written = 0, 0, 0, 0, 0
     seen_external_ids = set()
 
@@ -214,6 +222,15 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
             if canonical_team_id != live_team_id:
                 cur.execute("update players set team_id = %s where id = %s", (live_team_id, player_id))
                 updated_team += 1
+                old_team_name = team_name_by_id.get(canonical_team_id, "an unknown club")
+                new_team_name = team_name_by_id.get(live_team_id, "an unknown club")
+                log_event(
+                    cur,
+                    "team_changed",
+                    f"{canonical_name} moved from {old_team_name} to {new_team_name}",
+                    game_id=game_id,
+                    details={"player_id": player_id, "old_team_id": canonical_team_id, "new_team_id": live_team_id},
+                )
         else:
             cur.execute(
                 "insert into players (full_name, team_id, position) values (%s, %s, %s) returning id",
@@ -233,6 +250,14 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
                 (external_id, pc["position"], pc["price"], game_player_id),
             )
         else:
+            live_team_name = team_name_by_id.get(live_team_id, "an unknown club")
+            log_event(
+                cur,
+                "player_added",
+                f"{live_full_name} added to FanTeam ({live_position}, {live_team_name})",
+                game_id=game_id,
+                details={"player_id": player_id, "position": live_position, "team_id": live_team_id},
+            )
             cur.execute(
                 """
                 insert into game_players (game_id, player_id, external_id, position_code, price, is_active)

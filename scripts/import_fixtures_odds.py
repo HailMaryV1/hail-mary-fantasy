@@ -30,6 +30,8 @@ from pathlib import Path
 
 import psycopg2
 
+from activity_log import log_event
+
 # European qualifier fixtures pull in team names with characters Windows'
 # default console encoding (cp1252) can't print (e.g. FK Sabah, Slovan
 # Bratislava) - crashed a real run mid-import. GitHub Actions' Linux
@@ -106,7 +108,14 @@ def resolve_team_id(cur, name):
     return team_id
 
 
-def upsert_fixture(cur, external_id, competition, season, home_team_id, away_team_id, kickoff_at):
+def upsert_fixture(cur, external_id, competition, season, home_team_id, away_team_id, kickoff_at, home_name, away_name):
+    # Checked before the upsert so we know whether this fixture is
+    # genuinely new or just being refreshed, and whether its kickoff time
+    # actually moved (a real reschedule) - the upsert itself is a blind
+    # overwrite either way, this is purely for activity_log.
+    cur.execute("select id, kickoff_at from fixtures where external_id = %s", (external_id,))
+    existing = cur.fetchone()
+
     cur.execute(
         """
         insert into fixtures (external_id, competition, season, home_team_id, away_team_id, kickoff_at)
@@ -121,7 +130,26 @@ def upsert_fixture(cur, external_id, competition, season, home_team_id, away_tea
         """,
         (external_id, competition, season, home_team_id, away_team_id, kickoff_at),
     )
-    return cur.fetchone()[0]
+    fixture_id = cur.fetchone()[0]
+
+    if existing is None:
+        log_event(
+            cur,
+            "fixture_added",
+            f"{home_name} vs {away_name} added, kickoff {kickoff_at.strftime('%d %b %Y %H:%M')} UTC",
+            fixture_id=fixture_id,
+            details={"home_team_id": home_team_id, "away_team_id": away_team_id, "kickoff_at": kickoff_at.isoformat()},
+        )
+    elif existing[1] != kickoff_at:
+        log_event(
+            cur,
+            "fixture_rescheduled",
+            f"{home_name} vs {away_name} moved from {existing[1].strftime('%d %b %Y %H:%M')} to {kickoff_at.strftime('%d %b %Y %H:%M')} UTC",
+            fixture_id=fixture_id,
+            details={"old_kickoff_at": existing[1].isoformat(), "new_kickoff_at": kickoff_at.isoformat()},
+        )
+
+    return fixture_id
 
 
 def insert_odds(cur, fixture_id, bookmaker, home_price, draw_price, away_price):
@@ -158,7 +186,8 @@ def main():
                 home_id = resolve_team_id(cur, event["home_team"])
                 away_id = resolve_team_id(cur, event["away_team"])
                 fixture_id = upsert_fixture(
-                    cur, event["id"], competition, season_for(kickoff), home_id, away_id, kickoff
+                    cur, event["id"], competition, season_for(kickoff), home_id, away_id, kickoff,
+                    event["home_team"], event["away_team"],
                 )
                 total_fixtures += 1
 

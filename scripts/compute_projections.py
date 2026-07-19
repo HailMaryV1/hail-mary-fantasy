@@ -77,6 +77,8 @@ from pathlib import Path
 import psycopg2
 import psycopg2.extras
 
+from activity_log import log_event
+
 ROOT = Path(__file__).resolve().parent.parent
 HISTORICAL_SEASON = "2025/26"
 UPCOMING_SEASON = "2026/27"
@@ -440,7 +442,8 @@ def main():
             select gp.id, p.position, gp.player_id,
                    gps.total_points, gps.minutes_played,
                    gps.goals, gps.assists, gps.clean_sheets, gps.saves,
-                   gps.goals_conceded, gps.yellow_cards, gps.red_cards
+                   gps.goals_conceded, gps.yellow_cards, gps.red_cards,
+                   p.full_name
             from game_players gp
             join players p on p.id = gp.player_id
             join game_player_stats gps
@@ -451,6 +454,7 @@ def main():
         )
         raw_players = cur.fetchall()
         players = [(r[0], r[1], r[2]) for r in raw_players]
+        full_name_by_game_player_id = {r[0]: r[12] for r in raw_players}
         historical_by_player_id = {
             r[2]: {
                 "total_points": float(r[3]), "minutes_played": r[4],
@@ -547,6 +551,32 @@ def main():
             if multiplier != 1.0:
                 score *= multiplier
             inputs["status"] = {"lineup": lineup, "status": status, "multiplier": multiplier}
+
+            # activity_log: only for real gameweek-anchored recomputes -
+            # period-mode (Dream Team) isn't part of the automated
+            # pipeline anyway (no live scrape source yet). Same 0.5
+            # threshold as frontend/src/lib/watchlistAlerts.ts's
+            # SCORE_INCREASE_THRESHOLD, kept numerically consistent
+            # rather than inventing a second number.
+            if gameweek is not None:
+                cur.execute(
+                    "select hail_mary_score from projections where algorithm_version_id = %s and game_player_id = %s and gameweek = %s",
+                    (algo_id, game_player_id, gameweek),
+                )
+                prev_row = cur.fetchone()
+                if prev_row is not None:
+                    old_score = float(prev_row[0])
+                    if abs(score - old_score) >= 0.5:
+                        name = full_name_by_game_player_id.get(game_player_id, "A player")
+                        direction = "rose" if score > old_score else "fell"
+                        log_event(
+                            cur,
+                            "score_changed",
+                            f"{name}'s Hail Mary Score {direction} from {old_score:.1f} to {score:.1f} (GW{gameweek})",
+                            game_id=game_id,
+                            game_player_id=game_player_id,
+                            details={"gameweek": gameweek, "old_score": round(old_score, 3), "new_score": round(score, 3)},
+                        )
 
             upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
             written += 1
