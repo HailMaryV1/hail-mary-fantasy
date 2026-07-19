@@ -167,21 +167,20 @@ export default async function TransfersPage({
   //     affect - see lib/gameweek.ts), via the explicit-start RPC variant
   //     since the auto-anchoring one would still point at a gameweek
   //     that's already partway through.
+  // .returns<T[]>() on an .rpc() chain trips postgrest-js's own "can't
+  // cast single object to array" false-positive without a generated
+  // Database type - cast the destructured data after await instead.
   let horizonData: HorizonRow[] | null = null;
   if (hasCalendar && !seasonStarted) {
-    const { data } = await supabase
-      .rpc("player_score_by_horizon", { p_game_slug: game.slug, p_num_gameweeks: 1 })
-      .returns<HorizonRow[]>();
-    horizonData = data;
+    const { data } = await supabase.rpc("player_score_by_horizon", { p_game_slug: game.slug, p_num_gameweeks: 1 });
+    horizonData = data as HorizonRow[] | null;
   } else if (hasCalendar && seasonStarted && planningGameweek !== null) {
-    const { data } = await supabase
-      .rpc("player_score_by_horizon_from", {
-        p_game_slug: game.slug,
-        p_start_gameweek: planningGameweek,
-        p_num_gameweeks: activeHorizon.gameweeks,
-      })
-      .returns<HorizonRow[]>();
-    horizonData = data;
+    const { data } = await supabase.rpc("player_score_by_horizon_from", {
+      p_game_slug: game.slug,
+      p_start_gameweek: planningGameweek,
+      p_num_gameweeks: activeHorizon.gameweeks,
+    });
+    horizonData = data as HorizonRow[] | null;
   }
   const horizonAvailable = hasCalendar && horizonData !== null && horizonData.length > 0;
 

@@ -71,7 +71,10 @@ POSITION_MAP = {
 
 
 def load_env():
-    for line in (ROOT / ".env").read_text().splitlines():
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return  # CI sets real env vars directly - no .env file there.
+    for line in env_path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -279,6 +282,13 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
 
 
 def main():
+    # --skip-fixtures: only import players (prices/positions/lineup/status)
+    # - used by the automated pipeline (scripts/refresh_all.py), which only
+    # ever runs scraper_fanteam.py --players-only and so has no
+    # fanteam_fixtures_raw.json to read. Fixture/gameweek mapping stays a
+    # manual, occasional path (needs a real login - see scraper_fanteam.py).
+    skip_fixtures = "--skip-fixtures" in sys.argv[1:]
+
     load_env()
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     conn.autocommit = False
@@ -288,16 +298,18 @@ def main():
         cur.execute("select id from fantasy_games where slug = 'fanteam'")
         game_id = cur.fetchone()[0]
 
-        fixtures_data = json.loads((ROOT / "fanteam_fixtures_raw.json").read_text(encoding="utf-8"))
         players_data = json.loads((ROOT / "fanteam_players_raw.json").read_text(encoding="utf-8"))
+        fixtures_data = None if skip_fixtures else json.loads((ROOT / "fanteam_fixtures_raw.json").read_text(encoding="utf-8"))
 
         team_id_by_real_id = {}
-        for t in fixtures_data["realTeams"]:
-            team_id_by_real_id[t["id"]] = resolve_team_id(cur, t["name"])
+        if fixtures_data is not None:
+            for t in fixtures_data["realTeams"]:
+                team_id_by_real_id[t["id"]] = resolve_team_id(cur, t["name"])
         for t in players_data["realTeams"]:
             team_id_by_real_id.setdefault(t["id"], resolve_team_id(cur, t["name"]))
 
-        import_fixtures(cur, game_id, fixtures_data, team_id_by_real_id)
+        if fixtures_data is not None:
+            import_fixtures(cur, game_id, fixtures_data, team_id_by_real_id)
         import_players(cur, game_id, players_data, team_id_by_real_id)
 
         conn.commit()

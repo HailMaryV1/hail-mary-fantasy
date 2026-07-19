@@ -8,8 +8,9 @@ export type PitchPlayer = {
   full_name: string;
   position: "GK" | "DEF" | "MID" | "FWD";
   team_name: string;
-  price?: number;
-  score?: number | null;
+  is_starting: boolean;
+  price: number;
+  score: number | null;
   lineup?: string | null;
   status?: string | null;
 };

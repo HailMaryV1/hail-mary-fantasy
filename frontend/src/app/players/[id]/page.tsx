@@ -91,10 +91,13 @@ export default async function PlayerDetail({
   // only available for games with a published gameweek calendar (query
   // returns empty for Dream Team, which has none). Falls back to the
   // single latest-computed projection otherwise.
-  const { data: horizonSummaryRows } = await supabase
+  // .returns<T[]>() on an .rpc() chain trips postgrest-js's own "can't
+  // cast single object to array" false-positive without a generated
+  // Database type - cast the destructured data after await instead.
+  const { data: horizonSummaryRowsRaw } = await supabase
     .rpc("player_score_by_horizon", { p_game_slug: gameSlug, p_num_gameweeks: activeHorizon.gameweeks })
-    .eq("game_player_id", gamePlayerId)
-    .returns<HorizonSummaryRow[]>();
+    .eq("game_player_id", gamePlayerId);
+  const horizonSummaryRows = horizonSummaryRowsRaw as HorizonSummaryRow[] | null;
   const horizonSummary = horizonSummaryRows?.[0] ?? null;
 
   let summary: SummaryRow | null = null;
@@ -113,10 +116,11 @@ export default async function PlayerDetail({
       period_start: "",
       period_end: "",
     };
-    const { data } = await supabase
-      .rpc("player_projection_fixtures_by_horizon", { p_game_player_id: gamePlayerId, p_num_gameweeks: activeHorizon.gameweeks })
-      .returns<HorizonFixtureRow[]>();
-    horizonFixtures = data;
+    const { data } = await supabase.rpc("player_projection_fixtures_by_horizon", {
+      p_game_player_id: gamePlayerId,
+      p_num_gameweeks: activeHorizon.gameweeks,
+    });
+    horizonFixtures = data as HorizonFixtureRow[] | null;
   } else {
     const { data: summaryRow } = await supabase
       .from("player_projection_summary")

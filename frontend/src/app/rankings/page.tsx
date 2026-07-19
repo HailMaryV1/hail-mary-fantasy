@@ -58,14 +58,19 @@ export default async function RankingsPage({
   // Gameweek-based horizon averaging only works for games with a real
   // published calendar (currently FanTeam - see migration 0016). Try it
   // first; an empty result means this game doesn't support it yet.
-  const { data: horizonData, error: horizonError } = await supabase
-    .rpc("player_score_by_horizon", { p_game_slug: activeGame.slug, p_num_gameweeks: activeHorizon.gameweeks })
-    .returns<HorizonRow[]>();
+  // .returns<T[]>() on an .rpc() chain trips postgrest-js's own "can't
+  // cast single object to array" false-positive without a generated
+  // Database type - cast the destructured data after await instead.
+  const { data: horizonDataRaw, error: horizonError } = await supabase.rpc("player_score_by_horizon", {
+    p_game_slug: activeGame.slug,
+    p_num_gameweeks: activeHorizon.gameweeks,
+  });
+  const horizonData = horizonDataRaw as HorizonRow[] | null;
 
   const horizonAvailable = !horizonError && horizonData && horizonData.length > 0;
 
   let data: FullProjectionRow[] | null = null;
-  let error = horizonAvailable ? null : null;
+  let error: { message: string } | null = null;
 
   if (horizonAvailable) {
     data = horizonData!.map((r) => ({

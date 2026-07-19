@@ -69,16 +69,22 @@ export default async function ComparePage({
     if (!gamePlayer) continue;
     const gameSlug = gamePlayer.fantasy_games.slug;
 
-    const { data: horizonRows } = await supabase
+    // .returns<T[]>() on an .rpc() chain trips postgrest-js's own
+    // "can't cast single object to array" false-positive when there's no
+    // generated Database type backing the call (not the case here) - cast
+    // the destructured data after await instead, same runtime shape.
+    const { data: horizonRowsRaw } = await supabase
       .rpc("player_score_by_horizon", { p_game_slug: gameSlug, p_num_gameweeks: activeHorizon.gameweeks })
-      .eq("game_player_id", gamePlayerId)
-      .returns<HorizonSummaryRow[]>();
+      .eq("game_player_id", gamePlayerId);
+    const horizonRows = horizonRowsRaw as HorizonSummaryRow[] | null;
     const horizonRow = horizonRows?.[0] ?? null;
 
     if (horizonRow) {
-      const { data: fixtureRows } = await supabase
-        .rpc("player_projection_fixtures_by_horizon", { p_game_player_id: gamePlayerId, p_num_gameweeks: 1 })
-        .returns<{ opponent: string; is_home: boolean }[]>();
+      const { data: fixtureRowsRaw } = await supabase.rpc("player_projection_fixtures_by_horizon", {
+        p_game_player_id: gamePlayerId,
+        p_num_gameweeks: 1,
+      });
+      const fixtureRows = fixtureRowsRaw as { opponent: string; is_home: boolean }[] | null;
       players.push({
         gamePlayerId,
         fullName: horizonRow.full_name,

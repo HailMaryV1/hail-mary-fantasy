@@ -22,12 +22,20 @@ RUN:
 
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 
 import psycopg2
+
+# European qualifier fixtures pull in team names with characters Windows'
+# default console encoding (cp1252) can't print (e.g. FK Sabah, Slovan
+# Bratislava) - crashed a real run mid-import. GitHub Actions' Linux
+# runners default to UTF-8 already, but this makes it safe everywhere.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent.parent
 ODDS_BASE = "https://api.the-odds-api.com/v4"
@@ -43,7 +51,10 @@ ODDS_NAME_OVERRIDES = {
 
 
 def load_env():
-    for line in (ROOT / ".env").read_text().splitlines():
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return  # CI sets real env vars directly - no .env file there.
+    for line in env_path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
