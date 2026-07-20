@@ -8,6 +8,7 @@ import TransferPlanner from "./TransferPlanner";
 import TransferBoard from "./TransferBoard";
 import RecentTransfers from "./RecentTransfers";
 import FixtureSwingPanel from "./FixtureSwingPanel";
+import MaryRecommendationsPanel from "./MaryRecommendationsPanel";
 
 const GAMEWEEK_PREVIEW_COUNT = 5;
 
@@ -364,6 +365,21 @@ export default async function TransfersPage({
           {game.display_name} · £{budgetRemaining.toFixed(1)}m in the bank
         </p>
 
+        {game.slug === "fanteam" && (
+          <div className="mt-4">
+            <MaryRecommendationsPanel
+              squad={{
+                id: squad.id,
+                name: squad.name,
+                free_transfers: squad.free_transfers,
+                wildcard_1_used_gameweek: squad.wildcard_1_used_gameweek,
+                wildcard_2_used_gameweek: squad.wildcard_2_used_gameweek,
+                game_id: squad.game_id,
+              }}
+            />
+          </div>
+        )}
+
         {!hasCalendar ? (
           <p className="mt-1 text-xs text-amber-400">
             Weekly transfer limits aren&apos;t enforced yet - no gameweek calendar exists for{" "}
@@ -466,6 +482,7 @@ export default async function TransfersPage({
             wildcardActiveThisWeek={wildcardActiveThisWeek}
             wc1Available={wc1Available}
             wc2Available={wc2Available}
+            isNfl={game.slug === "nfl-fanteam"}
           />
         </div>
 

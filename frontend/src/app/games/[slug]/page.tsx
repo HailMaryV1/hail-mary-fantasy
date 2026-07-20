@@ -9,11 +9,16 @@ export const dynamic = "force-dynamic";
 // deliberately explicit rather than assuming every game has every
 // feature. Dream Team has no live scrape source (a longstanding,
 // documented gap elsewhere in this app) so Ask Mary/Performance Lab/
-// Watchlist/Activity would just be empty or misleading there. NFL
-// FanTeam has no data model yet at all.
+// Watchlist/Activity would just be empty or misleading there. NFL FanTeam
+// has real 2025 historical stats and squad-building now (Stage 1-3), but
+// no live tournament/fixture schedule yet (the next one opens close to
+// the 2026-27 season, ~Sept 2026) - so fixtures/watchlist/activity/Ask
+// Mary/Performance Lab, which all assume an in-season data source, stay
+// off until that exists.
 const GAME_FEATURES: Record<string, { rankings: boolean; fixtures: boolean; watchlist: boolean; activity: boolean; askMary: boolean; performanceLab: boolean }> = {
   fanteam: { rankings: true, fixtures: true, watchlist: true, activity: true, askMary: true, performanceLab: true },
   dreamteam: { rankings: true, fixtures: true, watchlist: false, activity: false, askMary: false, performanceLab: false },
+  "nfl-fanteam": { rankings: true, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false },
 };
 
 export default async function GameHubPage({ params }: { params: Promise<{ slug: string }> }) {

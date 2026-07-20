@@ -3,17 +3,23 @@
 import { useMemo, useState, useTransition } from "react";
 import { makeTransfer } from "../../actions";
 import PitchView from "../../PitchView";
+import NflRosterView from "../../NflRosterView";
 import Badge from "../../Badge";
 import StatusPill from "../../../StatusPill";
 import { shortenPlayerName } from "@/lib/playerName";
 
-const POSITIONS = ["ALL", "GK", "DEF", "MID", "FWD"] as const;
 type SortKey = "score" | "price";
 
+// position is a plain string, not a literal union - shared between soccer
+// (GK/DEF/MID/FWD) and NFL (QB/RB/WR/TE/DST) squads. Nothing in this file
+// actually depends on specific position values beyond string equality
+// (the same-position swap check) and display text, so widening this was
+// a safe, local-only change to let NFL squads flow through the same
+// component rather than needing a full parallel TransferBoard.
 type SquadMember = {
   game_player_id: number;
   full_name: string;
-  position: "GK" | "DEF" | "MID" | "FWD";
+  position: string;
   team_id: number;
   team_name: string;
   price: number;
@@ -27,7 +33,7 @@ type SquadMember = {
 type PoolCandidate = {
   game_player_id: number;
   full_name: string;
-  position: "GK" | "DEF" | "MID" | "FWD";
+  position: string;
   team_id: number;
   team_name: string;
   price: number;
@@ -57,6 +63,7 @@ export default function TransferBoard({
   wildcardActiveThisWeek,
   wc1Available,
   wc2Available,
+  isNfl,
 }: {
   squadId: number;
   squadMembers: SquadMember[];
@@ -70,10 +77,11 @@ export default function TransferBoard({
   wildcardActiveThisWeek: boolean;
   wc1Available: boolean;
   wc2Available: boolean;
+  isNfl?: boolean;
 }) {
   const [selectedOutId, setSelectedOutId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
-  const [positionFilter, setPositionFilter] = useState<(typeof POSITIONS)[number]>("ALL");
+  const [positionFilter, setPositionFilter] = useState<string>("ALL");
   const [teamFilter, setTeamFilter] = useState("ALL");
   const [sortKey, setSortKey] = useState<SortKey>("score");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -82,6 +90,7 @@ export default function TransferBoard({
   const [isPending, startTransition] = useTransition();
 
   const teams = useMemo(() => Array.from(new Set(pool.map((p) => p.team_name))).sort(), [pool]);
+  const positions = useMemo(() => ["ALL", ...Array.from(new Set(pool.map((p) => p.position))).sort()], [pool]);
 
   const selectedOut = squadMembers.find((p) => p.game_player_id === selectedOutId) ?? null;
   const startingPlayers = squadMembers.filter((p) => p.is_starting);
@@ -183,7 +192,7 @@ export default function TransferBoard({
             className="mb-2 w-full rounded-lg border border-navy-700 bg-navy-950 px-3 py-1.5 text-sm text-white"
           />
           <div className="mb-2 flex flex-wrap gap-1">
-            {POSITIONS.map((p) => (
+            {positions.map((p) => (
               <button
                 key={p}
                 onClick={() => setPositionFilter(p)}
@@ -254,13 +263,22 @@ export default function TransferBoard({
           </div>
         </div>
 
-        <PitchView
-          starting={startingPlayers}
-          bench={benchPlayers}
-          selectedId={selectedOutId}
-          swappableIds={null}
-          onSelect={(player) => handleSquadSelect(player.game_player_id)}
-        />
+        {isNfl ? (
+          <NflRosterView
+            players={squadMembers}
+            selectedId={selectedOutId}
+            swappableIds={null}
+            onSelect={(player) => handleSquadSelect(player.game_player_id)}
+          />
+        ) : (
+          <PitchView
+            starting={startingPlayers}
+            bench={benchPlayers}
+            selectedId={selectedOutId}
+            swappableIds={null}
+            onSelect={(player) => handleSquadSelect(player.game_player_id)}
+          />
+        )}
       </div>
     </div>
   );

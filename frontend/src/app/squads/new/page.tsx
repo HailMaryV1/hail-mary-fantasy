@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import SquadBuilder from "./SquadBuilder";
+import NflSquadBuilder from "./NflSquadBuilder";
 
 export default async function NewSquadPage({
   searchParams,
@@ -8,7 +9,7 @@ export default async function NewSquadPage({
   searchParams: Promise<{ game?: string; squad?: string }>;
 }) {
   const { game: gameSlug, squad: squadParam } = await searchParams;
-  if (gameSlug !== "dreamteam" && gameSlug !== "fanteam") redirect("/squads");
+  if (gameSlug !== "dreamteam" && gameSlug !== "fanteam" && gameSlug !== "nfl-fanteam") redirect("/squads");
 
   const supabase = await createAuthServerClient();
 
@@ -74,15 +75,25 @@ export default async function NewSquadPage({
         </p>
 
         <div className="mt-6">
-          <SquadBuilder
-            gameSlug={gameSlug}
-            rules={rules}
-            formations={formations ?? []}
-            players={players ?? []}
-            editingSquadId={editingSquadId}
-            initialName={initialName}
-            initialSelected={initialSelected}
-          />
+          {gameSlug === "nfl-fanteam" ? (
+            <NflSquadBuilder
+              rules={rules}
+              players={players ?? []}
+              editingSquadId={editingSquadId}
+              initialName={initialName}
+              initialSelected={initialSelected}
+            />
+          ) : (
+            <SquadBuilder
+              gameSlug={gameSlug}
+              rules={rules}
+              formations={formations ?? []}
+              players={players ?? []}
+              editingSquadId={editingSquadId}
+              initialName={initialName}
+              initialSelected={initialSelected}
+            />
+          )}
         </div>
       </main>
     </div>

@@ -7,9 +7,7 @@ import {
   type SwingOpportunityInput,
   type SwingOpportunityScore,
 } from "@/lib/swingOpportunity";
-import Badge from "../../Badge";
-import AddToWatchlistButton from "./AddToWatchlistButton";
-import { getTeamColors } from "@/lib/teamColors";
+import SwingTeamRow, { type SwingRecPlayer } from "./SwingTeamRow";
 
 type RawFixtureJoin = {
   gameweek: number;
@@ -160,112 +158,58 @@ export default async function FixtureSwingPanel({
     return candidates.find((c) => c.gamePlayerId === gamePlayerId);
   }
 
-  function recCard(score: SwingOpportunityScore, label: string) {
+  function toRecPlayer(score: SwingOpportunityScore, label: string): SwingRecPlayer | null {
     const c = candidateName(score.gamePlayerId);
     if (!c) return null;
-    return (
-      <div key={`${label}-${score.gamePlayerId}`} className="rounded-lg border border-navy-800 bg-navy-950 p-2">
-        <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-400">{label}</p>
-        <p className="mt-0.5 text-sm font-medium text-white">{c.fullName}</p>
-        <p className="text-[11px] text-navy-400">
-          {c.position} · £{c.price.toFixed(1)}m · HMS {c.hailMaryScore != null ? c.hailMaryScore.toFixed(1) : "-"} · xPts5{" "}
-          {c.expectedPointsNext5 != null ? c.expectedPointsNext5.toFixed(1) : "-"}
-        </p>
-        <div className="mt-1.5">
-          <AddToWatchlistButton
-            gameId={gameId}
-            gamePlayerId={c.gamePlayerId}
-            defaultReasons={label === "Best Differential" ? ["differential", "fixture_swing"] : ["fixture_swing"]}
-          />
-        </div>
-      </div>
-    );
+    return {
+      label,
+      gamePlayerId: c.gamePlayerId,
+      fullName: c.fullName,
+      position: c.position,
+      price: c.price,
+      hailMaryScore: c.hailMaryScore,
+      expectedPointsNext5: c.expectedPointsNext5,
+    };
   }
 
-  function teamCard(rating: TeamFixtureRating, kind: "good" | "bad") {
+  function buildRow(rating: TeamFixtureRating, kind: "good" | "bad") {
     const strip = buildFixtureStrip(rating.teamName, gwRatios, stripMeta, 5);
     const teamScores = scoresForTeam(rating.teamName);
 
-    let recs: (SwingOpportunityScore | null)[] = [];
+    let recScores: (SwingOpportunityScore | null)[] = [];
     let recLabels: string[] = [];
+    let noRecsMessage: string;
     if (kind === "good") {
       const { bestOverall, bestValue, bestDifferential } = selectClubRecommendations(teamScores, candidatesForTeam(rating.teamName));
-      recs = [bestOverall, bestValue, bestDifferential];
+      recScores = [bestOverall, bestValue, bestDifferential];
       recLabels = ["Best Overall", "Best Value", "Best Differential"];
+      noRecsMessage = "No differential pick available - every strong option here is already a confirmed starter.";
     } else {
       const ownedIds = new Set(squadPlayers.filter((sp) => sp.team_name === rating.teamName).map((sp) => sp.game_player_id));
       const sellCandidates = teamScores.filter((s) => ownedIds.has(s.gamePlayerId)).sort((a, b) => a.overall - b.overall);
-      recs = sellCandidates.slice(0, 3);
-      recLabels = recs.map(() => "Consider selling");
+      recScores = sellCandidates.slice(0, 3);
+      recLabels = recScores.map(() => "Consider selling");
+      noRecsMessage = "No squad players from this club to consider selling.";
     }
 
+    const recs = recScores
+      .map((s, i) => (s ? toRecPlayer(s, recLabels[i]) : null))
+      .filter((r): r is SwingRecPlayer => r != null);
+
     return (
-      <div
+      <SwingTeamRow
         key={rating.teamName}
-        className={`rounded-xl border p-4 ${kind === "good" ? "border-emerald-900 bg-navy-900" : "border-red-900 bg-navy-900"}`}
-      >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Badge teamName={rating.teamName} size="sm" />
-            <p className="font-medium text-white">{rating.teamName}</p>
-          </div>
-          <span
-            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-              kind === "good" ? "bg-emerald-950 text-emerald-400" : "bg-red-950 text-red-400"
-            }`}
-          >
-            {kind === "good" ? "↑ Improving" : "↓ Declining"}
-          </span>
-        </div>
-        <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
-          <div>
-            <p className="text-navy-400">Starts</p>
-            <p className="font-medium text-white">{rating.startsInGameweek != null ? `GW${rating.startsInGameweek}` : "-"}</p>
-          </div>
-          <div>
-            <p className="text-navy-400">Current → Upcoming</p>
-            <p className="font-medium text-white">
-              {rating.currentRating.toFixed(2)} → {rating.upcomingRating.toFixed(2)}
-            </p>
-          </div>
-          <div>
-            <p className="text-navy-400">Swing</p>
-            <p className={`font-medium ${rating.swingValue >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-              {rating.swingValue >= 0 ? "+" : ""}
-              {rating.swingValue.toFixed(2)}
-            </p>
-          </div>
-        </div>
-        <div className="mt-2 flex gap-1">
-          {strip.map((fx) => (
-            <div
-              key={fx.gameweek}
-              title={`GW${fx.gameweek}: ${fx.isHome ? "vs" : "@"} ${fx.opponent}`}
-              className={`flex-1 rounded px-1 py-1 text-center text-[9px] font-medium ${
-                fx.ratio == null
-                  ? "bg-navy-800 text-navy-400"
-                  : fx.ratio >= 1.15
-                    ? "bg-emerald-950 text-emerald-400"
-                    : fx.ratio <= 0.85
-                      ? "bg-red-950 text-red-400"
-                      : "bg-navy-800 text-navy-300"
-              }`}
-            >
-              {getTeamColors(fx.opponent).abbr}
-            </div>
-          ))}
-          {strip.length === 0 && <p className="text-[10px] text-navy-500">No upcoming fixtures found.</p>}
-        </div>
-        {recs.some((r) => r != null) ? (
-          <div className="mt-3 flex flex-col gap-2">
-            {recs.map((r, i) => (r ? recCard(r, recLabels[i]) : null))}
-          </div>
-        ) : (
-          <p className="mt-3 text-xs text-navy-400">
-            {kind === "good" ? "No differential pick available - every strong option here is already a confirmed starter." : "No squad players from this club to consider selling."}
-          </p>
-        )}
-      </div>
+        teamName={rating.teamName}
+        kind={kind}
+        startsInGameweek={rating.startsInGameweek}
+        currentRating={rating.currentRating}
+        upcomingRating={rating.upcomingRating}
+        swingValue={rating.swingValue}
+        strip={strip}
+        recs={recs}
+        noRecsMessage={noRecsMessage}
+        gameId={gameId}
+      />
     );
   }
 
@@ -274,15 +218,15 @@ export default async function FixtureSwingPanel({
       <h2 className="text-sm font-semibold uppercase tracking-wide text-white">Upcoming Fixture Swings</h2>
       <div>
         <p className="mb-2 text-xs font-medium uppercase tracking-wide text-emerald-400">Good swings</p>
-        <div className="flex flex-col gap-3">
-          {improving.map((r) => teamCard(r, "good"))}
+        <div className="flex flex-col gap-2">
+          {improving.map((r) => buildRow(r, "good"))}
           {improving.length === 0 && <p className="text-xs text-navy-400">No favourable swings detected right now.</p>}
         </div>
       </div>
       <div>
         <p className="mb-2 text-xs font-medium uppercase tracking-wide text-red-400">Tough swings</p>
-        <div className="flex flex-col gap-3">
-          {declining.map((r) => teamCard(r, "bad"))}
+        <div className="flex flex-col gap-2">
+          {declining.map((r) => buildRow(r, "bad"))}
           {declining.length === 0 && <p className="text-xs text-navy-400">No tough swings detected right now.</p>}
         </div>
       </div>

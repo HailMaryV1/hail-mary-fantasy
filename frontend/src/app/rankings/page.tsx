@@ -32,6 +32,7 @@ type HorizonRow = {
 const GAMES = [
   { slug: "dreamteam", label: "Dream Team" },
   { slug: "fanteam", label: "FanTeam" },
+  { slug: "nfl-fanteam", label: "NFL FanTeam" },
 ] as const;
 
 const HORIZONS = [

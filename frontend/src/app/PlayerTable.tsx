@@ -18,15 +18,22 @@ export type ProjectionRow = {
 
 type SortKey = "hail_mary_score" | "price" | "points_per_90";
 
-const POSITIONS = ["ALL", "GK", "DEF", "MID", "FWD"] as const;
 const MAX_COMPARE = 3;
 
 export default function PlayerTable({ data, horizon }: { data: ProjectionRow[]; horizon: string }) {
   const [search, setSearch] = useState("");
-  const [position, setPosition] = useState<(typeof POSITIONS)[number]>("ALL");
+  const [position, setPosition] = useState<string>("ALL");
   const [sortKey, setSortKey] = useState<SortKey>("hail_mary_score");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [compareIds, setCompareIds] = useState<number[]>([]);
+
+  // Derived from the actual data rather than a hardcoded soccer-position
+  // list - each game (GK/DEF/MID/FWD for soccer, QB/RB/WR/TE/DST for NFL)
+  // gets its own filter set for free.
+  const positions = useMemo(
+    () => ["ALL", ...Array.from(new Set(data.map((r) => r.position))).sort()],
+    [data]
+  );
 
   const teams = useMemo(
     () => Array.from(new Set(data.map((r) => r.team_name))).sort(),
@@ -77,7 +84,7 @@ export default function PlayerTable({ data, horizon }: { data: ProjectionRow[]; 
         />
         <div className="flex flex-wrap gap-2">
           <div className="flex gap-1 rounded-lg bg-navy-900 p-1">
-            {POSITIONS.map((p) => (
+            {positions.map((p) => (
               <button
                 key={p}
                 onClick={() => setPosition(p)}

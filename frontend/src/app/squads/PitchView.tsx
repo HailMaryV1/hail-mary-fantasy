@@ -7,7 +7,7 @@ import { shortenPlayerName } from "@/lib/playerName";
 export type PitchPlayer = {
   game_player_id: number;
   full_name: string;
-  position: "GK" | "DEF" | "MID" | "FWD";
+  position: string;
   team_name: string;
   is_starting: boolean;
   price: number;

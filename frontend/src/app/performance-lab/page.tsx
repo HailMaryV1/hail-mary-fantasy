@@ -25,6 +25,7 @@ type PredictionRow = {
   planning_horizon: number;
   kind: "transfer" | "captain" | "hold";
   recommendation_type: string;
+  rank: number | null;
   mary_move_score: number | null;
   confidence: number | null;
   risk: string | null;
@@ -83,10 +84,17 @@ export default async function PerformanceLabPage({
 
   const { data: allSquadsRaw } = await supabase
     .from("squads")
-    .select("id, name, free_transfers, fantasy_games(id, slug, display_name)")
+    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, fantasy_games(id, slug, display_name)")
     .eq("user_id", user.id)
     .order("created_at", { ascending: false });
-  type SquadWithGame = { id: number; name: string; free_transfers: number; fantasy_games: { id: number; slug: string; display_name: string } };
+  type SquadWithGame = {
+    id: number;
+    name: string;
+    free_transfers: number;
+    wildcard_1_used_gameweek: number | null;
+    wildcard_2_used_gameweek: number | null;
+    fantasy_games: { id: number; slug: string; display_name: string };
+  };
   const allSquads = (allSquadsRaw ?? []) as unknown as SquadWithGame[];
   const squadNameById = new Map(allSquads.map((s) => [s.id, s.name]));
 
@@ -122,9 +130,20 @@ export default async function PerformanceLabPage({
     const fanteamGame = { id: fanteamSquads[0].fantasy_games.id, display_name: fanteamSquads[0].fantasy_games.display_name };
     await Promise.all(
       fanteamSquads.map((s) =>
-        runAskMaryAnalysis(supabase, { id: s.id, name: s.name, free_transfers: s.free_transfers }, fanteamGame, "balanced", { value: 2 }, recordPredictions).catch(
-          () => null
-        )
+        runAskMaryAnalysis(
+          supabase,
+          {
+            id: s.id,
+            name: s.name,
+            free_transfers: s.free_transfers,
+            wildcard_1_used_gameweek: s.wildcard_1_used_gameweek,
+            wildcard_2_used_gameweek: s.wildcard_2_used_gameweek,
+          },
+          fanteamGame,
+          "balanced",
+          1,
+          recordPredictions
+        ).catch(() => null)
       )
     );
   }
@@ -132,7 +151,7 @@ export default async function PerformanceLabPage({
   const { data: predictionsRaw } = await supabase
     .from("predictions")
     .select(
-      "id, squad_id, gameweek, algorithm_version_id, strategy, planning_horizon, kind, recommendation_type, mary_move_score, confidence, risk, expected_gain, created_at, out_game_player_id, in_game_player_id, captain_game_player_id, vice_captain_game_player_id"
+      "id, squad_id, gameweek, algorithm_version_id, strategy, planning_horizon, kind, recommendation_type, rank, mary_move_score, confidence, risk, expected_gain, created_at, out_game_player_id, in_game_player_id, captain_game_player_id, vice_captain_game_player_id"
     )
     .eq("user_id", user.id)
     .order("created_at", { ascending: false })
@@ -219,6 +238,7 @@ export default async function PerformanceLabPage({
       planningHorizon: p.planning_horizon,
       kind: p.kind,
       recommendationType: p.recommendation_type,
+      rank: p.rank,
       maryMoveScore: p.mary_move_score,
       confidence: p.confidence,
       risk: p.risk,
@@ -262,6 +282,35 @@ export default async function PerformanceLabPage({
     if (id == null) return null;
     return nameById.get(id) ?? `#${id}`;
   }
+
+  // A "Best Transfer" recommendation can bundle more than one simultaneous
+  // transfer (see lib/askMaryEngine.ts) - each leg is its own predictions
+  // row (sharing recommendation_type/planning_horizon/gameweek/kind), so
+  // group them back into one history entry with a single "Recommendation
+  // Followed" verdict (every leg applied) rather than showing each leg's
+  // applied badge separately, which read as N separate recommendations
+  // instead of the one bundle the user actually saw and could apply.
+  const historyGroups = (() => {
+    const byKey = new Map<string, PredictionEvalRow[]>();
+    for (const r of rows) {
+      const key = `${r.squadId}:${r.gameweek}:${r.planningHorizon}:${r.kind}:${r.recommendationType}`;
+      const list = byKey.get(key) ?? [];
+      list.push(r);
+      byKey.set(key, list);
+    }
+    return Array.from(byKey.values())
+      .map((legsUnsorted) => {
+        const legs = legsUnsorted.slice().sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+        const first = legs[0];
+        const applied = legs.some((l) => l.applied != null) ? legs.every((l) => l.applied === true) : null;
+        const totalActualGain = legs.every((l) => l.evaluation?.actualGain != null)
+          ? legs.reduce((sum, l) => sum + (l.evaluation!.actualGain ?? 0), 0)
+          : null;
+        const allEvaluated = legs.every((l) => l.evaluation != null);
+        return { key: `${first.squadId}:${first.gameweek}:${first.planningHorizon}:${first.kind}:${first.recommendationType}`, first, legs, applied, totalActualGain, allEvaluated };
+      })
+      .sort((a, b) => new Date(b.first.createdAt).getTime() - new Date(a.first.createdAt).getTime());
+  })();
 
   // Grouped by game (FanTeam / Dream Team) rather than one flat list -
   // shows every squad the user has, not just ones with predictions
@@ -381,57 +430,69 @@ export default async function PerformanceLabPage({
         <section className="mt-8">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Recommendation History</h2>
           <div className="mt-2 flex flex-col gap-2">
-            {rows.slice(0, 100).map((r) => (
-              <div key={r.id} className="rounded-lg border border-navy-800 bg-navy-900 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="rounded-full bg-navy-700 px-2 py-0.5 font-medium text-white">{r.squadName}</span>
-                    <span className="rounded-full bg-navy-800 px-2 py-0.5 font-medium uppercase tracking-wide text-sky-400">
-                      {titleCase(r.recommendationType)}
-                    </span>
-                    <span className="text-navy-500">
-                      GW{r.gameweek ?? "-"} - {titleCase(r.strategy)} - {r.planningHorizon} GW horizon
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {r.applied != null && (
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                          r.applied ? "bg-sky-950 text-sky-400" : "bg-navy-800 text-navy-400"
-                        }`}
-                      >
-                        {r.applied ? "Applied" : "Not applied"}
+            {historyGroups.slice(0, 100).map((g) => {
+              const r = g.first;
+              return (
+                <div key={g.key} className="rounded-lg border border-navy-800 bg-navy-900 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="rounded-full bg-navy-700 px-2 py-0.5 font-medium text-white">{r.squadName}</span>
+                      <span className="rounded-full bg-navy-800 px-2 py-0.5 font-medium uppercase tracking-wide text-sky-400">
+                        {titleCase(r.recommendationType)}
                       </span>
-                    )}
-                    {r.evaluation ? (
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                          r.kind === "transfer"
-                            ? r.evaluation.transferSuccess
-                              ? "bg-emerald-950 text-emerald-400"
-                              : "bg-red-950 text-red-400"
-                            : r.evaluation.captainSuccess
-                              ? "bg-emerald-950 text-emerald-400"
-                              : "bg-red-950 text-red-400"
-                        }`}
-                      >
-                        {r.kind === "transfer" ? formatPts(r.evaluation.actualGain) : r.evaluation.captainSuccess ? "Correct" : "Incorrect"}
+                      <span className="text-navy-500">
+                        GW{r.gameweek ?? "-"} - {titleCase(r.strategy)} - {r.planningHorizon} GW horizon
                       </span>
-                    ) : (
-                      <span className="rounded-full bg-navy-800 px-2 py-0.5 text-[10px] font-medium text-navy-400">Awaiting result</span>
-                    )}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {g.applied != null && (
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                            g.applied ? "bg-sky-950 text-sky-400" : "bg-navy-800 text-navy-400"
+                          }`}
+                        >
+                          {g.applied ? "✅ Recommendation Followed" : "❌ Recommendation Not Followed"}
+                        </span>
+                      )}
+                      {g.allEvaluated ? (
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                            r.kind === "transfer"
+                              ? (g.totalActualGain ?? 0) >= 0
+                                ? "bg-emerald-950 text-emerald-400"
+                                : "bg-red-950 text-red-400"
+                              : r.evaluation?.captainSuccess
+                                ? "bg-emerald-950 text-emerald-400"
+                                : "bg-red-950 text-red-400"
+                          }`}
+                        >
+                          {r.kind === "transfer" ? formatPts(g.totalActualGain) : r.evaluation?.captainSuccess ? "Correct" : "Incorrect"}
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-navy-800 px-2 py-0.5 text-[10px] font-medium text-navy-400">Awaiting result</span>
+                      )}
+                    </div>
                   </div>
+                  <div className="mt-1.5 flex flex-col gap-0.5">
+                    {r.kind === "transfer" &&
+                      g.legs.map((leg) => (
+                        <p key={leg.id} className="text-sm text-white">
+                          {playerName(leg.outGamePlayerId)} -&gt; {playerName(leg.inGamePlayerId)}
+                        </p>
+                      ))}
+                    {r.kind === "captain" && (
+                      <p className="text-sm text-white">
+                        Captain: {playerName(r.captainGamePlayerId)} (vice: {playerName(r.viceCaptainGamePlayerId)})
+                      </p>
+                    )}
+                    {r.kind === "hold" && <p className="text-sm text-white">No transfer recommended</p>}
+                  </div>
+                  {r.evaluation && r.evaluation.errorAttribution.length > 0 && (
+                    <p className="mt-1 text-xs text-navy-400">{r.evaluation.errorAttribution.map(titleCase).join(", ")}</p>
+                  )}
                 </div>
-                <p className="mt-1.5 text-sm text-white">
-                  {r.kind === "transfer" && `${playerName(r.outGamePlayerId)} -> ${playerName(r.inGamePlayerId)}`}
-                  {r.kind === "captain" && `Captain: ${playerName(r.captainGamePlayerId)} (vice: ${playerName(r.viceCaptainGamePlayerId)})`}
-                  {r.kind === "hold" && "No transfer recommended"}
-                </p>
-                {r.evaluation && r.evaluation.errorAttribution.length > 0 && (
-                  <p className="mt-1 text-xs text-navy-400">{r.evaluation.errorAttribution.map(titleCase).join(", ")}</p>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       </main>

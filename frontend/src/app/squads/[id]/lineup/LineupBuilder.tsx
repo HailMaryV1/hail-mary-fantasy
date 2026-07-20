@@ -4,10 +4,14 @@ import { useMemo, useState, useTransition } from "react";
 import { saveLineup } from "../../actions";
 import PitchView from "../../PitchView";
 
+// position widened to string (not the soccer-only literal union) purely so
+// this still type-checks against PitchView's now-shared PitchPlayer type -
+// this page itself is soccer-only (NFL has no bench/lineup concept), the
+// GK/DEF/MID/FWD logic below is unaffected.
 type Player = {
   game_player_id: number;
   full_name: string;
-  position: "GK" | "DEF" | "MID" | "FWD";
+  position: string;
   team_name: string;
   price: number;
   is_starting: boolean;

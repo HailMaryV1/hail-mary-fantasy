@@ -17,6 +17,10 @@ export type PredictionEvalRow = {
   planningHorizon: number;
   kind: "transfer" | "captain" | "hold";
   recommendationType: string;
+  // 1-indexed order within a multi-transfer bundle (see
+  // lib/askMaryEngine.ts) - null for captain/hold rows, which are never
+  // bundled.
+  rank: number | null;
   maryMoveScore: number | null;
   confidence: number | null;
   risk: string | null;

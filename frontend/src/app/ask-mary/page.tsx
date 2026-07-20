@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { STRATEGIES, type Strategy } from "@/lib/recommendationScoring";
 import { runAskMaryAnalysis, ASK_MARY_HORIZONS } from "@/lib/askMaryEngine";
-import RecommendationCard from "./RecommendationCard";
+import BundleCard from "./BundleCard";
 import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
 import { recordPredictions } from "./actions";
 
@@ -13,21 +13,14 @@ import { recordPredictions } from "./actions";
 // rankings/transfers/compare pages.
 export const dynamic = "force-dynamic";
 
-const TRANSFER_LIMITS = [
-  { key: "1", label: "1 move", value: 1 as number | null },
-  { key: "2", label: "2 moves", value: 2 as number | null },
-  { key: "3", label: "3 moves", value: 3 as number | null },
-  { key: "all", label: "Show all", value: null as number | null },
-] as const;
-
 type SquadPlayerForSummary = { game_player_id: number; game_players: { price: number } };
 
 export default async function AskMaryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ squad?: string; horizon?: string; strategy?: string; limit?: string }>;
+  searchParams: Promise<{ squad?: string; horizon?: string; strategy?: string }>;
 }) {
-  const { squad: squadParam, horizon: horizonParam, strategy: strategyParam, limit: limitParam } = await searchParams;
+  const { squad: squadParam, horizon: horizonParam, strategy: strategyParam } = await searchParams;
 
   const supabase = await createAuthServerClient();
   const {
@@ -35,9 +28,13 @@ export default async function AskMaryPage({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const activeHorizon = ASK_MARY_HORIZONS.find((h) => h.key === horizonParam) ?? ASK_MARY_HORIZONS[2];
+  // Drives the Captain & Vice-Captain pick only - the 3 "Best Transfer"
+  // recommendations always show all of Next GW / Next 3 GW / Next 5 GW
+  // simultaneously (per the simplified 4-recommendation design), so this
+  // control's job narrowed from "which horizon's transfers to show" to
+  // "which horizon to captain by."
+  const captainHorizon = ASK_MARY_HORIZONS.find((h) => h.key === horizonParam) ?? ASK_MARY_HORIZONS[2];
   const activeStrategy = (STRATEGIES.find((s) => s.key === strategyParam)?.key ?? "balanced") as Strategy;
-  const activeLimit = TRANSFER_LIMITS.find((l) => l.key === limitParam) ?? TRANSFER_LIMITS[1];
 
   const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name").eq("slug", "fanteam").single();
 
@@ -55,7 +52,7 @@ export default async function AskMaryPage({
 
   const { data: squadsRaw } = await supabase
     .from("squads")
-    .select("id, name, free_transfers")
+    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek")
     .eq("user_id", user.id)
     .eq("game_id", fanteamGame.id)
     .order("created_at", { ascending: false });
@@ -90,12 +87,11 @@ export default async function AskMaryPage({
 
   const selectedSquad = squadsRaw.find((s) => s.id === Number(squadParam)) ?? squadsRaw[0];
 
-  function askMaryUrl(overrides: Partial<{ squad: number; horizon: string; strategy: string; limit: string }>) {
+  function askMaryUrl(overrides: Partial<{ squad: number; horizon: string; strategy: string }>) {
     const params = new URLSearchParams();
     params.set("squad", String(overrides.squad ?? selectedSquad.id));
-    params.set("horizon", overrides.horizon ?? activeHorizon.key);
+    params.set("horizon", overrides.horizon ?? captainHorizon.key);
     params.set("strategy", overrides.strategy ?? activeStrategy);
-    params.set("limit", overrides.limit ?? activeLimit.key);
     return `/ask-mary?${params.toString()}`;
   }
 
@@ -156,7 +152,7 @@ export default async function AskMaryPage({
       <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Analysis Settings</h2>
       <div className="mt-3 flex flex-col gap-3">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-navy-500">Planning horizon</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-navy-500">Captain planning horizon</p>
           <div className="mt-1 flex flex-wrap gap-1 rounded-lg bg-navy-950 p-1">
             {ASK_MARY_HORIZONS.map((h) => (
               <Link
@@ -164,7 +160,7 @@ export default async function AskMaryPage({
                 href={askMaryUrl({ horizon: h.key })}
                 prefetch={false}
                 className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                  h.key === activeHorizon.key ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
+                  h.key === captainHorizon.key ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
                 }`}
               >
                 {h.label}
@@ -185,23 +181,6 @@ export default async function AskMaryPage({
                 }`}
               >
                 {s.label}
-              </Link>
-            ))}
-          </div>
-        </div>
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-navy-500">Transfer limit</p>
-          <div className="mt-1 flex flex-wrap gap-1 rounded-lg bg-navy-950 p-1">
-            {TRANSFER_LIMITS.map((l) => (
-              <Link
-                key={l.key}
-                href={askMaryUrl({ limit: l.key })}
-                prefetch={false}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                  l.key === activeLimit.key ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
-                }`}
-              >
-                {l.label}
               </Link>
             ))}
           </div>
@@ -250,7 +229,7 @@ export default async function AskMaryPage({
     );
   }
 
-  const analysis = await runAskMaryAnalysis(supabase, selectedSquad, fanteamGame, activeStrategy, activeLimit, recordPredictions);
+  const analysis = await runAskMaryAnalysis(supabase, selectedSquad, fanteamGame, activeStrategy, captainHorizon.gameweeks, recordPredictions);
 
   if (!analysis) {
     return (
@@ -263,8 +242,7 @@ export default async function AskMaryPage({
     );
   }
 
-  const activeResult = analysis.horizonResults.get(activeHorizon.gameweeks)!;
-  const { bestCaptain, viceCaptain, safestCaptain, differentialCaptain, health, roadmap, monitorList, hasCalendar } = analysis;
+  const { bestCaptain, viceCaptain, health, roadmap, monitorList, hasCalendar, bundles } = analysis;
 
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
@@ -330,50 +308,23 @@ export default async function AskMaryPage({
             </div>
 
             <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Best Moves</h2>
-              {activeResult.hold ? (
-                <div className="mt-2 rounded-xl border border-emerald-800 bg-emerald-950/30 p-4">
-                  <p className="text-sm text-emerald-300">
-                    Your squad is well positioned for the {activeHorizon.label.toLowerCase()}. No available transfer
-                    creates a meaningful expected-points improvement right now.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <div className="mt-2 flex flex-col gap-2">
-                    {activeResult.categoryCards.map((c, i) => (
-                      <RecommendationCard key={`cat-${i}-${c.outGamePlayerId}-${c.inGamePlayerId}`} rec={c} gameId={fanteamGame.id} />
-                    ))}
-                  </div>
-                  <p className="mt-4 text-xs font-medium uppercase tracking-wide text-navy-500">
-                    Ranked moves ({activeStrategy} strategy)
-                  </p>
-                  <div className="mt-2 flex flex-col gap-2">
-                    {activeResult.rankedMoves.map((rec) => (
-                      <RecommendationCard key={`${rec.outGamePlayerId}-${rec.inGamePlayerId}`} rec={rec} gameId={fanteamGame.id} />
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Recommendations</h2>
+              <div className="mt-2 flex flex-col gap-3">
+                {ASK_MARY_HORIZONS.map((h) => (
+                  <BundleCard key={h.key} label={`Best Transfer - ${h.label}`} bundle={bundles.get(h.gameweeks)!} squadId={selectedSquad.id} gameId={fanteamGame.id} />
+                ))}
 
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Captaincy</h2>
-              <div className="mt-2 rounded-xl border border-navy-700 bg-navy-900 p-4">
-                {!bestCaptain ? (
-                  <p className="text-sm text-navy-400">Set a starting XI to get captaincy advice.</p>
-                ) : (
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <CaptainOption label="Best captain" player={bestCaptain} />
-                    <CaptainOption label="Safest captain" player={safestCaptain} />
-                    <CaptainOption label="Vice-captain" player={viceCaptain} />
-                    <CaptainOption label="Differential captain" player={differentialCaptain} note={!differentialCaptain ? "Every starter is a confirmed starter right now." : undefined} />
-                  </div>
-                )}
-                <p className="mt-3 text-xs text-navy-500">
-                  Highest-ceiling captaincy isn&apos;t shown - the app doesn&apos;t yet track scoring variance/ceiling data,
-                  so we&apos;re not going to guess at it.
-                </p>
+                <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
+                  <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain - {captainHorizon.label}</h3>
+                  {!bestCaptain ? (
+                    <p className="mt-2 text-sm text-navy-400">Set a starting XI to get captaincy advice.</p>
+                  ) : (
+                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <CaptainOption label="Captain" player={bestCaptain} />
+                      <CaptainOption label="Vice-Captain" player={viceCaptain} />
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -431,11 +382,9 @@ export default async function AskMaryPage({
 function CaptainOption({
   label,
   player,
-  note,
 }: {
   label: string;
   player: { full_name: string; team_name: string; score: number } | null;
-  note?: string;
 }) {
   return (
     <div className="rounded-lg border border-navy-800 bg-navy-950 p-3">
@@ -448,7 +397,7 @@ function CaptainOption({
           </p>
         </>
       ) : (
-        <p className="mt-1 text-xs text-navy-500">{note ?? "Not available."}</p>
+        <p className="mt-1 text-xs text-navy-500">Not available.</p>
       )}
     </div>
   );
