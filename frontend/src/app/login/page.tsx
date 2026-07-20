@@ -1,4 +1,4 @@
-import { signIn, signUp } from "./actions";
+import { signIn } from "./actions";
 
 export default async function LoginPage({
   searchParams,
@@ -13,7 +13,7 @@ export default async function LoginPage({
         <h1 className="text-2xl font-semibold text-white">
           Hail Mary<span className="text-sky-400">.</span>
         </h1>
-        <p className="mt-1 text-sm text-navy-300">Sign in or create an account</p>
+        <p className="mt-1 text-sm text-navy-300">Sign in</p>
 
         {error && (
           <p className="mt-4 rounded-lg bg-red-950 p-3 text-sm text-red-300">{error}</p>
@@ -46,12 +46,6 @@ export default async function LoginPage({
               className="flex-1 rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-navy-950 hover:bg-sky-400"
             >
               Sign in
-            </button>
-            <button
-              formAction={signUp}
-              className="flex-1 rounded-lg border border-navy-700 bg-navy-900 px-4 py-2 text-sm font-medium text-white hover:bg-navy-800"
-            >
-              Create account
             </button>
           </div>
         </form>
