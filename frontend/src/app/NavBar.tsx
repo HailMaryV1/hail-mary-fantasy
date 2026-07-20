@@ -37,6 +37,9 @@ export default async function NavBar() {
             <Link href="/ask-mary" className="shrink-0 text-navy-300 hover:text-sky-300">
               Ask Mary
             </Link>
+            <Link href="/performance-lab" className="shrink-0 text-navy-300 hover:text-sky-300">
+              Performance Lab
+            </Link>
             <Link href="/squads" className="shrink-0 text-navy-300 hover:text-sky-300">
               My Squads
             </Link>
