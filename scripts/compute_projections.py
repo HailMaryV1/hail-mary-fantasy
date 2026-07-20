@@ -209,21 +209,44 @@ def load_env():
         os.environ.setdefault(key.strip(), value.strip())
 
 
-def get_or_create_algorithm_version(cur, label, description, weights):
-    # Upsert, not get-or-create: while iterating pre-season (no real
-    # outcomes compared against yet), a weights change is a bug fix, not
-    # a new tunable version. Once projections start getting compared
-    # against actual results, stop calling this with changed weights
-    # under the same label - bump the label instead so history stays honest.
+def get_or_create_algorithm_version(cur, family, description, weights):
+    """
+    Real versioning (see migration 0032 - this replaced an upsert-on-label
+    that silently overwrote weights in place). `family` groups revisions
+    of "the same algorithm" (e.g. "v2-decomposed"); if `weights` matches
+    the family's current (highest-revision) row exactly, that row is
+    reused - no new row for an unrelated description edit or a re-run
+    with identical weights. If `weights` differs at all, a new revision
+    is created and version_label becomes "family.revision" - so every
+    genuine tuning change gets its own permanent row, which the Mary
+    Performance Lab needs to compare prediction accuracy across algorithm
+    changes.
+    """
+    cur.execute(
+        "select id, revision, weights from algorithm_versions where family = %s order by revision desc limit 1",
+        (family,),
+    )
+    row = cur.fetchone()
+
+    if row is not None:
+        existing_id, existing_revision, existing_weights = row
+        if isinstance(existing_weights, str):
+            existing_weights = json.loads(existing_weights)
+        if existing_weights == weights:
+            cur.execute("update algorithm_versions set description = %s where id = %s", (description, existing_id))
+            return existing_id, weights
+        next_revision = existing_revision + 1
+    else:
+        next_revision = 1
+
+    version_label = f"{family}.{next_revision}"
     cur.execute(
         """
-        insert into algorithm_versions (version_label, description, weights)
-        values (%s, %s, %s)
-        on conflict (version_label) do update
-            set description = excluded.description, weights = excluded.weights
+        insert into algorithm_versions (version_label, family, revision, description, weights)
+        values (%s, %s, %s, %s, %s)
         returning id, weights
         """,
-        (label, description, psycopg2.extras.Json(weights)),
+        (version_label, family, next_revision, description, psycopg2.extras.Json(weights)),
     )
     return cur.fetchone()
 

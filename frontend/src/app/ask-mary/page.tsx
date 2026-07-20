@@ -9,14 +9,17 @@ import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SC
 import {
   scoreMoveCandidates,
   STRATEGIES,
+  STRATEGY_WEIGHTS,
   type Strategy,
   type MoveCandidateInput,
   type MoveScore,
   type MoveReason,
 } from "@/lib/recommendationScoring";
 import { assessSquadHealth, type SquadHealthPlayer } from "@/lib/squadHealth";
+import type { PredictionRecord } from "@/lib/predictionArchive";
 import RecommendationCard from "./RecommendationCard";
 import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
+import { recordPredictions } from "./actions";
 
 // RPC results depend on the chosen horizon/strategy/squad but Supabase's
 // .rpc() POSTs to a fixed URL, so Next's fetch Data Cache could otherwise
@@ -678,6 +681,122 @@ export default async function AskMaryPage({
           .filter((x): x is NonNullable<typeof x> => x != null)
           .slice(0, 6)
       : [];
+
+  // Mary Performance Lab, Part 1 - archive this analysis as a batch of
+  // immutable predictions. Computed inline during this page's own
+  // render, same pattern as watchlist/page.tsx's reconcileWatchlistSnapshot
+  // - not a separate client-triggered action. recordPredictions itself
+  // dedupes on (squad, gameweek, algorithm version, horizon, strategy),
+  // so reloading this page with the same settings doesn't re-archive.
+  // Swallowed on failure - a prediction-logging hiccup should never break
+  // the page Ask Mary itself is rendering.
+  if (planningGameweek != null) {
+    const { data: latestProjection } = await supabase
+      .from("projections")
+      .select("algorithm_version_id, season")
+      .eq("game_player_id", squadPlayers[0].game_player_id)
+      .order("id", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const sharedContext = {
+      squadId: selectedSquad.id,
+      gameId: fanteamGame.id,
+      gameweek: planningGameweek,
+      season: latestProjection?.season ?? "unknown",
+      algorithmVersionId: latestProjection?.algorithm_version_id ?? null,
+      recommendationWeights: STRATEGY_WEIGHTS[activeStrategy],
+      planningHorizon: activeHorizon.gameweeks,
+      strategy: activeStrategy,
+      transferLimit: activeLimit.value,
+      budgetRemainingBefore: budgetRemaining,
+      freeTransfersBefore: selectedSquad.free_transfers,
+    };
+
+    const predictionRecords: PredictionRecord[] = [];
+
+    if (hold) {
+      predictionRecords.push({
+        ...sharedContext,
+        kind: "hold",
+        recommendationType: "hold",
+        rank: null,
+        outGamePlayerId: null,
+        inGamePlayerId: null,
+        outPrice: null,
+        inPrice: null,
+        transferCost: null,
+        captainGamePlayerId: null,
+        viceCaptainGamePlayerId: null,
+        expectedPointsBefore: null,
+        expectedPointsAfter: null,
+        expectedGain: null,
+        hailMaryScoreDiff: null,
+        fixtureSwingDiff: null,
+        maryMoveScore: moves.length > 0 ? bestOverall : null,
+        confidence: null,
+        risk: null,
+        reasons: [{ code: "hold", text: "No available transfer created a meaningful expected-points improvement." }],
+        warnings: [],
+      });
+    } else {
+      for (const c of [...categoryCards, ...rankedMoves]) {
+        predictionRecords.push({
+          ...sharedContext,
+          kind: "transfer",
+          recommendationType: c.label ? c.label.toLowerCase().replace(/\s+/g, "_") : "ranked",
+          rank: c.label ? null : c.rank,
+          outGamePlayerId: c.outGamePlayerId,
+          inGamePlayerId: c.inGamePlayerId,
+          outPrice: c.outPrice,
+          inPrice: c.inPrice,
+          transferCost: c.transferCost,
+          captainGamePlayerId: null,
+          viceCaptainGamePlayerId: null,
+          expectedPointsBefore: c.expectedPointsBefore,
+          expectedPointsAfter: c.expectedPointsAfter,
+          expectedGain: c.expectedPointsAfter - c.expectedPointsBefore,
+          hailMaryScoreDiff: c.hailMaryScoreDiff,
+          fixtureSwingDiff: c.fixtureSwingDiff,
+          maryMoveScore: c.overall,
+          confidence: c.confidence,
+          risk: c.risk,
+          reasons: c.reasons,
+          warnings: c.warnings,
+        });
+      }
+    }
+
+    if (bestCaptain && viceCaptain) {
+      predictionRecords.push({
+        ...sharedContext,
+        kind: "captain",
+        recommendationType: "best_captain",
+        rank: null,
+        outGamePlayerId: null,
+        inGamePlayerId: null,
+        outPrice: null,
+        inPrice: null,
+        transferCost: null,
+        captainGamePlayerId: bestCaptain.game_player_id,
+        viceCaptainGamePlayerId: viceCaptain.game_player_id,
+        expectedPointsBefore: null,
+        expectedPointsAfter: null,
+        expectedGain: null,
+        hailMaryScoreDiff: null,
+        fixtureSwingDiff: null,
+        maryMoveScore: null,
+        confidence: null,
+        risk: null,
+        reasons: [{ code: "top_scorer", text: `${bestCaptain.full_name} is the highest-projected starter.` }],
+        warnings: [],
+      });
+    }
+
+    if (predictionRecords.length > 0) {
+      await recordPredictions(predictionRecords).catch(() => {});
+    }
+  }
 
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">

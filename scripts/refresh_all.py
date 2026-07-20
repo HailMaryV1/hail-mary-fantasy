@@ -88,6 +88,7 @@ def main():
     results.append(run_step("Clean sheet probabilities", ["scripts/compute_clean_sheet_probabilities.py"]))
     results.append(run_step("FanTeam players (no login needed)", ["scraper_fanteam.py", "--players-only"]))
     results.append(run_step("Import FanTeam players", ["import_fanteam_live.py", "--skip-fixtures"]))
+    results.append(run_step("Capture gameweek actuals", ["scripts/capture_gameweek_actuals.py"]))
 
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:
@@ -103,6 +104,8 @@ def main():
             results.append(
                 run_step(f"Recompute FanTeam GW{gw}", ["scripts/compute_projections.py", "fanteam", "--gameweek", str(gw)])
             )
+
+    results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
 
     failed = results.count(False)
     print(f"\n{len(results) - failed}/{len(results)} steps succeeded.")
