@@ -212,6 +212,10 @@ export default async function AskMaryPage({
       </div>
     );
   }
+  // Same non-null reassignment as fanteamGame above - buildHorizonResult
+  // (a nested function declaration, below) needs a binding TypeScript
+  // will treat as always non-null.
+  const squadRules = rules;
 
   const { data: squadPlayersRaw } = await supabase
     .from("squad_players")
@@ -434,156 +438,177 @@ export default async function AskMaryPage({
   const ratings = deriveTeamFixtureRatings(fixtureRows);
   const ratingByTeam = new Map(ratings.map((r) => [r.teamName, r]));
 
-  // Build one candidate move per current squad player (best legal
-  // same-position replacement), reusing the exact matching logic the
-  // transfers page and watchlist "Transfer In" flow already share.
-  const poolCandidatesForMatching: TransferCandidate[] = (pool ?? []).map((p) => ({
-    gamePlayerId: p.game_player_id,
-    fullName: p.full_name,
-    teamId: p.team_id,
-    teamName: p.team_name,
-    price: Number(p.price),
-    score: avgFor(scoreHMap, p.game_player_id),
-    position: p.position,
-  }));
-
   type Move = { input: MoveCandidateInput; gain1: number | null; gain3: number | null; gain5: number | null; outPrice: number; inPrice: number };
-  const moves: Move[] = [];
 
-  for (const outPlayer of squadPlayers) {
-    const outScoreH = avgFor(scoreHMap, outPlayer.game_player_id);
-    const matches = findBuyCandidatesForOutgoing(
-      poolCandidatesForMatching,
-      {
-        gamePlayerId: outPlayer.game_player_id,
-        fullName: outPlayer.full_name,
-        teamId: outPlayer.team_id,
-        teamName: outPlayer.team_name,
-        price: outPlayer.price,
-        score: outScoreH,
-        position: outPlayer.position,
-      },
-      squadIds,
-      budgetRemaining,
-      clubCounts,
-      rules.max_per_club
-    );
-    const best = matches[0];
-    if (!best) continue;
-    const inCand = best.candidate;
-    const inPoolRow = poolByGamePlayerId.get(inCand.gamePlayerId);
-    const outPoolRow = poolByGamePlayerId.get(outPlayer.game_player_id);
-    const outTeamRating = ratingByTeam.get(outPlayer.team_name);
-    const inTeamRating = ratingByTeam.get(inCand.teamName);
+  type HorizonResult = {
+    moves: Move[];
+    hold: boolean;
+    bestOverallScore: number;
+    rankedMoves: AskMaryRecommendation[];
+    categoryCards: AskMaryRecommendation[];
+  };
 
-    const gainAt = (map: Map<number, number>, gameweeks: number) =>
-      (avgFor(map, inCand.gamePlayerId) - avgFor(map, outPlayer.game_player_id)) * gameweeks;
+  /**
+   * Builds the full candidate-move set, Mary Move Scores, ranked list,
+   * and category cards for ONE planning horizon - reusing the same
+   * matching logic the transfers page and watchlist "Transfer In" flow
+   * already share. Ask Mary only ever DISPLAYS the currently-selected
+   * horizon's result, but the Performance Lab needs predictions archived
+   * across all three (1/3/5 GW) every time Mary is asked, not just
+   * whichever one happens to be on screen - so this runs once per
+   * horizon below, not once total.
+   */
+  function buildHorizonResult(gameweeks: number, scoreMapForHorizon: Map<number, number>): HorizonResult {
+    const poolCandidates: TransferCandidate[] = (pool ?? []).map((p) => ({
+      gamePlayerId: p.game_player_id,
+      fullName: p.full_name,
+      teamId: p.team_id,
+      teamName: p.team_name,
+      price: Number(p.price),
+      score: avgFor(scoreMapForHorizon, p.game_player_id),
+      position: p.position,
+    }));
 
-    moves.push({
-      input: {
-        outGamePlayerId: outPlayer.game_player_id,
-        inGamePlayerId: inCand.gamePlayerId,
-        outName: outPlayer.full_name,
-        inName: inCand.fullName,
-        outTeam: outPlayer.team_name,
-        inTeam: inCand.teamName,
-        position: outPlayer.position,
-        expectedPointsGain: best.delta * activeHorizon.gameweeks,
-        hailMaryScoreDiff: (inPoolRow?.hail_mary_score != null ? Number(inPoolRow.hail_mary_score) : 0) - (outPoolRow?.hail_mary_score != null ? Number(outPoolRow.hail_mary_score) : 0),
-        fixtureSwingDiff: (inTeamRating?.swingValue ?? 0) - (outTeamRating?.swingValue ?? 0),
-        priceDelta: inCand.price - outPlayer.price,
-        incomingMinutesSecurity: LINEUP_SECURITY_SCORES[inPoolRow?.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
-        outgoingMinutesSecurity: LINEUP_SECURITY_SCORES[outPlayer.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
-        incomingInjuryAvailability: INJURY_AVAILABILITY_SCORES[inPoolRow?.status ?? ""] ?? DEFAULT_SECURITY_SCORE,
-        incomingForm: inPoolRow?.form != null ? Number(inPoolRow.form) : null,
-        outgoingForm: outPlayer.form,
-        incomingIsConfirmedStarter: inPoolRow?.lineup === "confirmed_starting",
-        hasFixtureData: !!outTeamRating && !!inTeamRating,
-        hasStatusData: inPoolRow?.lineup != null && outPlayer.lineup != null,
-      },
-      gain1: gainAt(score1Map, 1),
-      gain3: gainAt(score3Map, 3),
-      gain5: gainAt(score5Map, 5),
-      outPrice: outPlayer.price,
-      inPrice: inCand.price,
-    });
-  }
+    const moves: Move[] = [];
+    for (const outPlayer of squadPlayers) {
+      const outScoreH = avgFor(scoreMapForHorizon, outPlayer.game_player_id);
+      const matches = findBuyCandidatesForOutgoing(
+        poolCandidates,
+        {
+          gamePlayerId: outPlayer.game_player_id,
+          fullName: outPlayer.full_name,
+          teamId: outPlayer.team_id,
+          teamName: outPlayer.team_name,
+          price: outPlayer.price,
+          score: outScoreH,
+          position: outPlayer.position,
+        },
+        squadIds,
+        budgetRemaining,
+        clubCounts,
+        squadRules.max_per_club
+      );
+      const best = matches[0];
+      if (!best) continue;
+      const inCand = best.candidate;
+      const inPoolRow = poolByGamePlayerId.get(inCand.gamePlayerId);
+      const outPoolRow = poolByGamePlayerId.get(outPlayer.game_player_id);
+      const outTeamRating = ratingByTeam.get(outPlayer.team_name);
+      const inTeamRating = ratingByTeam.get(inCand.teamName);
 
-  const scoresActive = scoreMoveCandidates(moves.map((m) => m.input), activeStrategy);
-  const scoresDifferential = scoreMoveCandidates(moves.map((m) => m.input), "differential");
-  const scoresSafe = scoreMoveCandidates(moves.map((m) => m.input), "safe");
+      const gainAt = (map: Map<number, number>, gws: number) =>
+        (avgFor(map, inCand.gamePlayerId) - avgFor(map, outPlayer.game_player_id)) * gws;
 
-  function toRec(i: number, score: MoveScore, rank: number, label?: string): AskMaryRecommendation {
-    const m = moves[i];
-    return {
-      rank,
-      label,
-      squadId: selectedSquad.id,
-      gameId: fanteamGame.id,
-      outGamePlayerId: m.input.outGamePlayerId,
-      outName: m.input.outName,
-      outTeam: m.input.outTeam,
-      outPrice: m.outPrice,
-      inGamePlayerId: m.input.inGamePlayerId,
-      inName: m.input.inName,
-      inTeam: m.input.inTeam,
-      inPrice: m.inPrice,
-      position: m.input.position,
-      transferCost: m.input.priceDelta,
-      moneyRemainingAfter: budgetRemaining - m.input.priceDelta,
-      expectedPointsBefore: avgFor(scoreHMap, m.input.outGamePlayerId) * activeHorizon.gameweeks,
-      expectedPointsAfter: avgFor(scoreHMap, m.input.inGamePlayerId) * activeHorizon.gameweeks,
-      gain1: m.gain1,
-      gain3: m.gain3,
-      gain5: m.gain5,
-      hailMaryScoreDiff: m.input.hailMaryScoreDiff,
-      fixtureSwingDiff: m.input.fixtureSwingDiff,
-      risk: score.risk,
-      confidence: score.confidence,
-      overall: score.overall,
-      reasons: score.reasons,
-      warnings: score.warnings,
-    };
-  }
-
-  const sortedIndices = scoresActive
-    .map((s, i) => i)
-    .sort((a, b) => scoresActive[b].overall - scoresActive[a].overall);
-
-  const bestOverall = sortedIndices.length > 0 ? scoresActive[sortedIndices[0]].overall : 0;
-  const hold = moves.length === 0 || bestOverall < HOLD_SCORE_THRESHOLD;
-
-  const rankedMoves = sortedIndices
-    .slice(0, activeLimit.value ?? sortedIndices.length)
-    .map((idx, n) => toRec(idx, scoresActive[idx], n + 1));
-
-  const categoryCards: AskMaryRecommendation[] = [];
-  if (moves.length > 0) {
-    const gain1Idx = argmax(moves.map((m) => m.gain1 ?? -Infinity));
-    categoryCards.push(toRec(gain1Idx, scoresActive[gain1Idx], 0, "Best Immediate Move"));
-
-    categoryCards.push(toRec(sortedIndices[0], scoresActive[sortedIndices[0]], 0, `Best ${activeHorizon.label} Move`));
-
-    const valueRaw = moves.map((m) =>
-      m.input.priceDelta <= 0 ? m.input.expectedPointsGain + 1 : m.input.expectedPointsGain / Math.max(m.input.priceDelta, 0.5)
-    );
-    const valueIdx = argmax(valueRaw);
-    categoryCards.push(toRec(valueIdx, scoresActive[valueIdx], 0, "Best Value Move"));
-
-    const diffIndices = moves.map((m, i) => i).filter((i) => !moves[i].input.incomingIsConfirmedStarter);
-    if (diffIndices.length > 0) {
-      const diffIdx = diffIndices.reduce((best, cur) => (scoresDifferential[cur].overall > scoresDifferential[best].overall ? cur : best));
-      categoryCards.push(toRec(diffIdx, scoresDifferential[diffIdx], 0, "Best Differential Move"));
+      moves.push({
+        input: {
+          outGamePlayerId: outPlayer.game_player_id,
+          inGamePlayerId: inCand.gamePlayerId,
+          outName: outPlayer.full_name,
+          inName: inCand.fullName,
+          outTeam: outPlayer.team_name,
+          inTeam: inCand.teamName,
+          position: outPlayer.position,
+          expectedPointsGain: best.delta * gameweeks,
+          hailMaryScoreDiff: (inPoolRow?.hail_mary_score != null ? Number(inPoolRow.hail_mary_score) : 0) - (outPoolRow?.hail_mary_score != null ? Number(outPoolRow.hail_mary_score) : 0),
+          fixtureSwingDiff: (inTeamRating?.swingValue ?? 0) - (outTeamRating?.swingValue ?? 0),
+          priceDelta: inCand.price - outPlayer.price,
+          incomingMinutesSecurity: LINEUP_SECURITY_SCORES[inPoolRow?.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
+          outgoingMinutesSecurity: LINEUP_SECURITY_SCORES[outPlayer.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
+          incomingInjuryAvailability: INJURY_AVAILABILITY_SCORES[inPoolRow?.status ?? ""] ?? DEFAULT_SECURITY_SCORE,
+          incomingForm: inPoolRow?.form != null ? Number(inPoolRow.form) : null,
+          outgoingForm: outPlayer.form,
+          incomingIsConfirmedStarter: inPoolRow?.lineup === "confirmed_starting",
+          hasFixtureData: !!outTeamRating && !!inTeamRating,
+          hasStatusData: inPoolRow?.lineup != null && outPlayer.lineup != null,
+        },
+        gain1: gainAt(score1Map, 1),
+        gain3: gainAt(score3Map, 3),
+        gain5: gainAt(score5Map, 5),
+        outPrice: outPlayer.price,
+        inPrice: inCand.price,
+      });
     }
 
-    const safeIndices = moves
-      .map((m, i) => i)
-      .filter((i) => moves[i].input.incomingMinutesSecurity >= 0.85 && moves[i].input.incomingInjuryAvailability === 1);
-    if (safeIndices.length > 0) {
-      const safeIdx = safeIndices.reduce((best, cur) => (scoresSafe[cur].overall > scoresSafe[best].overall ? cur : best));
-      categoryCards.push(toRec(safeIdx, scoresSafe[safeIdx], 0, "Best Safe Move"));
+    const scoresActive = scoreMoveCandidates(moves.map((m) => m.input), activeStrategy);
+    const scoresDifferential = scoreMoveCandidates(moves.map((m) => m.input), "differential");
+    const scoresSafe = scoreMoveCandidates(moves.map((m) => m.input), "safe");
+
+    function toRecFor(i: number, score: MoveScore, rank: number, label?: string): AskMaryRecommendation {
+      const m = moves[i];
+      return {
+        rank,
+        label,
+        squadId: selectedSquad.id,
+        gameId: fanteamGame.id,
+        outGamePlayerId: m.input.outGamePlayerId,
+        outName: m.input.outName,
+        outTeam: m.input.outTeam,
+        outPrice: m.outPrice,
+        inGamePlayerId: m.input.inGamePlayerId,
+        inName: m.input.inName,
+        inTeam: m.input.inTeam,
+        inPrice: m.inPrice,
+        position: m.input.position,
+        transferCost: m.input.priceDelta,
+        moneyRemainingAfter: budgetRemaining - m.input.priceDelta,
+        expectedPointsBefore: avgFor(scoreMapForHorizon, m.input.outGamePlayerId) * gameweeks,
+        expectedPointsAfter: avgFor(scoreMapForHorizon, m.input.inGamePlayerId) * gameweeks,
+        gain1: m.gain1,
+        gain3: m.gain3,
+        gain5: m.gain5,
+        hailMaryScoreDiff: m.input.hailMaryScoreDiff,
+        fixtureSwingDiff: m.input.fixtureSwingDiff,
+        risk: score.risk,
+        confidence: score.confidence,
+        overall: score.overall,
+        reasons: score.reasons,
+        warnings: score.warnings,
+      };
     }
+
+    const sortedIndices = scoresActive.map((s, i) => i).sort((a, b) => scoresActive[b].overall - scoresActive[a].overall);
+    const bestOverallScore = sortedIndices.length > 0 ? scoresActive[sortedIndices[0]].overall : 0;
+    const hold = moves.length === 0 || bestOverallScore < HOLD_SCORE_THRESHOLD;
+
+    const rankedMoves = sortedIndices
+      .slice(0, activeLimit.value ?? sortedIndices.length)
+      .map((idx, n) => toRecFor(idx, scoresActive[idx], n + 1));
+
+    const categoryCards: AskMaryRecommendation[] = [];
+    if (moves.length > 0) {
+      const gain1Idx = argmax(moves.map((m) => m.gain1 ?? -Infinity));
+      categoryCards.push(toRecFor(gain1Idx, scoresActive[gain1Idx], 0, "Best Immediate Move"));
+
+      categoryCards.push(toRecFor(sortedIndices[0], scoresActive[sortedIndices[0]], 0, `Best ${gameweeks} Gameweek${gameweeks > 1 ? "s" : ""} Move`));
+
+      const valueRaw = moves.map((m) =>
+        m.input.priceDelta <= 0 ? m.input.expectedPointsGain + 1 : m.input.expectedPointsGain / Math.max(m.input.priceDelta, 0.5)
+      );
+      const valueIdx = argmax(valueRaw);
+      categoryCards.push(toRecFor(valueIdx, scoresActive[valueIdx], 0, "Best Value Move"));
+
+      const diffIndices = moves.map((m, i) => i).filter((i) => !moves[i].input.incomingIsConfirmedStarter);
+      if (diffIndices.length > 0) {
+        const diffIdx = diffIndices.reduce((best, cur) => (scoresDifferential[cur].overall > scoresDifferential[best].overall ? cur : best));
+        categoryCards.push(toRecFor(diffIdx, scoresDifferential[diffIdx], 0, "Best Differential Move"));
+      }
+
+      const safeIndices = moves
+        .map((m, i) => i)
+        .filter((i) => moves[i].input.incomingMinutesSecurity >= 0.85 && moves[i].input.incomingInjuryAvailability === 1);
+      if (safeIndices.length > 0) {
+        const safeIdx = safeIndices.reduce((best, cur) => (scoresSafe[cur].overall > scoresSafe[best].overall ? cur : best));
+        categoryCards.push(toRecFor(safeIdx, scoresSafe[safeIdx], 0, "Best Safe Move"));
+      }
+    }
+
+    return { moves, hold, bestOverallScore, rankedMoves, categoryCards };
   }
+
+  const horizonResults = new Map<number, HorizonResult>(
+    HORIZONS.map((h) => [h.gameweeks, buildHorizonResult(h.gameweeks, scoreMapByGameweeks.get(h.gameweeks) ?? new Map())])
+  );
+  const activeResult = horizonResults.get(activeHorizon.gameweeks)!;
 
   // Squad health check - uses raw current Hail Mary Score, same basis
   // squads/[id]/captain/page.tsx already uses for captaincy ranking.
@@ -628,10 +653,10 @@ export default async function AskMaryPage({
   // /fixtures and the Fixture Swing Panel, not invented gameweek numbers.
   const roadmap: { label: string; text: string }[] = [];
   if (planningGameweek != null) {
-    const top = sortedIndices.length > 0 ? toRec(sortedIndices[0], scoresActive[sortedIndices[0]], 1) : null;
+    const top = activeResult.rankedMoves[0] ?? null;
     roadmap.push({
       label: `This Gameweek (GW${planningGameweek})`,
-      text: !hold && top ? `Sell ${top.outName} and buy ${top.inName}.` : "Hold - no transfer creates a meaningful improvement right now.",
+      text: !activeResult.hold && top ? `Sell ${top.outName} and buy ${top.inName}.` : "Hold - no transfer creates a meaningful improvement right now.",
     });
     for (let offset = 1; offset < activeHorizon.gameweeks; offset++) {
       const gw = planningGameweek + offset;
@@ -683,11 +708,14 @@ export default async function AskMaryPage({
       : [];
 
   // Mary Performance Lab, Part 1 - archive this analysis as a batch of
-  // immutable predictions. Computed inline during this page's own
-  // render, same pattern as watchlist/page.tsx's reconcileWatchlistSnapshot
-  // - not a separate client-triggered action. recordPredictions itself
-  // dedupes on (squad, gameweek, algorithm version, horizon, strategy),
-  // so reloading this page with the same settings doesn't re-archive.
+  // immutable predictions, across ALL THREE planning horizons every time
+  // Mary is asked (not just whichever one the page happens to be
+  // displaying) - the Performance Lab needs a complete picture regardless
+  // of which horizon setting was left selected. Computed inline during
+  // this page's own render, same pattern as watchlist/page.tsx's
+  // reconcileWatchlistSnapshot - not a separate client-triggered action.
+  // recordPredictions itself dedupes per (horizon, kind) group, so
+  // reloading this page doesn't re-archive what's already there.
   // Swallowed on failure - a prediction-logging hiccup should never break
   // the page Ask Mary itself is rendering.
   if (planningGameweek != null) {
@@ -699,14 +727,13 @@ export default async function AskMaryPage({
       .limit(1)
       .maybeSingle();
 
-    const sharedContext = {
+    const baseContext = {
       squadId: selectedSquad.id,
       gameId: fanteamGame.id,
       gameweek: planningGameweek,
       season: latestProjection?.season ?? "unknown",
       algorithmVersionId: latestProjection?.algorithm_version_id ?? null,
       recommendationWeights: STRATEGY_WEIGHTS[activeStrategy],
-      planningHorizon: activeHorizon.gameweeks,
       strategy: activeStrategy,
       transferLimit: activeLimit.value,
       budgetRemainingBefore: budgetRemaining,
@@ -715,61 +742,71 @@ export default async function AskMaryPage({
 
     const predictionRecords: PredictionRecord[] = [];
 
-    if (hold) {
-      predictionRecords.push({
-        ...sharedContext,
-        kind: "hold",
-        recommendationType: "hold",
-        rank: null,
-        outGamePlayerId: null,
-        inGamePlayerId: null,
-        outPrice: null,
-        inPrice: null,
-        transferCost: null,
-        captainGamePlayerId: null,
-        viceCaptainGamePlayerId: null,
-        expectedPointsBefore: null,
-        expectedPointsAfter: null,
-        expectedGain: null,
-        hailMaryScoreDiff: null,
-        fixtureSwingDiff: null,
-        maryMoveScore: moves.length > 0 ? bestOverall : null,
-        confidence: null,
-        risk: null,
-        reasons: [{ code: "hold", text: "No available transfer created a meaningful expected-points improvement." }],
-        warnings: [],
-      });
-    } else {
-      for (const c of [...categoryCards, ...rankedMoves]) {
+    for (const h of HORIZONS) {
+      const result = horizonResults.get(h.gameweeks)!;
+      const sharedContext = { ...baseContext, planningHorizon: h.gameweeks };
+
+      if (result.hold) {
         predictionRecords.push({
           ...sharedContext,
-          kind: "transfer",
-          recommendationType: c.label ? c.label.toLowerCase().replace(/\s+/g, "_") : "ranked",
-          rank: c.label ? null : c.rank,
-          outGamePlayerId: c.outGamePlayerId,
-          inGamePlayerId: c.inGamePlayerId,
-          outPrice: c.outPrice,
-          inPrice: c.inPrice,
-          transferCost: c.transferCost,
+          kind: "hold",
+          recommendationType: "hold",
+          rank: null,
+          outGamePlayerId: null,
+          inGamePlayerId: null,
+          outPrice: null,
+          inPrice: null,
+          transferCost: null,
           captainGamePlayerId: null,
           viceCaptainGamePlayerId: null,
-          expectedPointsBefore: c.expectedPointsBefore,
-          expectedPointsAfter: c.expectedPointsAfter,
-          expectedGain: c.expectedPointsAfter - c.expectedPointsBefore,
-          hailMaryScoreDiff: c.hailMaryScoreDiff,
-          fixtureSwingDiff: c.fixtureSwingDiff,
-          maryMoveScore: c.overall,
-          confidence: c.confidence,
-          risk: c.risk,
-          reasons: c.reasons,
-          warnings: c.warnings,
+          expectedPointsBefore: null,
+          expectedPointsAfter: null,
+          expectedGain: null,
+          hailMaryScoreDiff: null,
+          fixtureSwingDiff: null,
+          maryMoveScore: result.moves.length > 0 ? result.bestOverallScore : null,
+          confidence: null,
+          risk: null,
+          reasons: [{ code: "hold", text: "No available transfer created a meaningful expected-points improvement." }],
+          warnings: [],
         });
+      } else {
+        for (const c of [...result.categoryCards, ...result.rankedMoves]) {
+          predictionRecords.push({
+            ...sharedContext,
+            kind: "transfer",
+            recommendationType: c.label ? c.label.toLowerCase().replace(/\s+/g, "_") : "ranked",
+            rank: c.label ? null : c.rank,
+            outGamePlayerId: c.outGamePlayerId,
+            inGamePlayerId: c.inGamePlayerId,
+            outPrice: c.outPrice,
+            inPrice: c.inPrice,
+            transferCost: c.transferCost,
+            captainGamePlayerId: null,
+            viceCaptainGamePlayerId: null,
+            expectedPointsBefore: c.expectedPointsBefore,
+            expectedPointsAfter: c.expectedPointsAfter,
+            expectedGain: c.expectedPointsAfter - c.expectedPointsBefore,
+            hailMaryScoreDiff: c.hailMaryScoreDiff,
+            fixtureSwingDiff: c.fixtureSwingDiff,
+            maryMoveScore: c.overall,
+            confidence: c.confidence,
+            risk: c.risk,
+            reasons: c.reasons,
+            warnings: c.warnings,
+          });
+        }
       }
     }
 
     if (bestCaptain && viceCaptain) {
+      // Tagged horizon=1, not activeHorizon - captaincy is inherently a
+      // next-gameweek decision regardless of which planning horizon is
+      // selected in the UI, so it shouldn't be duplicated per horizon or
+      // drift depending on what the user happened to have selected.
       predictionRecords.push({
-        ...sharedContext,
+        ...baseContext,
+        planningHorizon: 1,
         kind: "captain",
         recommendationType: "best_captain",
         rank: null,
@@ -863,7 +900,7 @@ export default async function AskMaryPage({
 
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Best Moves</h2>
-              {hold ? (
+              {activeResult.hold ? (
                 <div className="mt-2 rounded-xl border border-emerald-800 bg-emerald-950/30 p-4">
                   <p className="text-sm text-emerald-300">
                     Your squad is well positioned for the {activeHorizon.label.toLowerCase()}. No available transfer
@@ -873,7 +910,7 @@ export default async function AskMaryPage({
               ) : (
                 <>
                   <div className="mt-2 flex flex-col gap-2">
-                    {categoryCards.map((c, i) => (
+                    {activeResult.categoryCards.map((c, i) => (
                       <RecommendationCard key={`cat-${i}-${c.outGamePlayerId}-${c.inGamePlayerId}`} rec={c} gameId={fanteamGame.id} />
                     ))}
                   </div>
@@ -881,7 +918,7 @@ export default async function AskMaryPage({
                     Ranked moves ({activeStrategy} strategy)
                   </p>
                   <div className="mt-2 flex flex-col gap-2">
-                    {rankedMoves.map((rec) => (
+                    {activeResult.rankedMoves.map((rec) => (
                       <RecommendationCard key={`${rec.outGamePlayerId}-${rec.inGamePlayerId}`} rec={rec} gameId={fanteamGame.id} />
                     ))}
                   </div>

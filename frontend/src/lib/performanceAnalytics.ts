@@ -9,6 +9,8 @@
 
 export type PredictionEvalRow = {
   id: number;
+  squadId: number;
+  squadName: string;
   gameweek: number | null;
   algorithmVersionId: number | null;
   strategy: string;
@@ -24,6 +26,11 @@ export type PredictionEvalRow = {
   inGamePlayerId: number | null;
   captainGamePlayerId: number | null;
   viceCaptainGamePlayerId: number | null;
+  // Whether the user actually made this move/captain choice on this
+  // squad, reconciled against squad_transfers/squad_captain_history at
+  // read time (not a stored flag) - null for hold predictions, where
+  // "applied" isn't a meaningful question.
+  applied: boolean | null;
   evaluation: {
     actualGain: number | null;
     predictionError: number | null;
@@ -56,6 +63,7 @@ export type LifetimeSummary = {
   holdPredictions: number;
   averageConfidence: number | null;
   algorithmHealthScore: number | null;
+  applicationRate: number | null; // fraction of transfer+captain predictions the user actually made
 };
 
 function average(values: number[]): number | null {
@@ -100,6 +108,9 @@ export function computeLifetimeSummary(rows: PredictionEvalRow[]): LifetimeSumma
     algorithmHealthScore = Math.round(100 * (0.6 * successRate + 0.4 * (1 - biasPenalty)));
   }
 
+  const applicable = rows.filter((r) => r.applied != null);
+  const applicationRate = applicable.length > 0 ? applicable.filter((r) => r.applied).length / applicable.length : null;
+
   return {
     totalPredictions: rows.length,
     transferPredictions: transfers.length,
@@ -116,6 +127,7 @@ export function computeLifetimeSummary(rows: PredictionEvalRow[]): LifetimeSumma
     holdPredictions: holds.length,
     averageConfidence: average(confidences),
     algorithmHealthScore,
+    applicationRate,
   };
 }
 

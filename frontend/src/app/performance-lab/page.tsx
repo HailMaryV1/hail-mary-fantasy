@@ -16,6 +16,7 @@ export const dynamic = "force-dynamic";
 
 type PredictionRow = {
   id: number;
+  squad_id: number;
   gameweek: number | null;
   algorithm_version_id: number | null;
   strategy: string;
@@ -56,7 +57,13 @@ function formatPts(v: number | null) {
   return v == null ? "-" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}`;
 }
 
-export default async function PerformanceLabPage() {
+export default async function PerformanceLabPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ squad?: string }>;
+}) {
+  const { squad: squadParam } = await searchParams;
+
   const supabase = await createAuthServerClient();
   const {
     data: { user },
@@ -66,13 +73,13 @@ export default async function PerformanceLabPage() {
   const { data: predictionsRaw } = await supabase
     .from("predictions")
     .select(
-      "id, gameweek, algorithm_version_id, strategy, planning_horizon, kind, recommendation_type, mary_move_score, confidence, risk, expected_gain, created_at, out_game_player_id, in_game_player_id, captain_game_player_id, vice_captain_game_player_id"
+      "id, squad_id, gameweek, algorithm_version_id, strategy, planning_horizon, kind, recommendation_type, mary_move_score, confidence, risk, expected_gain, created_at, out_game_player_id, in_game_player_id, captain_game_player_id, vice_captain_game_player_id"
     )
     .eq("user_id", user.id)
     .order("created_at", { ascending: false })
     .returns<PredictionRow[]>();
 
-  const predictions = predictionsRaw ?? [];
+  const allPredictions = predictionsRaw ?? [];
 
   const header = (
     <div>
@@ -83,7 +90,7 @@ export default async function PerformanceLabPage() {
     </div>
   );
 
-  if (predictions.length === 0) {
+  if (allPredictions.length === 0) {
     return (
       <div className="min-h-screen bg-navy-950 px-6 py-10">
         <main className="mx-auto max-w-2xl">
@@ -102,6 +109,13 @@ export default async function PerformanceLabPage() {
     );
   }
 
+  const { data: squadsRaw } = await supabase.from("squads").select("id, name").eq("user_id", user.id);
+  const squadNameById = new Map((squadsRaw ?? []).map((s) => [s.id, s.name as string]));
+  const squadIdsInvolved = Array.from(new Set(allPredictions.map((p) => p.squad_id)));
+
+  const selectedSquadId = squadParam ? Number(squadParam) : null;
+  const predictions = selectedSquadId != null ? allPredictions.filter((p) => p.squad_id === selectedSquadId) : allPredictions;
+
   const predictionIds = predictions.map((p) => p.id);
   const { data: evaluationsRaw } = await supabase
     .from("prediction_evaluations")
@@ -118,10 +132,38 @@ export default async function PerformanceLabPage() {
   const { data: pool } = await supabase.from("game_player_pool").select("game_player_id, full_name").eq("game_slug", "fanteam");
   const nameById = new Map((pool ?? []).map((p) => [p.game_player_id, p.full_name as string]));
 
+  // "Did the user actually make this move" - reconciled at read time
+  // against the real transfer/captain history rather than a stored flag,
+  // so it stays honest even for predictions logged before this feature
+  // existed. Matched on (squad, players) only, not gameweek - a move
+  // applied a little later than Mary suggested it still counts as
+  // "applied".
+  const { data: transfersRaw } = await supabase
+    .from("squad_transfers")
+    .select("squad_id, out_game_player_id, in_game_player_id")
+    .in("squad_id", squadIdsInvolved);
+  const appliedTransferKeys = new Set((transfersRaw ?? []).map((t) => `${t.squad_id}:${t.out_game_player_id}:${t.in_game_player_id}`));
+
+  const { data: captainHistoryRaw } = await supabase
+    .from("squad_captain_history")
+    .select("squad_id, captain_game_player_id, vice_captain_game_player_id")
+    .in("squad_id", squadIdsInvolved);
+  const appliedCaptainKeys = new Set(
+    (captainHistoryRaw ?? []).map((c) => `${c.squad_id}:${c.captain_game_player_id}:${c.vice_captain_game_player_id}`)
+  );
+
   const rows: PredictionEvalRow[] = predictions.map((p) => {
     const ev = evaluationByPredictionId.get(p.id);
+    let applied: boolean | null = null;
+    if (p.kind === "transfer") {
+      applied = appliedTransferKeys.has(`${p.squad_id}:${p.out_game_player_id}:${p.in_game_player_id}`);
+    } else if (p.kind === "captain") {
+      applied = appliedCaptainKeys.has(`${p.squad_id}:${p.captain_game_player_id}:${p.vice_captain_game_player_id}`);
+    }
     return {
       id: p.id,
+      squadId: p.squad_id,
+      squadName: squadNameById.get(p.squad_id) ?? `Squad #${p.squad_id}`,
       gameweek: p.gameweek,
       algorithmVersionId: p.algorithm_version_id,
       strategy: p.strategy,
@@ -137,6 +179,7 @@ export default async function PerformanceLabPage() {
       inGamePlayerId: p.in_game_player_id,
       captainGamePlayerId: p.captain_game_player_id,
       viceCaptainGamePlayerId: p.vice_captain_game_player_id,
+      applied,
       evaluation: ev
         ? {
             actualGain: ev.actual_gain,
@@ -153,6 +196,7 @@ export default async function PerformanceLabPage() {
 
   const summary = computeLifetimeSummary(rows);
 
+  const bySquad = breakdownBy(rows, (r) => String(r.squadId), (k) => squadNameById.get(Number(k)) ?? `Squad #${k}`);
   const byStrategy = breakdownBy(rows, (r) => r.strategy, titleCase);
   const byHorizon = breakdownBy(rows, (r) => String(r.planningHorizon), (k) => `${k} GW`);
   const byType = breakdownBy(rows, (r) => r.recommendationType, titleCase);
@@ -170,12 +214,39 @@ export default async function PerformanceLabPage() {
     return nameById.get(id) ?? `#${id}`;
   }
 
+  const squadSelector = squadIdsInvolved.length > 1 && (
+    <div className="mb-4 flex flex-wrap gap-1 rounded-lg bg-navy-900 p-1">
+      <Link
+        href="/performance-lab"
+        prefetch={false}
+        className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+          selectedSquadId == null ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
+        }`}
+      >
+        All Squads
+      </Link>
+      {squadIdsInvolved.map((id) => (
+        <Link
+          key={id}
+          href={`/performance-lab?squad=${id}`}
+          prefetch={false}
+          className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+            selectedSquadId === id ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
+          }`}
+        >
+          {squadNameById.get(id) ?? `Squad #${id}`}
+        </Link>
+      ))}
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-5xl">
         {header}
+        <div className="mt-4">{squadSelector}</div>
 
-        <section className="mt-6">
+        <section className="mt-2">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Lifetime Summary</h2>
           <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
             <Tile label="Total Predictions" value={String(summary.totalPredictions)} />
@@ -188,7 +259,7 @@ export default async function PerformanceLabPage() {
             <Tile label="Captain Success Rate" value={formatPct(summary.captainSuccessRate)} />
             <Tile label="Lifetime Captain Gain" value={formatPts(summary.lifetimeCaptainGain)} sub="vs vice-captain" />
             <Tile label="Hold Calls Made" value={String(summary.holdPredictions)} />
-            <Tile label="Average Confidence" value={summary.averageConfidence != null ? `${Math.round(summary.averageConfidence)}%` : "-"} />
+            <Tile label="Suggestions Followed" value={formatPct(summary.applicationRate)} sub="of transfer/captain picks" />
             <Tile
               label="Algorithm Health Score"
               value={summary.algorithmHealthScore != null ? `${summary.algorithmHealthScore}/100` : "Not enough data"}
@@ -234,6 +305,7 @@ export default async function PerformanceLabPage() {
         </section>
 
         <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <BreakdownTable title="By Squad" rows={bySquad} />
           <BreakdownTable title="By Strategy" rows={byStrategy} />
           <BreakdownTable title="By Planning Horizon" rows={byHorizon} />
           <BreakdownTable title="By Recommendation Type" rows={byType} />
@@ -246,7 +318,8 @@ export default async function PerformanceLabPage() {
             {rows.slice(0, 100).map((r) => (
               <div key={r.id} className="rounded-lg border border-navy-800 bg-navy-900 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-xs">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="rounded-full bg-navy-700 px-2 py-0.5 font-medium text-white">{r.squadName}</span>
                     <span className="rounded-full bg-navy-800 px-2 py-0.5 font-medium uppercase tracking-wide text-sky-400">
                       {titleCase(r.recommendationType)}
                     </span>
@@ -254,23 +327,34 @@ export default async function PerformanceLabPage() {
                       GW{r.gameweek ?? "-"} - {titleCase(r.strategy)} - {r.planningHorizon} GW horizon
                     </span>
                   </div>
-                  {r.evaluation ? (
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                        r.kind === "transfer"
-                          ? r.evaluation.transferSuccess
-                            ? "bg-emerald-950 text-emerald-400"
-                            : "bg-red-950 text-red-400"
-                          : r.evaluation.captainSuccess
-                            ? "bg-emerald-950 text-emerald-400"
-                            : "bg-red-950 text-red-400"
-                      }`}
-                    >
-                      {r.kind === "transfer" ? formatPts(r.evaluation.actualGain) : r.evaluation.captainSuccess ? "Correct" : "Incorrect"}
-                    </span>
-                  ) : (
-                    <span className="rounded-full bg-navy-800 px-2 py-0.5 text-[10px] font-medium text-navy-400">Awaiting result</span>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {r.applied != null && (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          r.applied ? "bg-sky-950 text-sky-400" : "bg-navy-800 text-navy-400"
+                        }`}
+                      >
+                        {r.applied ? "Applied" : "Not applied"}
+                      </span>
+                    )}
+                    {r.evaluation ? (
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          r.kind === "transfer"
+                            ? r.evaluation.transferSuccess
+                              ? "bg-emerald-950 text-emerald-400"
+                              : "bg-red-950 text-red-400"
+                            : r.evaluation.captainSuccess
+                              ? "bg-emerald-950 text-emerald-400"
+                              : "bg-red-950 text-red-400"
+                        }`}
+                      >
+                        {r.kind === "transfer" ? formatPts(r.evaluation.actualGain) : r.evaluation.captainSuccess ? "Correct" : "Incorrect"}
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-navy-800 px-2 py-0.5 text-[10px] font-medium text-navy-400">Awaiting result</span>
+                    )}
+                  </div>
                 </div>
                 <p className="mt-1.5 text-sm text-white">
                   {r.kind === "transfer" && `${playerName(r.outGamePlayerId)} -> ${playerName(r.inGamePlayerId)}`}

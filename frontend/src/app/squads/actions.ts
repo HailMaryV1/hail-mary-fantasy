@@ -489,7 +489,7 @@ export async function setCaptain({ squadId, captainGamePlayerId, viceCaptainGame
     return { error: "Captain and vice-captain must be different players." };
   }
 
-  const { data: squad } = await supabase.from("squads").select("id, user_id").eq("id", squadId).single();
+  const { data: squad } = await supabase.from("squads").select("id, user_id, game_id").eq("id", squadId).single();
   if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
 
   const { data: starters } = await supabase
@@ -508,6 +508,20 @@ export async function setCaptain({ squadId, captainGamePlayerId, viceCaptainGame
     .update({ captain_game_player_id: captainGamePlayerId, vice_captain_game_player_id: viceCaptainGamePlayerId })
     .eq("id", squadId);
   if (error) return { error: error.message };
+
+  // Mary Performance Lab extension - squads only stores the CURRENT
+  // captain, so log every choice with its gameweek into its own history
+  // (squad_captain_history, migration 0036) - otherwise a past captain
+  // prediction becomes ungradeable once a later gameweek's pick
+  // overwrites it. Same reasoning as squad_transfers existing alongside
+  // squads' own current-state columns.
+  const gameweek = await getCurrentGameweek(supabase, squad.game_id);
+  await supabase.from("squad_captain_history").insert({
+    squad_id: squadId,
+    gameweek,
+    captain_game_player_id: captainGamePlayerId,
+    vice_captain_game_player_id: viceCaptainGamePlayerId,
+  });
 
   redirect(`/squads/${squadId}/captain`);
 }
