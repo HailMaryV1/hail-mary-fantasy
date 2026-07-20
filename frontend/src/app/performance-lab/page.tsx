@@ -8,6 +8,8 @@ import {
   compareTwoVersions,
   type PredictionEvalRow,
 } from "@/lib/performanceAnalytics";
+import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
+import { recordPredictions } from "@/app/ask-mary/actions";
 
 // Reflects whatever the pipeline's evaluate_predictions.py just graded -
 // same "never serve a stale cached response" reasoning as every other
@@ -70,6 +72,63 @@ export default async function PerformanceLabPage({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
+  const header = (
+    <div>
+      <h1 className="text-2xl font-semibold text-white">Mary Performance Lab</h1>
+      <p className="mt-1 text-sm text-navy-300">
+        Every recommendation Ask Mary has made, measured against what actually happened.
+      </p>
+    </div>
+  );
+
+  const { data: allSquadsRaw } = await supabase
+    .from("squads")
+    .select("id, name, free_transfers, fantasy_games(id, slug, display_name)")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
+  type SquadWithGame = { id: number; name: string; free_transfers: number; fantasy_games: { id: number; slug: string; display_name: string } };
+  const allSquads = (allSquadsRaw ?? []) as unknown as SquadWithGame[];
+  const squadNameById = new Map(allSquads.map((s) => [s.id, s.name]));
+
+  if (allSquads.length === 0) {
+    return (
+      <div className="min-h-screen bg-navy-950 px-6 py-10">
+        <main className="mx-auto max-w-2xl">
+          {header}
+          <div className="mt-8 rounded-xl border border-navy-700 bg-navy-900 p-6">
+            <p className="text-sm text-navy-300">
+              You don&apos;t have any squads yet.{" "}
+              <Link href="/squads" className="text-sky-400 hover:text-sky-300">
+                Build one
+              </Link>{" "}
+              - Ask Mary&apos;s recommendations get archived here automatically for every squad you have.
+            </p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // Keep every FanTeam squad's predictions current whenever this page is
+  // visited, not just squads the user happened to open Ask Mary for
+  // directly - runAskMaryAnalysis silently skips a squad with an invalid
+  // composition, and recordPredictions dedupes per (gameweek, horizon,
+  // kind), so revisiting this page is cheap once everything's current.
+  // Dream Team has no live projections pipeline yet (no real calendar/
+  // scrape source - a longstanding, documented gap elsewhere in this
+  // app), so only FanTeam squads get analysed here.
+  const fanteamSquads = allSquads.filter((s) => s.fantasy_games.slug === "fanteam");
+  if (fanteamSquads.length > 0) {
+    const fanteamGame = { id: fanteamSquads[0].fantasy_games.id, display_name: fanteamSquads[0].fantasy_games.display_name };
+    await Promise.all(
+      fanteamSquads.map((s) =>
+        runAskMaryAnalysis(supabase, { id: s.id, name: s.name, free_transfers: s.free_transfers }, fanteamGame, "balanced", { value: 2 }, recordPredictions).catch(
+          () => null
+        )
+      )
+    );
+  }
+
   const { data: predictionsRaw } = await supabase
     .from("predictions")
     .select(
@@ -81,15 +140,6 @@ export default async function PerformanceLabPage({
 
   const allPredictions = predictionsRaw ?? [];
 
-  const header = (
-    <div>
-      <h1 className="text-2xl font-semibold text-white">Mary Performance Lab</h1>
-      <p className="mt-1 text-sm text-navy-300">
-        Every recommendation Ask Mary has made, measured against what actually happened.
-      </p>
-    </div>
-  );
-
   if (allPredictions.length === 0) {
     return (
       <div className="min-h-screen bg-navy-950 px-6 py-10">
@@ -97,11 +147,12 @@ export default async function PerformanceLabPage({
           {header}
           <div className="mt-8 rounded-xl border border-navy-700 bg-navy-900 p-6">
             <p className="text-sm text-navy-300">
-              No predictions recorded yet. Visit{" "}
+              No predictions yet - your squad{fanteamSquads.length === 1 ? "" : "s"} may still be mid-analysis, or
+              incomplete (Ask Mary needs a full, valid squad to work from). Visit{" "}
               <Link href="/ask-mary" className="text-sky-400 hover:text-sky-300">
                 Ask Mary
               </Link>{" "}
-              to generate some - every analysis Mary runs archives itself here automatically.
+              to check.
             </p>
           </div>
         </main>
@@ -109,8 +160,6 @@ export default async function PerformanceLabPage({
     );
   }
 
-  const { data: squadsRaw } = await supabase.from("squads").select("id, name").eq("user_id", user.id);
-  const squadNameById = new Map((squadsRaw ?? []).map((s) => [s.id, s.name as string]));
   const squadIdsInvolved = Array.from(new Set(allPredictions.map((p) => p.squad_id)));
 
   const selectedSquadId = squadParam ? Number(squadParam) : null;
@@ -214,28 +263,45 @@ export default async function PerformanceLabPage({
     return nameById.get(id) ?? `#${id}`;
   }
 
-  const squadSelector = squadIdsInvolved.length > 1 && (
-    <div className="mb-4 flex flex-wrap gap-1 rounded-lg bg-navy-900 p-1">
+  // Grouped by game (FanTeam / Dream Team) rather than one flat list -
+  // shows every squad the user has, not just ones with predictions
+  // already archived, so a brand-new or Dream Team squad is still
+  // visible even before (or without) an analysis existing for it.
+  const squadsByGame = new Map<string, SquadWithGame[]>();
+  for (const s of allSquads) {
+    const list = squadsByGame.get(s.fantasy_games.display_name) ?? [];
+    list.push(s);
+    squadsByGame.set(s.fantasy_games.display_name, list);
+  }
+
+  const squadSelector = (
+    <div className="mb-4 flex flex-col gap-2">
       <Link
         href="/performance-lab"
         prefetch={false}
-        className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-          selectedSquadId == null ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
+        className={`self-start rounded-md px-2.5 py-1 text-xs font-medium ${
+          selectedSquadId == null ? "bg-sky-500 text-navy-950" : "bg-navy-900 text-navy-300 hover:text-white"
         }`}
       >
         All Squads
       </Link>
-      {squadIdsInvolved.map((id) => (
-        <Link
-          key={id}
-          href={`/performance-lab?squad=${id}`}
-          prefetch={false}
-          className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-            selectedSquadId === id ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
-          }`}
-        >
-          {squadNameById.get(id) ?? `Squad #${id}`}
-        </Link>
+      {Array.from(squadsByGame.entries()).map(([gameDisplayName, squadsForGame]) => (
+        <div key={gameDisplayName} className="flex flex-wrap items-center gap-1">
+          <span className="mr-1 text-[10px] font-medium uppercase tracking-wide text-navy-500">{gameDisplayName}</span>
+          {squadsForGame.map((s) => (
+            <Link
+              key={s.id}
+              href={`/performance-lab?squad=${s.id}`}
+              prefetch={false}
+              className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                selectedSquadId === s.id ? "bg-sky-500 text-navy-950" : "bg-navy-900 text-navy-300 hover:text-white"
+              } ${!squadIdsInvolved.includes(s.id) ? "opacity-50" : ""}`}
+              title={!squadIdsInvolved.includes(s.id) ? "No predictions for this squad yet" : undefined}
+            >
+              {s.name}
+            </Link>
+          ))}
+        </div>
       ))}
     </div>
   );

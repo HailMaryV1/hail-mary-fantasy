@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { saveSquad } from "../actions";
+import { saveSquad, updateSquadPlayers } from "../actions";
+import { autoFillBestSquad, type OptimizerPlayer } from "@/lib/squadOptimizer";
 import Badge from "../Badge";
 import StatusPill from "../../StatusPill";
 
@@ -43,17 +44,23 @@ export default function SquadBuilder({
   rules,
   formations,
   players,
+  editingSquadId,
+  initialName,
+  initialSelected,
 }: {
   gameSlug: string;
   rules: Rules;
   formations: Formation[];
   players: Player[];
+  editingSquadId?: number;
+  initialName?: string;
+  initialSelected?: number[];
 }) {
   const [formationCode, setFormationCode] = useState<string | null>(
     rules.uses_formations ? formations[0]?.code ?? null : null
   );
-  const [name, setName] = useState(gameSlug === "dreamteam" ? "Dream Team Squad" : "FanTeam Squad");
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [name, setName] = useState(initialName ?? (gameSlug === "dreamteam" ? "Dream Team Squad" : "FanTeam Squad"));
+  const [selected, setSelected] = useState<Set<number>>(new Set(initialSelected ?? []));
   const [search, setSearch] = useState("");
   const [positionFilter, setPositionFilter] = useState<(typeof POSITIONS)[number] | "ALL">("ALL");
   const [error, setError] = useState<string | null>(null);
@@ -125,14 +132,32 @@ export default function SquadBuilder({
       return;
     }
     startTransition(async () => {
-      const result = await saveSquad({
-        gameSlug,
-        formationCode,
-        gamePlayerIds: Array.from(selected),
-        name: trimmedName,
-      });
+      const result = editingSquadId
+        ? await updateSquadPlayers({ squadId: editingSquadId, gamePlayerIds: Array.from(selected) })
+        : await saveSquad({ gameSlug, formationCode, gamePlayerIds: Array.from(selected), name: trimmedName });
       if (result?.error) setError(result.error);
     });
+  }
+
+  function handleClear() {
+    setError(null);
+    setSelected(new Set());
+  }
+
+  function handleAutoFill() {
+    setError(null);
+    const optimizerPool: OptimizerPlayer[] = players.map((p) => ({
+      gamePlayerId: p.game_player_id,
+      position: p.position,
+      teamId: p.team_id,
+      price: Number(p.price),
+      score: p.hail_mary_score != null ? Number(p.hail_mary_score) : 0,
+    }));
+    const bestIds = autoFillBestSquad(optimizerPool, quota, rules.budget, rules.max_per_club);
+    if (bestIds.length !== rules.squad_size) {
+      setError("Couldn't find a fully budget-legal squad automatically - try adjusting manually from here.");
+    }
+    setSelected(new Set(bestIds));
   }
 
   return (
@@ -195,13 +220,30 @@ export default function SquadBuilder({
           <span className="text-navy-400">{selected.size}/{rules.squad_size} players</span>
         </div>
         {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
-        <button
-          onClick={handleSave}
-          disabled={!isComplete || isPending}
-          className="mt-2 rounded-lg bg-sky-500 px-4 py-1.5 text-sm font-medium text-navy-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {isPending ? "Saving..." : "Save squad"}
-        </button>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            onClick={handleSave}
+            disabled={!isComplete || isPending}
+            className="rounded-lg bg-sky-500 px-4 py-1.5 text-sm font-medium text-navy-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {isPending ? "Saving..." : editingSquadId ? "Save changes" : "Save squad"}
+          </button>
+          <button
+            onClick={handleAutoFill}
+            disabled={isPending}
+            className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800 disabled:cursor-not-allowed disabled:opacity-40"
+            title="Fills every slot with the strongest budget-legal combination by Hail Mary Score - a strong heuristic, not a mathematically proven optimum."
+          >
+            Auto-fill best XI
+          </button>
+          <button
+            onClick={handleClear}
+            disabled={isPending || selected.size === 0}
+            className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-navy-300 hover:bg-navy-800 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Clear squad
+          </button>
+        </div>
       </div>
 
       <div className="mb-3 flex flex-wrap items-center gap-2">

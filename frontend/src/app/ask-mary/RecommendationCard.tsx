@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { makeTransfer } from "../squads/actions";
 import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
-import type { AskMaryRecommendation } from "./page";
+import type { AskMaryRecommendation } from "@/lib/askMaryEngine";
 
 const RISK_TONE: Record<AskMaryRecommendation["risk"], string> = {
   low: "bg-emerald-950 text-emerald-400",

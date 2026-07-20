@@ -1,10 +1,65 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
+import { suggestBestXI } from "@/lib/squadOptimizer";
 
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
+
+/**
+ * Decides is_starting for a freshly saved/edited squad. Without this,
+ * a new squad_players row has no starting/bench split at all - every
+ * player looked like a "confirmed starter" on the pitch view until the
+ * user separately visited the Lineup page, which was never actually
+ * correct (found when Auto-fill Best XI put all 15 players on the pitch
+ * with an empty bench). Reuses the same suggestBestXI the Lineup page's
+ * own "Auto-fill optimal XI" button already uses - one algorithm, not two.
+ *
+ * Games with no bench (squad_size === starting_size, e.g. Dream Team)
+ * have nothing to decide - every player IS a starter.
+ */
+async function computeStartingSplit(
+  supabase: Supabase,
+  gameId: number,
+  gamePlayerIds: number[],
+  squadSize: number,
+  startingSize: number
+): Promise<{ startingIds: Set<number>; formationId: number | null }> {
+  if (squadSize === startingSize) {
+    return { startingIds: new Set(gamePlayerIds), formationId: null };
+  }
+
+  const { data: gameRow } = await supabase.from("fantasy_games").select("slug").eq("id", gameId).single();
+  if (!gameRow) return { startingIds: new Set(), formationId: null };
+
+  const { data: formations } = await supabase
+    .from("game_formations")
+    .select("id, code, gk_count, def_count, mid_count, fwd_count")
+    .eq("game_id", gameId);
+  if (!formations || formations.length === 0) return { startingIds: new Set(), formationId: null };
+
+  const { data: pool } = await supabase
+    .from("game_player_pool")
+    .select("game_player_id, position, hail_mary_score")
+    .eq("game_slug", gameRow.slug)
+    .in("game_player_id", gamePlayerIds)
+    .returns<{ game_player_id: number; position: "GK" | "DEF" | "MID" | "FWD"; hail_mary_score: number | null }[]>();
+
+  const suggestion = suggestBestXI(
+    (pool ?? []).map((p) => ({
+      game_player_id: p.game_player_id,
+      position: p.position,
+      score: p.hail_mary_score != null ? Number(p.hail_mary_score) : 0,
+    })),
+    formations
+  );
+  if (!suggestion) return { startingIds: new Set(), formationId: null };
+
+  const formationRow = formations.find((f) => f.code === suggestion.formationCode);
+  return { startingIds: new Set(suggestion.startingGamePlayerIds), formationId: formationRow?.id ?? null };
+}
 
 type SaveSquadArgs = {
   gameSlug: string;
@@ -98,6 +153,8 @@ export async function saveSquad({ gameSlug, formationCode, gamePlayerIds, name }
     }
   }
 
+  const { startingIds, formationId } = await computeStartingSplit(supabase, game.id, gamePlayerIds, rules.squad_size, rules.starting_size);
+
   const { data: squad, error: squadError } = await supabase
     .from("squads")
     .insert({
@@ -105,6 +162,7 @@ export async function saveSquad({ gameSlug, formationCode, gamePlayerIds, name }
       game_id: game.id,
       name,
       formation_id: formation?.id ?? null,
+      starting_formation_id: formationId,
     })
     .select("id")
     .single();
@@ -113,15 +171,175 @@ export async function saveSquad({ gameSlug, formationCode, gamePlayerIds, name }
     return { error: squadError?.message ?? "Failed to create squad." };
   }
 
-  const { error: playersError } = await supabase
-    .from("squad_players")
-    .insert(gamePlayerIds.map((gamePlayerId) => ({ squad_id: squad.id, game_player_id: gamePlayerId })));
+  const { error: playersError } = await supabase.from("squad_players").insert(
+    gamePlayerIds.map((gamePlayerId) => ({
+      squad_id: squad.id,
+      game_player_id: gamePlayerId,
+      is_starting: startingIds.has(gamePlayerId),
+    }))
+  );
 
   if (playersError) {
     return { error: playersError.message };
   }
 
   redirect("/squads");
+}
+
+type UpdateSquadPlayersArgs = {
+  squadId: number;
+  gamePlayerIds: number[];
+};
+
+/**
+ * Full-replace edit of an existing squad's composition - same
+ * budget/quota/club-limit validation as saveSquad, but diffs against the
+ * squad's current squad_players rather than inserting a fresh squad.
+ * Deliberately bypasses the transfer economy (free_transfers/wildcards/
+ * -4pt costs) that makeTransfer enforces - this is meant as a direct
+ * "set what the squad actually is" editor mirroring what the user does
+ * by hand on FanTeam's own site, not a tracked in-game transfer.
+ * Starting/bench is recomputed for the whole squad on every save (see
+ * computeStartingSplit) rather than left for the user to fix up
+ * separately on the lineup page afterwards.
+ */
+export async function updateSquadPlayers({ squadId, gamePlayerIds }: UpdateSquadPlayersArgs) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const { data: squad } = await supabase.from("squads").select("id, user_id, game_id").eq("id", squadId).single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: rules } = await supabase.from("game_squad_rules").select("*").eq("game_id", squad.game_id).single();
+  if (!rules) return { error: "No squad rules configured for this game." };
+
+  const { data: players } = await supabase
+    .from("game_players")
+    .select("id, price, position_code, player_id, players(position, team_id)")
+    .eq("game_id", squad.game_id)
+    .in("id", gamePlayerIds);
+
+  if (!players || players.length !== gamePlayerIds.length) {
+    return { error: "One or more selected players couldn't be found." };
+  }
+  if (players.length !== rules.squad_size) {
+    return { error: `Squad must have exactly ${rules.squad_size} players (got ${players.length}).` };
+  }
+
+  const totalPrice = players.reduce((sum, p) => sum + Number(p.price), 0);
+  if (totalPrice > Number(rules.budget)) {
+    return { error: `Squad costs £${totalPrice.toFixed(1)}m, over the £${rules.budget}m budget.` };
+  }
+
+  const counts: Record<string, number> = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
+  const clubCounts = new Map<number, number>();
+  for (const p of players) {
+    const position = (p.players as unknown as { position: string; team_id: number }).position;
+    const teamId = (p.players as unknown as { position: string; team_id: number }).team_id;
+    counts[position] = (counts[position] ?? 0) + 1;
+    clubCounts.set(teamId, (clubCounts.get(teamId) ?? 0) + 1);
+  }
+
+  // Fixed per-position quota only (no formation concept for the full
+  // squad) - same as saveSquad's non-formations branch. Games that use
+  // formations for full-squad selection aren't wired up here, same gap
+  // saveSquad already has (Dream Team has no live data source yet anyway).
+  const quota = { GK: rules.gk_quota, DEF: rules.def_quota, MID: rules.mid_quota, FWD: rules.fwd_quota };
+  for (const pos of ["GK", "DEF", "MID", "FWD"] as const) {
+    if (quota[pos] != null && counts[pos] !== quota[pos]) {
+      return { error: `Need exactly ${quota[pos]} ${pos}, got ${counts[pos]}.` };
+    }
+  }
+
+  if (rules.max_per_club) {
+    for (const [, count] of clubCounts) {
+      if (count > rules.max_per_club) {
+        return { error: `Max ${rules.max_per_club} players allowed from the same club.` };
+      }
+    }
+  }
+
+  const { data: currentRows } = await supabase.from("squad_players").select("game_player_id").eq("squad_id", squadId);
+  const currentIds = new Set((currentRows ?? []).map((r) => r.game_player_id));
+  const newIds = new Set(gamePlayerIds);
+
+  const toRemove = Array.from(currentIds).filter((id) => !newIds.has(id));
+  const toAdd = Array.from(newIds).filter((id) => !currentIds.has(id));
+
+  // Recomputed from the FULL new 15, not just the diff - an edit can
+  // easily invalidate the old starting/bench split even for players who
+  // didn't change (e.g. a stronger replacement bumps someone else to the
+  // bench), so every row gets refreshed, not only the newly added ones.
+  const { startingIds, formationId } = await computeStartingSplit(supabase, squad.game_id, gamePlayerIds, rules.squad_size, rules.starting_size);
+
+  if (toRemove.length > 0) {
+    const { error } = await supabase.from("squad_players").delete().eq("squad_id", squadId).in("game_player_id", toRemove);
+    if (error) return { error: error.message };
+  }
+  if (toAdd.length > 0) {
+    const { error } = await supabase.from("squad_players").insert(
+      toAdd.map((gamePlayerId) => ({ squad_id: squadId, game_player_id: gamePlayerId, is_starting: startingIds.has(gamePlayerId) }))
+    );
+    if (error) return { error: error.message };
+  }
+  const kept = gamePlayerIds.filter((id) => currentIds.has(id) && !toAdd.includes(id));
+  for (const isStarting of [true, false]) {
+    const ids = kept.filter((id) => startingIds.has(id) === isStarting);
+    if (ids.length === 0) continue;
+    const { error } = await supabase.from("squad_players").update({ is_starting: isStarting }).eq("squad_id", squadId).in("game_player_id", ids);
+    if (error) return { error: error.message };
+  }
+
+  await supabase.from("squads").update({ starting_formation_id: formationId }).eq("id", squadId);
+
+  redirect("/squads");
+}
+
+/**
+ * Deletes a squad the user owns. Cascades to squad_players,
+ * squad_transfers, squad_captain_history, and predictions (all declared
+ * `on delete cascade` against squads.id) - so a deleted squad's
+ * Performance Lab history disappears with it automatically, no separate
+ * cleanup step needed.
+ */
+export async function deleteSquad({ squadId }: { squadId: number }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Sign in to manage squads." };
+
+  const { data: squad } = await supabase.from("squads").select("id, user_id").eq("id", squadId).single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { error } = await supabase.from("squads").delete().eq("id", squadId);
+  if (error) return { error: error.message };
+
+  revalidatePath("/squads");
+  return { success: true as const };
+}
+
+export async function renameSquad({ squadId, name }: { squadId: number; name: string }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Sign in to manage squads." };
+
+  const trimmed = name.trim();
+  if (!trimmed) return { error: "Squad name can't be empty." };
+
+  const { data: squad } = await supabase.from("squads").select("id, user_id").eq("id", squadId).single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { error } = await supabase.from("squads").update({ name: trimmed }).eq("id", squadId);
+  if (error) return { error: error.message };
+
+  revalidatePath("/squads");
+  return { success: true as const };
 }
 
 type SaveLineupArgs = {

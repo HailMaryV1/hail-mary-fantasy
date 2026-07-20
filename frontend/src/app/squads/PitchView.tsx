@@ -2,6 +2,7 @@
 
 import Kit from "./Kit";
 import StatusPill from "../StatusPill";
+import { shortenPlayerName } from "@/lib/playerName";
 
 export type PitchPlayer = {
   game_player_id: number;
@@ -13,6 +14,7 @@ export type PitchPlayer = {
   score: number | null;
   lineup?: string | null;
   status?: string | null;
+  nextFixture?: { opponentAbbr: string; isHome: boolean } | null;
 };
 
 type Formation = { gk: number; def: number; mid: number; fwd: number };
@@ -62,11 +64,18 @@ export default function PitchView({
       >
         <Kit teamName={player.team_name} size="lg" />
         <span className="flex w-full min-w-0 items-center justify-center gap-0.5">
-          <span className="min-w-0 truncate text-[10px] font-medium text-white sm:text-xs">{player.full_name}</span>
+          <span className="min-w-0 truncate text-[10px] font-medium text-white sm:text-xs" title={player.full_name}>
+            {shortenPlayerName(player.full_name)}
+          </span>
           <StatusPill lineup={player.lineup} status={player.status} />
         </span>
         {player.score != null && <span className="text-[10px] text-sky-400">{player.score.toFixed(1)} pts</span>}
         {player.price != null && <span className="text-[10px] text-navy-300">£{Number(player.price).toFixed(1)}m</span>}
+        {player.nextFixture && (
+          <span className="text-[9px] text-navy-400">
+            {player.nextFixture.isHome ? "vs" : "@"} {player.nextFixture.opponentAbbr}
+          </span>
+        )}
       </button>
     );
   }

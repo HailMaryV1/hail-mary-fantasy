@@ -1,22 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming } from "@/lib/gameweek";
-import { findBuyCandidatesForOutgoing, type TransferCandidate } from "@/lib/transferMatching";
-import { type FixtureDifficultyRow } from "@/lib/fixtureRuns";
-import { deriveTeamFixtureRatings, type TeamFixtureRating } from "@/lib/fixtureSwing";
-import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "@/lib/playerStatus";
-import {
-  scoreMoveCandidates,
-  STRATEGIES,
-  STRATEGY_WEIGHTS,
-  type Strategy,
-  type MoveCandidateInput,
-  type MoveScore,
-  type MoveReason,
-} from "@/lib/recommendationScoring";
-import { assessSquadHealth, type SquadHealthPlayer } from "@/lib/squadHealth";
-import type { PredictionRecord } from "@/lib/predictionArchive";
+import { STRATEGIES, type Strategy } from "@/lib/recommendationScoring";
+import { runAskMaryAnalysis, ASK_MARY_HORIZONS } from "@/lib/askMaryEngine";
 import RecommendationCard from "./RecommendationCard";
 import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
 import { recordPredictions } from "./actions";
@@ -27,12 +13,6 @@ import { recordPredictions } from "./actions";
 // rankings/transfers/compare pages.
 export const dynamic = "force-dynamic";
 
-const HORIZONS = [
-  { key: "1", label: "Next Gameweek", gameweeks: 1 },
-  { key: "3", label: "Next 3 Gameweeks", gameweeks: 3 },
-  { key: "5", label: "Next 5 Gameweeks", gameweeks: 5 },
-] as const;
-
 const TRANSFER_LIMITS = [
   { key: "1", label: "1 move", value: 1 as number | null },
   { key: "2", label: "2 moves", value: 2 as number | null },
@@ -40,80 +20,7 @@ const TRANSFER_LIMITS = [
   { key: "all", label: "Show all", value: null as number | null },
 ] as const;
 
-// Below this Mary Move Score, a transfer isn't worth recommending - Ask
-// Mary should say so rather than force a marginal move for its own sake.
-const HOLD_SCORE_THRESHOLD = 55;
-
-export type AskMaryRecommendation = {
-  rank: number;
-  label?: string;
-  squadId: number;
-  gameId: number;
-  outGamePlayerId: number;
-  outName: string;
-  outTeam: string;
-  outPrice: number;
-  inGamePlayerId: number;
-  inName: string;
-  inTeam: string;
-  inPrice: number;
-  position: string;
-  transferCost: number;
-  moneyRemainingAfter: number;
-  expectedPointsBefore: number;
-  expectedPointsAfter: number;
-  gain1: number | null;
-  gain3: number | null;
-  gain5: number | null;
-  hailMaryScoreDiff: number;
-  fixtureSwingDiff: number;
-  risk: MoveScore["risk"];
-  confidence: number;
-  overall: number;
-  reasons: MoveReason[];
-  warnings: MoveReason[];
-};
-
-type PoolRow = {
-  game_player_id: number;
-  full_name: string;
-  position: "GK" | "DEF" | "MID" | "FWD";
-  team_id: number;
-  team_name: string;
-  price: number;
-  hail_mary_score: number | null;
-  lineup: string | null;
-  status: string | null;
-  form: number | null;
-};
-
-type SquadPlayerRow = {
-  game_player_id: number;
-  is_starting: boolean;
-  game_players: {
-    price: number;
-    players: { full_name: string; position: "GK" | "DEF" | "MID" | "FWD"; team_id: number; teams: { name: string } };
-  };
-};
-
-type RawFixtureJoin = {
-  gameweek: number;
-  fixtures: {
-    id: number;
-    home_team_id: number;
-    away_team_id: number;
-    home: { name: string };
-    away: { name: string };
-  } | null;
-};
-
-type HorizonRow = { game_player_id: number; avg_score: number };
-
-function argmax(values: number[]): number {
-  let best = 0;
-  for (let i = 1; i < values.length; i++) if (values[i] > values[best]) best = i;
-  return best;
-}
+type SquadPlayerForSummary = { game_player_id: number; game_players: { price: number } };
 
 export default async function AskMaryPage({
   searchParams,
@@ -128,7 +35,7 @@ export default async function AskMaryPage({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const activeHorizon = HORIZONS.find((h) => h.key === horizonParam) ?? HORIZONS[2];
+  const activeHorizon = ASK_MARY_HORIZONS.find((h) => h.key === horizonParam) ?? ASK_MARY_HORIZONS[2];
   const activeStrategy = (STRATEGIES.find((s) => s.key === strategyParam)?.key ?? "balanced") as Strategy;
   const activeLimit = TRANSFER_LIMITS.find((l) => l.key === limitParam) ?? TRANSFER_LIMITS[1];
 
@@ -144,10 +51,6 @@ export default async function AskMaryPage({
       </div>
     );
   }
-  // Reassigned to a plain non-null const - TypeScript's control-flow
-  // narrowing from the guard above doesn't carry into nested function
-  // declarations (toRec, below), so closures over the original nullable
-  // binding would still see it as possibly-null.
   const fanteamGame = fanteamGameRow;
 
   const { data: squadsRaw } = await supabase
@@ -198,7 +101,7 @@ export default async function AskMaryPage({
 
   const { data: rules } = await supabase
     .from("game_squad_rules")
-    .select("budget, max_per_club, squad_size, starting_size")
+    .select("budget, squad_size")
     .eq("game_id", fanteamGame.id)
     .single();
 
@@ -212,42 +115,23 @@ export default async function AskMaryPage({
       </div>
     );
   }
-  // Same non-null reassignment as fanteamGame above - buildHorizonResult
-  // (a nested function declaration, below) needs a binding TypeScript
-  // will treat as always non-null.
+  // Reassigned to a plain non-null const - TypeScript's control-flow
+  // narrowing from the guard above doesn't carry into the nested
+  // renderSquadSummary function declaration below.
   const squadRules = rules;
 
-  const { data: squadPlayersRaw } = await supabase
+  // Lightweight pre-check before running the full analysis engine -
+  // an incomplete squad still needs its own summary/warning UI, which
+  // runAskMaryAnalysis (which assumes a valid squad) doesn't produce.
+  const { data: squadPlayersForSummary } = await supabase
     .from("squad_players")
-    .select("game_player_id, is_starting, game_players(price, players(full_name, position, team_id, teams(name)))")
+    .select("game_player_id, game_players(price)")
     .eq("squad_id", selectedSquad.id)
-    .returns<SquadPlayerRow[]>();
-
-  const { data: pool } = await supabase.from("game_player_pool").select("*").eq("game_slug", "fanteam").returns<PoolRow[]>();
-  const poolByGamePlayerId = new Map((pool ?? []).map((p) => [p.game_player_id, p]));
-
-  const squadPlayers = (squadPlayersRaw ?? []).map((sp) => {
-    const poolRow = poolByGamePlayerId.get(sp.game_player_id);
-    return {
-      game_player_id: sp.game_player_id,
-      full_name: sp.game_players.players.full_name,
-      position: sp.game_players.players.position,
-      team_id: sp.game_players.players.team_id,
-      team_name: sp.game_players.players.teams.name,
-      price: Number(sp.game_players.price),
-      is_starting: sp.is_starting,
-      lineup: poolRow?.lineup ?? null,
-      status: poolRow?.status ?? null,
-      form: poolRow?.form != null ? Number(poolRow.form) : null,
-    };
-  });
-
-  const budgetRemaining = Number(rules.budget) - squadPlayers.reduce((sum, p) => sum + p.price, 0);
-  const clubCounts = new Map<number, number>();
-  squadPlayers.forEach((p) => clubCounts.set(p.team_id, (clubCounts.get(p.team_id) ?? 0) + 1));
-  const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
-  const squadTeamsSet = new Set(squadPlayers.map((p) => p.team_name));
-  const squadValid = squadPlayers.length === rules.squad_size;
+    .returns<SquadPlayerForSummary[]>();
+  const squadPlayerCount = (squadPlayersForSummary ?? []).length;
+  const totalPrice = (squadPlayersForSummary ?? []).reduce((sum, p) => sum + Number(p.game_players.price), 0);
+  const preCheckBudgetRemaining = Number(rules.budget) - totalPrice;
+  const squadValid = squadPlayerCount === rules.squad_size;
 
   // Squad selector + settings controls (shared across all states below).
   const squadSelector = squadsRaw.length > 1 && (
@@ -274,7 +158,7 @@ export default async function AskMaryPage({
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-navy-500">Planning horizon</p>
           <div className="mt-1 flex flex-wrap gap-1 rounded-lg bg-navy-950 p-1">
-            {HORIZONS.map((h) => (
+            {ASK_MARY_HORIZONS.map((h) => (
               <Link
                 key={h.key}
                 href={askMaryUrl({ horizon: h.key })}
@@ -326,23 +210,25 @@ export default async function AskMaryPage({
     </div>
   );
 
-  const squadSummary = (
-    <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Current Squad</h2>
-      <p className="mt-2 text-sm text-navy-200">
-        {selectedSquad.name} · £{budgetRemaining.toFixed(1)}m in the bank · {squadPlayers.length}/{rules.squad_size} players ·{" "}
-        {selectedSquad.free_transfers} free transfer{selectedSquad.free_transfers === 1 ? "" : "s"}
-      </p>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Link href={`/squads/${selectedSquad.id}/transfers`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
-          Edit squad
-        </Link>
-        <Link href={`/squads/${selectedSquad.id}/lineup`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
-          Starting XI
-        </Link>
+  function renderSquadSummary(budgetRemaining: number, playerCount: number, freeTransfers: number) {
+    return (
+      <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Current Squad</h2>
+        <p className="mt-2 text-sm text-navy-200">
+          {selectedSquad.name} · £{budgetRemaining.toFixed(1)}m in the bank · {playerCount}/{squadRules.squad_size} players ·{" "}
+          {freeTransfers} free transfer{freeTransfers === 1 ? "" : "s"}
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Link href={`/squads/${selectedSquad.id}/transfers`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
+            Edit squad
+          </Link>
+          <Link href={`/squads/${selectedSquad.id}/lineup`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
+            Starting XI
+          </Link>
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 
   if (!squadValid) {
     return (
@@ -351,10 +237,10 @@ export default async function AskMaryPage({
           {header}
           {squadSelector}
           <div className="mt-4 flex flex-col gap-4">
-            {squadSummary}
+            {renderSquadSummary(preCheckBudgetRemaining, squadPlayerCount, selectedSquad.free_transfers)}
             <div className="rounded-xl border border-amber-800 bg-amber-950/30 p-4">
               <p className="text-sm text-amber-300">
-                {selectedSquad.name} has {squadPlayers.length} of the required {rules.squad_size} players. Finish
+                {selectedSquad.name} has {squadPlayerCount} of the required {rules.squad_size} players. Finish
                 building your squad before asking Mary for advice.
               </p>
             </div>
@@ -364,476 +250,21 @@ export default async function AskMaryPage({
     );
   }
 
-  // Gameweek calendar / season timing - same pattern as squads/[id]/transfers/page.tsx.
-  const { data: gwRow } = await supabase
-    .from("game_fixture_gameweeks")
-    .select("gameweek, fixtures!inner(kickoff_at)")
-    .eq("game_id", fanteamGame.id)
-    .gte("fixtures.kickoff_at", new Date().toISOString())
-    .order("gameweek", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  const currentGameweek: number | null = gwRow?.gameweek ?? null;
-  const hasCalendar = currentGameweek !== null;
-  const { seasonStarted, planningGameweek } = await getSeasonTiming(supabase, fanteamGame.id);
+  const analysis = await runAskMaryAnalysis(supabase, selectedSquad, fanteamGame, activeStrategy, activeLimit, recordPredictions);
 
-  async function getHorizonMap(gameweeks: number): Promise<Map<number, number>> {
-    if (hasCalendar && !seasonStarted) {
-      const { data } = await supabase.rpc("player_score_by_horizon", { p_game_slug: "fanteam", p_num_gameweeks: gameweeks });
-      return new Map(((data ?? []) as HorizonRow[]).map((r) => [r.game_player_id, Number(r.avg_score)]));
-    }
-    if (hasCalendar && seasonStarted && planningGameweek !== null) {
-      const { data } = await supabase.rpc("player_score_by_horizon_from", {
-        p_game_slug: "fanteam",
-        p_start_gameweek: planningGameweek,
-        p_num_gameweeks: gameweeks,
-      });
-      return new Map(((data ?? []) as HorizonRow[]).map((r) => [r.game_player_id, Number(r.avg_score)]));
-    }
-    return new Map();
+  if (!analysis) {
+    return (
+      <div className="min-h-screen bg-navy-950 px-6 py-10">
+        <main className="mx-auto max-w-2xl">
+          {header}
+          <p className="mt-8 text-sm text-red-400">Couldn&apos;t run the analysis for this squad - try again shortly.</p>
+        </main>
+      </div>
+    );
   }
 
-  const [score1Map, score3Map, score5Map] = await Promise.all([getHorizonMap(1), getHorizonMap(3), getHorizonMap(5)]);
-  const scoreMapByGameweeks = new Map([[1, score1Map], [3, score3Map], [5, score5Map]]);
-  const scoreHMap = scoreMapByGameweeks.get(activeHorizon.gameweeks) ?? score5Map;
-
-  function avgFor(map: Map<number, number>, gamePlayerId: number): number {
-    if (map.size > 0) return map.get(gamePlayerId) ?? 0;
-    const hms = poolByGamePlayerId.get(gamePlayerId)?.hail_mary_score;
-    return hms != null ? Number(hms) : 0;
-  }
-
-  // Fixture ratings - same query shape as FixtureSwingPanel.tsx.
-  const { data: fixturesRaw } = await supabase
-    .from("game_fixture_gameweeks")
-    .select(
-      "gameweek, fixtures(id, home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))"
-    )
-    .eq("game_id", fanteamGame.id)
-    .gte("fixtures.kickoff_at", new Date().toISOString())
-    .order("gameweek");
-  const { data: difficultyRaw } = await supabase
-    .from("team_fixture_difficulty")
-    .select("fixture_id, team_id, attack_score, clean_sheet_score")
-    .eq("game_id", fanteamGame.id);
-  const difficultyByFixtureTeam = new Map((difficultyRaw ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, d]));
-
-  const fixtureRows: FixtureDifficultyRow[] = [];
-  for (const row of (fixturesRaw ?? []) as unknown as RawFixtureJoin[]) {
-    const f = row.fixtures;
-    if (!f) continue;
-    for (const [teamId, teamName] of [
-      [f.home_team_id, f.home.name],
-      [f.away_team_id, f.away.name],
-    ] as const) {
-      const diff = difficultyByFixtureTeam.get(`${f.id}:${teamId}`);
-      fixtureRows.push({
-        teamName,
-        gameweek: row.gameweek,
-        attackScore: diff ? Number(diff.attack_score) : null,
-        cleanSheetScore: diff ? Number(diff.clean_sheet_score) : null,
-      });
-    }
-  }
-  const ratings = deriveTeamFixtureRatings(fixtureRows);
-  const ratingByTeam = new Map(ratings.map((r) => [r.teamName, r]));
-
-  type Move = { input: MoveCandidateInput; gain1: number | null; gain3: number | null; gain5: number | null; outPrice: number; inPrice: number };
-
-  type HorizonResult = {
-    moves: Move[];
-    hold: boolean;
-    bestOverallScore: number;
-    rankedMoves: AskMaryRecommendation[];
-    categoryCards: AskMaryRecommendation[];
-  };
-
-  /**
-   * Builds the full candidate-move set, Mary Move Scores, ranked list,
-   * and category cards for ONE planning horizon - reusing the same
-   * matching logic the transfers page and watchlist "Transfer In" flow
-   * already share. Ask Mary only ever DISPLAYS the currently-selected
-   * horizon's result, but the Performance Lab needs predictions archived
-   * across all three (1/3/5 GW) every time Mary is asked, not just
-   * whichever one happens to be on screen - so this runs once per
-   * horizon below, not once total.
-   */
-  function buildHorizonResult(gameweeks: number, scoreMapForHorizon: Map<number, number>): HorizonResult {
-    const poolCandidates: TransferCandidate[] = (pool ?? []).map((p) => ({
-      gamePlayerId: p.game_player_id,
-      fullName: p.full_name,
-      teamId: p.team_id,
-      teamName: p.team_name,
-      price: Number(p.price),
-      score: avgFor(scoreMapForHorizon, p.game_player_id),
-      position: p.position,
-    }));
-
-    const moves: Move[] = [];
-    for (const outPlayer of squadPlayers) {
-      const outScoreH = avgFor(scoreMapForHorizon, outPlayer.game_player_id);
-      const matches = findBuyCandidatesForOutgoing(
-        poolCandidates,
-        {
-          gamePlayerId: outPlayer.game_player_id,
-          fullName: outPlayer.full_name,
-          teamId: outPlayer.team_id,
-          teamName: outPlayer.team_name,
-          price: outPlayer.price,
-          score: outScoreH,
-          position: outPlayer.position,
-        },
-        squadIds,
-        budgetRemaining,
-        clubCounts,
-        squadRules.max_per_club
-      );
-      const best = matches[0];
-      if (!best) continue;
-      const inCand = best.candidate;
-      const inPoolRow = poolByGamePlayerId.get(inCand.gamePlayerId);
-      const outPoolRow = poolByGamePlayerId.get(outPlayer.game_player_id);
-      const outTeamRating = ratingByTeam.get(outPlayer.team_name);
-      const inTeamRating = ratingByTeam.get(inCand.teamName);
-
-      const gainAt = (map: Map<number, number>, gws: number) =>
-        (avgFor(map, inCand.gamePlayerId) - avgFor(map, outPlayer.game_player_id)) * gws;
-
-      moves.push({
-        input: {
-          outGamePlayerId: outPlayer.game_player_id,
-          inGamePlayerId: inCand.gamePlayerId,
-          outName: outPlayer.full_name,
-          inName: inCand.fullName,
-          outTeam: outPlayer.team_name,
-          inTeam: inCand.teamName,
-          position: outPlayer.position,
-          expectedPointsGain: best.delta * gameweeks,
-          hailMaryScoreDiff: (inPoolRow?.hail_mary_score != null ? Number(inPoolRow.hail_mary_score) : 0) - (outPoolRow?.hail_mary_score != null ? Number(outPoolRow.hail_mary_score) : 0),
-          fixtureSwingDiff: (inTeamRating?.swingValue ?? 0) - (outTeamRating?.swingValue ?? 0),
-          priceDelta: inCand.price - outPlayer.price,
-          incomingMinutesSecurity: LINEUP_SECURITY_SCORES[inPoolRow?.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
-          outgoingMinutesSecurity: LINEUP_SECURITY_SCORES[outPlayer.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
-          incomingInjuryAvailability: INJURY_AVAILABILITY_SCORES[inPoolRow?.status ?? ""] ?? DEFAULT_SECURITY_SCORE,
-          incomingForm: inPoolRow?.form != null ? Number(inPoolRow.form) : null,
-          outgoingForm: outPlayer.form,
-          incomingIsConfirmedStarter: inPoolRow?.lineup === "confirmed_starting",
-          hasFixtureData: !!outTeamRating && !!inTeamRating,
-          hasStatusData: inPoolRow?.lineup != null && outPlayer.lineup != null,
-        },
-        gain1: gainAt(score1Map, 1),
-        gain3: gainAt(score3Map, 3),
-        gain5: gainAt(score5Map, 5),
-        outPrice: outPlayer.price,
-        inPrice: inCand.price,
-      });
-    }
-
-    const scoresActive = scoreMoveCandidates(moves.map((m) => m.input), activeStrategy);
-    const scoresDifferential = scoreMoveCandidates(moves.map((m) => m.input), "differential");
-    const scoresSafe = scoreMoveCandidates(moves.map((m) => m.input), "safe");
-
-    function toRecFor(i: number, score: MoveScore, rank: number, label?: string): AskMaryRecommendation {
-      const m = moves[i];
-      return {
-        rank,
-        label,
-        squadId: selectedSquad.id,
-        gameId: fanteamGame.id,
-        outGamePlayerId: m.input.outGamePlayerId,
-        outName: m.input.outName,
-        outTeam: m.input.outTeam,
-        outPrice: m.outPrice,
-        inGamePlayerId: m.input.inGamePlayerId,
-        inName: m.input.inName,
-        inTeam: m.input.inTeam,
-        inPrice: m.inPrice,
-        position: m.input.position,
-        transferCost: m.input.priceDelta,
-        moneyRemainingAfter: budgetRemaining - m.input.priceDelta,
-        expectedPointsBefore: avgFor(scoreMapForHorizon, m.input.outGamePlayerId) * gameweeks,
-        expectedPointsAfter: avgFor(scoreMapForHorizon, m.input.inGamePlayerId) * gameweeks,
-        gain1: m.gain1,
-        gain3: m.gain3,
-        gain5: m.gain5,
-        hailMaryScoreDiff: m.input.hailMaryScoreDiff,
-        fixtureSwingDiff: m.input.fixtureSwingDiff,
-        risk: score.risk,
-        confidence: score.confidence,
-        overall: score.overall,
-        reasons: score.reasons,
-        warnings: score.warnings,
-      };
-    }
-
-    const sortedIndices = scoresActive.map((s, i) => i).sort((a, b) => scoresActive[b].overall - scoresActive[a].overall);
-    const bestOverallScore = sortedIndices.length > 0 ? scoresActive[sortedIndices[0]].overall : 0;
-    const hold = moves.length === 0 || bestOverallScore < HOLD_SCORE_THRESHOLD;
-
-    const rankedMoves = sortedIndices
-      .slice(0, activeLimit.value ?? sortedIndices.length)
-      .map((idx, n) => toRecFor(idx, scoresActive[idx], n + 1));
-
-    const categoryCards: AskMaryRecommendation[] = [];
-    if (moves.length > 0) {
-      const gain1Idx = argmax(moves.map((m) => m.gain1 ?? -Infinity));
-      categoryCards.push(toRecFor(gain1Idx, scoresActive[gain1Idx], 0, "Best Immediate Move"));
-
-      categoryCards.push(toRecFor(sortedIndices[0], scoresActive[sortedIndices[0]], 0, `Best ${gameweeks} Gameweek${gameweeks > 1 ? "s" : ""} Move`));
-
-      const valueRaw = moves.map((m) =>
-        m.input.priceDelta <= 0 ? m.input.expectedPointsGain + 1 : m.input.expectedPointsGain / Math.max(m.input.priceDelta, 0.5)
-      );
-      const valueIdx = argmax(valueRaw);
-      categoryCards.push(toRecFor(valueIdx, scoresActive[valueIdx], 0, "Best Value Move"));
-
-      const diffIndices = moves.map((m, i) => i).filter((i) => !moves[i].input.incomingIsConfirmedStarter);
-      if (diffIndices.length > 0) {
-        const diffIdx = diffIndices.reduce((best, cur) => (scoresDifferential[cur].overall > scoresDifferential[best].overall ? cur : best));
-        categoryCards.push(toRecFor(diffIdx, scoresDifferential[diffIdx], 0, "Best Differential Move"));
-      }
-
-      const safeIndices = moves
-        .map((m, i) => i)
-        .filter((i) => moves[i].input.incomingMinutesSecurity >= 0.85 && moves[i].input.incomingInjuryAvailability === 1);
-      if (safeIndices.length > 0) {
-        const safeIdx = safeIndices.reduce((best, cur) => (scoresSafe[cur].overall > scoresSafe[best].overall ? cur : best));
-        categoryCards.push(toRecFor(safeIdx, scoresSafe[safeIdx], 0, "Best Safe Move"));
-      }
-    }
-
-    return { moves, hold, bestOverallScore, rankedMoves, categoryCards };
-  }
-
-  const horizonResults = new Map<number, HorizonResult>(
-    HORIZONS.map((h) => [h.gameweeks, buildHorizonResult(h.gameweeks, scoreMapByGameweeks.get(h.gameweeks) ?? new Map())])
-  );
-  const activeResult = horizonResults.get(activeHorizon.gameweeks)!;
-
-  // Squad health check - uses raw current Hail Mary Score, same basis
-  // squads/[id]/captain/page.tsx already uses for captaincy ranking.
-  const positionAverages: Record<string, number> = {};
-  for (const pos of ["GK", "DEF", "MID", "FWD"]) {
-    const vals = (pool ?? []).filter((p) => p.position === pos && p.hail_mary_score != null).map((p) => Number(p.hail_mary_score));
-    positionAverages[pos] = vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
-  }
-  const healthPlayers: SquadHealthPlayer[] = squadPlayers.map((p) => ({
-    gamePlayerId: p.game_player_id,
-    fullName: p.full_name,
-    position: p.position,
-    teamName: p.team_name,
-    price: p.price,
-    score: poolByGamePlayerId.get(p.game_player_id)?.hail_mary_score != null ? Number(poolByGamePlayerId.get(p.game_player_id)!.hail_mary_score) : null,
-    lineup: p.lineup,
-    status: p.status,
-    isStarting: p.is_starting,
-  }));
-  const health = assessSquadHealth(healthPlayers, positionAverages, rules.max_per_club, ratingByTeam, activeHorizon.gameweeks);
-
-  // Captaincy - same "top score among starters" baseline as
-  // squads/[id]/captain/CaptainPicker.tsx, extended with safest/differential
-  // picks using the numeric security scores already established.
-  const captaincyPool = squadPlayers
-    .filter((p) => p.is_starting)
-    .map((p) => ({ ...p, score: poolByGamePlayerId.get(p.game_player_id)?.hail_mary_score != null ? Number(poolByGamePlayerId.get(p.game_player_id)!.hail_mary_score) : 0 }))
-    .sort((a, b) => b.score - a.score);
-  const bestCaptain = captaincyPool[0] ?? null;
-  const viceCaptain = captaincyPool[1] ?? null;
-  const safestCaptain =
-    captaincyPool
-      .slice()
-      .sort(
-        (a, b) =>
-          (LINEUP_SECURITY_SCORES[b.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE) - (LINEUP_SECURITY_SCORES[a.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE) ||
-          b.score - a.score
-      )[0] ?? null;
-  const differentialCaptain = captaincyPool.find((p) => p.lineup !== "confirmed_starting") ?? null;
-
-  // Mary's Gameweek Plan - built from the same fixture-run data as
-  // /fixtures and the Fixture Swing Panel, not invented gameweek numbers.
-  const roadmap: { label: string; text: string }[] = [];
-  if (planningGameweek != null) {
-    const top = activeResult.rankedMoves[0] ?? null;
-    roadmap.push({
-      label: `This Gameweek (GW${planningGameweek})`,
-      text: !activeResult.hold && top ? `Sell ${top.outName} and buy ${top.inName}.` : "Hold - no transfer creates a meaningful improvement right now.",
-    });
-    for (let offset = 1; offset < activeHorizon.gameweeks; offset++) {
-      const gw = planningGameweek + offset;
-      const decliningHere = Array.from(squadTeamsSet)
-        .map((t) => ratingByTeam.get(t))
-        .filter((r): r is TeamFixtureRating => !!r && r.swingDirection === "declining" && r.startsInGameweek === gw);
-      const improvingHere = ratings.filter((r) => r.swingDirection === "improving" && r.startsInGameweek === gw && !squadTeamsSet.has(r.teamName));
-      if (decliningHere.length > 0) {
-        roadmap.push({ label: `Gameweek ${gw}`, text: `Review ${decliningHere.map((r) => r.teamName).join(", ")} assets before their difficult fixture run.` });
-      } else if (improvingHere.length > 0) {
-        roadmap.push({ label: `Gameweek ${gw}`, text: `${improvingHere.map((r) => r.teamName).join(", ")}'s favourable fixture swing begins - worth monitoring.` });
-      } else {
-        roadmap.push({ label: `Gameweek ${gw}`, text: "Hold unless a squad player's status changes." });
-      }
-    }
-  }
-
-  // Players to Monitor - clubs entering a good run within the horizon
-  // that the squad doesn't already own, top scorer per club.
-  const monitorList =
-    planningGameweek != null
-      ? ratings
-          .filter(
-            (r) =>
-              r.swingDirection === "improving" &&
-              r.startsInGameweek != null &&
-              r.startsInGameweek >= planningGameweek &&
-              r.startsInGameweek < planningGameweek + activeHorizon.gameweeks &&
-              !squadTeamsSet.has(r.teamName)
-          )
-          .map((r) => {
-            const teamPlayers = (pool ?? [])
-              .filter((p) => p.team_name === r.teamName && !squadIds.has(p.game_player_id) && p.hail_mary_score != null)
-              .sort((a, b) => Number(b.hail_mary_score) - Number(a.hail_mary_score));
-            const top = teamPlayers[0];
-            if (!top) return null;
-            return {
-              gamePlayerId: top.game_player_id,
-              fullName: top.full_name,
-              teamName: r.teamName,
-              position: top.position,
-              price: Number(top.price),
-              hailMaryScore: top.hail_mary_score != null ? Number(top.hail_mary_score) : null,
-              startsInGameweek: r.startsInGameweek,
-            };
-          })
-          .filter((x): x is NonNullable<typeof x> => x != null)
-          .slice(0, 6)
-      : [];
-
-  // Mary Performance Lab, Part 1 - archive this analysis as a batch of
-  // immutable predictions, across ALL THREE planning horizons every time
-  // Mary is asked (not just whichever one the page happens to be
-  // displaying) - the Performance Lab needs a complete picture regardless
-  // of which horizon setting was left selected. Computed inline during
-  // this page's own render, same pattern as watchlist/page.tsx's
-  // reconcileWatchlistSnapshot - not a separate client-triggered action.
-  // recordPredictions itself dedupes per (horizon, kind) group, so
-  // reloading this page doesn't re-archive what's already there.
-  // Swallowed on failure - a prediction-logging hiccup should never break
-  // the page Ask Mary itself is rendering.
-  if (planningGameweek != null) {
-    const { data: latestProjection } = await supabase
-      .from("projections")
-      .select("algorithm_version_id, season")
-      .eq("game_player_id", squadPlayers[0].game_player_id)
-      .order("id", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    const baseContext = {
-      squadId: selectedSquad.id,
-      gameId: fanteamGame.id,
-      gameweek: planningGameweek,
-      season: latestProjection?.season ?? "unknown",
-      algorithmVersionId: latestProjection?.algorithm_version_id ?? null,
-      recommendationWeights: STRATEGY_WEIGHTS[activeStrategy],
-      strategy: activeStrategy,
-      transferLimit: activeLimit.value,
-      budgetRemainingBefore: budgetRemaining,
-      freeTransfersBefore: selectedSquad.free_transfers,
-    };
-
-    const predictionRecords: PredictionRecord[] = [];
-
-    for (const h of HORIZONS) {
-      const result = horizonResults.get(h.gameweeks)!;
-      const sharedContext = { ...baseContext, planningHorizon: h.gameweeks };
-
-      if (result.hold) {
-        predictionRecords.push({
-          ...sharedContext,
-          kind: "hold",
-          recommendationType: "hold",
-          rank: null,
-          outGamePlayerId: null,
-          inGamePlayerId: null,
-          outPrice: null,
-          inPrice: null,
-          transferCost: null,
-          captainGamePlayerId: null,
-          viceCaptainGamePlayerId: null,
-          expectedPointsBefore: null,
-          expectedPointsAfter: null,
-          expectedGain: null,
-          hailMaryScoreDiff: null,
-          fixtureSwingDiff: null,
-          maryMoveScore: result.moves.length > 0 ? result.bestOverallScore : null,
-          confidence: null,
-          risk: null,
-          reasons: [{ code: "hold", text: "No available transfer created a meaningful expected-points improvement." }],
-          warnings: [],
-        });
-      } else {
-        for (const c of [...result.categoryCards, ...result.rankedMoves]) {
-          predictionRecords.push({
-            ...sharedContext,
-            kind: "transfer",
-            recommendationType: c.label ? c.label.toLowerCase().replace(/\s+/g, "_") : "ranked",
-            rank: c.label ? null : c.rank,
-            outGamePlayerId: c.outGamePlayerId,
-            inGamePlayerId: c.inGamePlayerId,
-            outPrice: c.outPrice,
-            inPrice: c.inPrice,
-            transferCost: c.transferCost,
-            captainGamePlayerId: null,
-            viceCaptainGamePlayerId: null,
-            expectedPointsBefore: c.expectedPointsBefore,
-            expectedPointsAfter: c.expectedPointsAfter,
-            expectedGain: c.expectedPointsAfter - c.expectedPointsBefore,
-            hailMaryScoreDiff: c.hailMaryScoreDiff,
-            fixtureSwingDiff: c.fixtureSwingDiff,
-            maryMoveScore: c.overall,
-            confidence: c.confidence,
-            risk: c.risk,
-            reasons: c.reasons,
-            warnings: c.warnings,
-          });
-        }
-      }
-    }
-
-    if (bestCaptain && viceCaptain) {
-      // Tagged horizon=1, not activeHorizon - captaincy is inherently a
-      // next-gameweek decision regardless of which planning horizon is
-      // selected in the UI, so it shouldn't be duplicated per horizon or
-      // drift depending on what the user happened to have selected.
-      predictionRecords.push({
-        ...baseContext,
-        planningHorizon: 1,
-        kind: "captain",
-        recommendationType: "best_captain",
-        rank: null,
-        outGamePlayerId: null,
-        inGamePlayerId: null,
-        outPrice: null,
-        inPrice: null,
-        transferCost: null,
-        captainGamePlayerId: bestCaptain.game_player_id,
-        viceCaptainGamePlayerId: viceCaptain.game_player_id,
-        expectedPointsBefore: null,
-        expectedPointsAfter: null,
-        expectedGain: null,
-        hailMaryScoreDiff: null,
-        fixtureSwingDiff: null,
-        maryMoveScore: null,
-        confidence: null,
-        risk: null,
-        reasons: [{ code: "top_scorer", text: `${bestCaptain.full_name} is the highest-projected starter.` }],
-        warnings: [],
-      });
-    }
-
-    if (predictionRecords.length > 0) {
-      await recordPredictions(predictionRecords).catch(() => {});
-    }
-  }
+  const activeResult = analysis.horizonResults.get(activeHorizon.gameweeks)!;
+  const { bestCaptain, viceCaptain, safestCaptain, differentialCaptain, health, roadmap, monitorList, hasCalendar } = analysis;
 
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
@@ -844,7 +275,7 @@ export default async function AskMaryPage({
 
           <div className="mt-4 flex flex-col gap-4">
             {settingsPanel}
-            {squadSummary}
+            {renderSquadSummary(analysis.budgetRemaining, analysis.squadPlayers.length, selectedSquad.free_transfers)}
 
             {!hasCalendar && (
               <p className="text-xs text-amber-400">

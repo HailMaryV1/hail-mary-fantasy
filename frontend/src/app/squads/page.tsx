@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSquadStatuses } from "@/lib/squadStatus";
+import SquadCardActions from "./SquadCardActions";
 
 // See rankings/page.tsx for why this is needed - Supabase's .rpc() POSTs
 // to a fixed URL regardless of parameters, so Next's fetch Data Cache can
@@ -96,6 +97,8 @@ export default async function SquadsPage() {
                   Look ahead
                 </Link>
               </div>
+
+              <SquadCardActions squadId={s.id} squadName={s.name} gameSlug={s.gameSlug} />
             </div>
           ))}
         </div>

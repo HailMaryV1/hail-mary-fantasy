@@ -5,6 +5,7 @@ import { makeTransfer } from "../../actions";
 import PitchView from "../../PitchView";
 import Badge from "../../Badge";
 import StatusPill from "../../../StatusPill";
+import { shortenPlayerName } from "@/lib/playerName";
 
 const POSITIONS = ["ALL", "GK", "DEF", "MID", "FWD"] as const;
 type SortKey = "score" | "price";
@@ -20,6 +21,7 @@ type SquadMember = {
   score: number | null;
   lineup?: string | null;
   status?: string | null;
+  nextFixture?: { opponentAbbr: string; isHome: boolean } | null;
 };
 
 type PoolCandidate = {
@@ -165,8 +167,13 @@ export default function TransferBoard({
       )}
       {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,280px)_1fr]">
-        <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
+      {/* min-w-0 on both grid items - without it a grid/flex item can't
+          shrink below its content's natural width (same gotcha as
+          NavBar.tsx), so a long player name in the pool would silently
+          force the whole row, and the page, to scroll horizontally
+          instead of the intended internal wrapping/truncation kicking in. */}
+      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,380px)_1fr]">
+        <div className="min-w-0 rounded-xl border border-navy-700 bg-navy-900 p-3">
           <p className="mb-2 text-xs font-medium uppercase tracking-wide text-navy-400">Player pool</p>
           <input
             type="text"
@@ -227,11 +234,11 @@ export default function TransferBoard({
                     clickable ? "bg-navy-950 hover:bg-navy-800" : "cursor-not-allowed bg-navy-950/40 opacity-40"
                   }`}
                 >
-                  <span className="flex items-center gap-2 text-white">
+                  <span className="flex min-w-0 items-center gap-2 text-white">
                     <Badge teamName={p.team_name} size="sm" />
-                    <span>
-                      <span className="inline-flex items-center">
-                        {p.full_name}
+                    <span className="min-w-0">
+                      <span className="inline-flex items-center" title={p.full_name}>
+                        {shortenPlayerName(p.full_name)}
                         <StatusPill lineup={p.lineup} status={p.status} />
                       </span>
                       <span className="block text-xs text-navy-400">

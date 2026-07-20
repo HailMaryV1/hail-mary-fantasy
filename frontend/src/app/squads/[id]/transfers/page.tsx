@@ -3,10 +3,24 @@ import { notFound } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
 import { findBuyCandidatesForOutgoing, type TransferCandidate } from "@/lib/transferMatching";
+import { getTeamColors } from "@/lib/teamColors";
 import TransferPlanner from "./TransferPlanner";
 import TransferBoard from "./TransferBoard";
 import RecentTransfers from "./RecentTransfers";
 import FixtureSwingPanel from "./FixtureSwingPanel";
+
+const GAMEWEEK_PREVIEW_COUNT = 5;
+
+type FixtureJoinRow = {
+  gameweek: number;
+  fixtures: {
+    id: number;
+    home_team_id: number;
+    away_team_id: number;
+    home: { name: string };
+    away: { name: string };
+  } | null;
+};
 
 // See rankings/page.tsx for why this is needed - Supabase's .rpc() POSTs
 // to a fixed URL regardless of parameters, so Next's fetch Data Cache can
@@ -62,13 +76,20 @@ export default async function TransfersPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ horizon?: string }>;
+  searchParams: Promise<{ horizon?: string; gw?: string }>;
 }) {
   const { id } = await params;
-  const { horizon: horizonParam } = await searchParams;
+  const { horizon: horizonParam, gw: gwParam } = await searchParams;
   const squadId = Number(id);
   if (!Number.isInteger(squadId)) notFound();
   const activeHorizon = HORIZONS.find((h) => h.key === horizonParam) ?? HORIZONS[0];
+
+  function pageUrl(overrides: Partial<{ horizon: string; gw: string }>) {
+    const params = new URLSearchParams();
+    params.set("horizon", overrides.horizon ?? activeHorizon.key);
+    params.set("gw", overrides.gw ?? String(viewGameweek));
+    return `/squads/${squadId}/transfers?${params.toString()}`;
+  }
 
   const supabase = await createAuthServerClient();
   const {
@@ -94,6 +115,16 @@ export default async function TransfersPage({
     .maybeSingle();
   const currentGameweek: number | null = gwRow?.gameweek ?? null;
   const hasCalendar = currentGameweek !== null;
+
+  // "Viewing gameweek" - a separate concept from the recommendation
+  // engine's planning horizon below: this drives what the squad's OWN
+  // pitch view shows (expected points + next fixture per player, and the
+  // big total above the pitch), previewing a specific future gameweek
+  // rather than a rolling horizon average from the current one.
+  const viewGameweek = gwParam ? Number(gwParam) : (currentGameweek ?? 1);
+  const gameweekOptions = currentGameweek != null
+    ? Array.from({ length: GAMEWEEK_PREVIEW_COUNT }, (_, i) => currentGameweek + i)
+    : [];
 
   const { seasonStarted, planningGameweek } = await getSeasonTiming(supabase, squad.game_id);
 
@@ -243,7 +274,47 @@ export default async function TransfersPage({
 
   recommendations.sort((a, b) => b.delta - a.delta);
 
-  const squadMembersWithScore = squadPlayers.map((p) => ({ ...p, score: scoreById.get(p.game_player_id) ?? null }));
+  // Per-player score AND next fixture for the specific gameweek being
+  // previewed - independent of the horizon-based scoreById above, which
+  // still drives the pool/recommendation logic below unchanged.
+  let viewScoreById = new Map<number, number>();
+  if (hasCalendar) {
+    const { data } = await supabase.rpc("player_score_by_horizon_from", {
+      p_game_slug: game.slug,
+      p_start_gameweek: viewGameweek,
+      p_num_gameweeks: 1,
+    });
+    viewScoreById = new Map(((data ?? []) as HorizonRow[]).map((r) => [r.game_player_id, r.avg_score]));
+  }
+
+  const nextFixtureByTeam = new Map<string, { opponent: string; isHome: boolean }>();
+  if (hasCalendar) {
+    const { data: viewFixturesRaw } = await supabase
+      .from("game_fixture_gameweeks")
+      .select(
+        "gameweek, fixtures(id, home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))"
+      )
+      .eq("game_id", squad.game_id)
+      .eq("gameweek", viewGameweek);
+    for (const row of (viewFixturesRaw ?? []) as unknown as FixtureJoinRow[]) {
+      const f = row.fixtures;
+      if (!f) continue;
+      nextFixtureByTeam.set(f.home.name, { opponent: f.away.name, isHome: true });
+      nextFixtureByTeam.set(f.away.name, { opponent: f.home.name, isHome: false });
+    }
+  }
+
+  const squadMembersWithScore = squadPlayers.map((p) => {
+    const fx = nextFixtureByTeam.get(p.team_name);
+    return {
+      ...p,
+      score: viewScoreById.get(p.game_player_id) ?? scoreById.get(p.game_player_id) ?? null,
+      nextFixture: fx ? { opponentAbbr: getTeamColors(fx.opponent).abbr, isHome: fx.isHome } : null,
+    };
+  });
+  const totalExpectedPoints = squadMembersWithScore
+    .filter((p) => p.is_starting)
+    .reduce((sum, p) => sum + (p.score ?? 0), 0);
   const poolCandidates = (pool ?? [])
     .filter((p) => !squadIds.has(p.game_player_id))
     .map((p) => ({ ...p, score: scoreById.get(p.game_player_id) ?? null }));
@@ -331,7 +402,7 @@ export default async function TransfersPage({
               {HORIZONS.map((h) => (
                 <Link
                   key={h.key}
-                  href={`/squads/${squadId}/transfers?horizon=${h.key}`}
+                  href={pageUrl({ horizon: h.key })}
                   prefetch={false}
                   className={`rounded-md px-2.5 py-1 text-xs font-medium ${
                     h.key === activeHorizon.key
@@ -349,6 +420,35 @@ export default async function TransfersPage({
                 Gameweek calendar not published for {game.display_name} yet - showing latest single projection instead.
               </span>
             )}
+          </div>
+        )}
+
+        {gameweekOptions.length > 0 && (
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium uppercase tracking-wide text-navy-400">Viewing gameweek</span>
+            <div className="flex flex-wrap gap-1 rounded-lg bg-navy-900 p-1">
+              {gameweekOptions.map((gw) => (
+                <Link
+                  key={gw}
+                  href={pageUrl({ gw: String(gw) })}
+                  prefetch={false}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                    gw === viewGameweek ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
+                  }`}
+                >
+                  GW{gw}
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {hasCalendar && (
+          <div className="mt-3 rounded-xl border border-navy-700 bg-navy-900 p-4 text-center">
+            <p className="text-xs font-medium uppercase tracking-wide text-navy-400">
+              Expected Points - GW{viewGameweek}
+            </p>
+            <p className="mt-1 text-4xl font-bold text-sky-400">{totalExpectedPoints.toFixed(1)}</p>
           </div>
         )}
 
