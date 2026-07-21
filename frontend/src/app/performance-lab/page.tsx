@@ -8,8 +8,6 @@ import {
   compareTwoVersions,
   type PredictionEvalRow,
 } from "@/lib/performanceAnalytics";
-import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
-import { recordPredictions } from "@/app/ask-mary/actions";
 import GameSecondaryNav from "../GameSecondaryNav";
 
 // Reflects whatever the pipeline's evaluate_predictions.py just graded -
@@ -113,7 +111,7 @@ export default async function PerformanceLabPage({
               <Link href="/squads" className="text-sky-400 hover:text-sky-300">
                 Build one
               </Link>{" "}
-              - Ask Mary&apos;s recommendations get archived here automatically for every squad you have.
+              - press Save Team on a squad once your lineup is locked in to start building a history here.
             </p>
           </div>
         </main>
@@ -121,37 +119,13 @@ export default async function PerformanceLabPage({
     );
   }
 
-  // Keep every FanTeam squad's predictions current whenever this page is
-  // visited, not just squads the user happened to open Ask Mary for
-  // directly - runAskMaryAnalysis silently skips a squad with an invalid
-  // composition, and recordPredictions dedupes per (gameweek, horizon,
-  // kind), so revisiting this page is cheap once everything's current.
-  // Dream Team has no live projections pipeline yet (no real calendar/
-  // scrape source - a longstanding, documented gap elsewhere in this
-  // app), so only FanTeam squads get analysed here.
-  const fanteamSquads = allSquads.filter((s) => s.fantasy_games.slug === "fanteam");
-  if (fanteamSquads.length > 0) {
-    const fanteamGame = { id: fanteamSquads[0].fantasy_games.id, display_name: fanteamSquads[0].fantasy_games.display_name };
-    await Promise.all(
-      fanteamSquads.map((s) =>
-        runAskMaryAnalysis(
-          supabase,
-          {
-            id: s.id,
-            name: s.name,
-            free_transfers: s.free_transfers,
-            wildcard_1_used_gameweek: s.wildcard_1_used_gameweek,
-            wildcard_2_used_gameweek: s.wildcard_2_used_gameweek,
-          },
-          fanteamGame,
-          "balanced",
-          1,
-          recordPredictions
-        ).catch(() => null)
-      )
-    );
-  }
-
+  // Predictions are archived once, deliberately, when the user presses
+  // Save Team on a squad (squads/actions.ts's saveTeamForGameweek) - not
+  // recomputed and re-recorded here on every page view (the old
+  // behaviour produced a fresh "recommendation" every time someone so
+  // much as glanced at a different strategy, drowning genuine decisions
+  // in noise - see migration 0043's docstring). This page just reads
+  // whatever's already been locked in.
   const { data: predictionsRaw } = await supabase
     .from("predictions")
     .select(
@@ -170,12 +144,8 @@ export default async function PerformanceLabPage({
           {header}
           <div className="mt-8 rounded-xl border border-navy-700 bg-navy-900 p-6">
             <p className="text-sm text-navy-300">
-              No predictions yet - your squad{fanteamSquads.length === 1 ? "" : "s"} may still be mid-analysis, or
-              incomplete (Ask Mary needs a full, valid squad to work from). Visit{" "}
-              <Link href="/ask-mary" className="text-sky-400 hover:text-sky-300">
-                Ask Mary
-              </Link>{" "}
-              to check.
+              No predictions yet - press Save Team on a squad&apos;s page once your lineup is locked in for the
+              gameweek to archive Mary&apos;s recommendation and start building a history here.
             </p>
           </div>
         </main>

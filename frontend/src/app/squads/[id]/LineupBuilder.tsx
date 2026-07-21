@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { saveLineup, applyRecommendation } from "../actions";
+import { saveLineup, saveTeamForGameweek, applyRecommendation } from "../actions";
 import { addToWatchlist } from "@/app/watchlist/actions";
 import { findLegalReplacementsForOutgoing, type TransferCandidate } from "@/lib/transferMatching";
 import PitchView from "../PitchView";
@@ -19,6 +19,7 @@ type Player = {
   team_name: string;
   price: number;
   is_starting: boolean;
+  bench_order: number | null;
   score: number | null;
   lineup?: string | null;
   status?: string | null;
@@ -34,6 +35,19 @@ type Formation = {
 
 type Suggestion = { formationCode: string; startingGamePlayerIds: number[]; total: number } | null;
 
+// One gameweek's worth of per-player fixture/expected/actual points for
+// this squad - see squads/[id]/page.tsx for how the full 1..38 map is
+// built server-side in one pass.
+export type GameweekSnapshot = {
+  gameweek: number;
+  players: Record<
+    number,
+    { fixture: { opponentAbbr: string; isHome: boolean } | null; expectedPoints: number | null; actualPoints: number | null }
+  >;
+  squadExpected: number;
+  squadActual: number | null;
+};
+
 const POSITIONS = ["GK", "DEF", "MID", "FWD"] as const;
 
 function formationForCounts(counts: Record<string, number>, formations: Formation[]): string | null {
@@ -41,6 +55,18 @@ function formationForCounts(counts: Record<string, number>, formations: Formatio
     (f) => f.gk_count === counts.GK && f.def_count === counts.DEF && f.mid_count === counts.MID && f.fwd_count === counts.FWD
   );
   return match?.code ?? null;
+}
+
+// Auto-substitution priority order for the outfield bench (1st/2nd/3rd
+// reserve, GK excluded - a 15-man squad only ever has one reserve GK).
+// Falls back to squad-array order when no bench_order has been saved yet,
+// so the feature has a sensible default from the very first load.
+function defaultBenchOrder(benchPlayers: Player[]): number[] {
+  return benchPlayers
+    .filter((p) => p.position !== "GK")
+    .slice()
+    .sort((a, b) => (a.bench_order ?? 99) - (b.bench_order ?? 99))
+    .map((p) => p.game_player_id);
 }
 
 function toCandidate(player: Player): TransferCandidate {
@@ -65,6 +91,9 @@ export default function LineupBuilder({
   pool,
   budget,
   maxPerClub,
+  gameweekData,
+  initialGameweek,
+  seasonGameweeks,
 }: {
   squadId: number;
   gameId: number;
@@ -75,6 +104,11 @@ export default function LineupBuilder({
   pool: TransferCandidate[];
   budget: number;
   maxPerClub: number | null;
+  // Undefined for games with no published calendar (Dream Team today) -
+  // the gameweek switcher below doesn't render at all in that case.
+  gameweekData?: Record<number, GameweekSnapshot>;
+  initialGameweek?: number | null;
+  seasonGameweeks?: number;
 }) {
   const initialFormation =
     formations.find((f) => {
@@ -88,6 +122,40 @@ export default function LineupBuilder({
     new Set(players.filter((p) => p.is_starting).map((p) => p.game_player_id))
   );
   const [selectedForSwapId, setSelectedForSwapId] = useState<number | null>(null);
+  // Auto-substitution priority for the 3 outfield bench spots, most
+  // important (1st reserve) first - see defaultBenchOrder above and
+  // PitchView's reorder controls below. GK isn't tracked here since a
+  // 15-man squad only ever has exactly one reserve GK, nothing to order.
+  const [benchOrderIds, setBenchOrderIds] = useState<number[]>(() => defaultBenchOrder(players.filter((p) => !p.is_starting)));
+  // Direct swap - whoever's put into reserve slot `targetOrder` trades
+  // places with whoever currently holds it, so moving reserve 3 into
+  // reserve 1 (giving them first claim on an auto-substitution) is one
+  // action, not three separate nudges.
+  function setBenchPosition(gamePlayerId: number, targetOrder: number) {
+    setBenchOrderIds((prev) => {
+      const currentIdx = prev.indexOf(gamePlayerId);
+      const targetIdx = targetOrder - 1;
+      if (currentIdx === -1 || targetIdx < 0 || targetIdx >= prev.length || targetIdx === currentIdx) return prev;
+      const next = prev.slice();
+      [next[currentIdx], next[targetIdx]] = [next[targetIdx], next[currentIdx]];
+      return next;
+    });
+  }
+  // Browsing-only - which gameweek's fixture/expected/actual points the
+  // pitch cards show. Independent of everything else here (transfer
+  // matching, lineup saving) which all stay anchored to the current
+  // actionable gameweek's own score, since those decisions apply going
+  // forward from now, not for whichever gameweek is just being viewed.
+  const [selectedGameweek, setSelectedGameweek] = useState<number>(initialGameweek ?? 1);
+  const gwSnapshot = gameweekData?.[selectedGameweek];
+  const displayPlayers = useMemo(
+    () =>
+      players.map((p) => {
+        const gwPlayer = gwSnapshot?.players[p.game_player_id];
+        return { ...p, score: gwPlayer ? gwPlayer.expectedPoints : p.score, nextFixture: gwPlayer?.fixture ?? null };
+      }),
+    [players, gwSnapshot]
+  );
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -105,8 +173,8 @@ export default function LineupBuilder({
     return { GK: f?.gk_count ?? 0, DEF: f?.def_count ?? 0, MID: f?.mid_count ?? 0, FWD: f?.fwd_count ?? 0 };
   }, [formations, formationCode]);
 
-  const startingPlayers = players.filter((p) => starting.has(p.game_player_id));
-  const benchPlayers = players.filter((p) => !starting.has(p.game_player_id));
+  const startingPlayers = displayPlayers.filter((p) => starting.has(p.game_player_id));
+  const benchPlayers = displayPlayers.filter((p) => !starting.has(p.game_player_id));
   const countsByPosition = useMemo(() => {
     const counts: Record<string, number> = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
     startingPlayers.forEach((p) => (counts[p.position] += 1));
@@ -223,6 +291,14 @@ export default function LineupBuilder({
       next.add(benchPlayer.game_player_id);
       return next;
     });
+    // benchPlayer just left the bench (now starting) - drop from the
+    // order. pitchPlayer just joined it (now bench) - append at the end
+    // (lowest priority) unless it's the GK, which isn't ordered.
+    setBenchOrderIds((prev) => {
+      const next = prev.filter((id) => id !== benchPlayer.game_player_id);
+      if (pitchPlayer.position !== "GK" && !next.includes(pitchPlayer.game_player_id)) next.push(pitchPlayer.game_player_id);
+      return next;
+    });
     setFormationCode(newFormationCode);
     setSelectedForSwapId(null);
   }
@@ -254,10 +330,16 @@ export default function LineupBuilder({
 
   function applySuggestion() {
     if (!suggestion) return;
+    const suggestedStarting = new Set(suggestion.startingGamePlayerIds);
     setFormationCode(suggestion.formationCode);
-    setStarting(new Set(suggestion.startingGamePlayerIds));
+    setStarting(suggestedStarting);
+    setBenchOrderIds(defaultBenchOrder(players.filter((p) => !suggestedStarting.has(p.game_player_id))));
     setSelectedForSwapId(null);
   }
+
+  // game_player_id -> 1/2/3 for the outfield bench, from benchOrderIds'
+  // position in the array - shared by both save paths below.
+  const benchOrderPayload = useMemo(() => Object.fromEntries(benchOrderIds.map((id, i) => [id, i + 1])), [benchOrderIds]);
 
   function handleSave() {
     setError(null);
@@ -267,6 +349,21 @@ export default function LineupBuilder({
         squadId,
         formationCode,
         startingGamePlayerIds: Array.from(starting),
+        benchOrder: benchOrderPayload,
+      });
+      if (result?.error) setError(result.error);
+    });
+  }
+
+  function handleSaveTeam() {
+    setError(null);
+    if (!formationCode) return;
+    startTransition(async () => {
+      const result = await saveTeamForGameweek({
+        squadId,
+        formationCode,
+        startingGamePlayerIds: Array.from(starting),
+        benchOrder: benchOrderPayload,
       });
       if (result?.error) setError(result.error);
     });
@@ -362,6 +459,14 @@ export default function LineupBuilder({
         >
           {isPending ? "Saving..." : "Save lineup"}
         </button>
+        <button
+          onClick={handleSaveTeam}
+          disabled={!isComplete || isPending}
+          title="Press once you've locked this team in on the real FanTeam site - archives Mary's current recommendation so Performance Lab can grade it against what actually happened."
+          className="rounded-lg border border-emerald-700 bg-emerald-950 px-4 py-1.5 text-sm font-medium text-emerald-400 transition-colors hover:bg-emerald-900 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {isPending ? "Saving..." : "Save Team"}
+        </button>
         {suggestion && (
           <button
             onClick={applySuggestion}
@@ -372,6 +477,52 @@ export default function LineupBuilder({
         )}
       </div>
 
+      {gameweekData && seasonGameweeks && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-navy-700 bg-navy-900 px-3 py-2.5">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSelectedGameweek((gw) => Math.max(1, gw - 1))}
+              disabled={selectedGameweek <= 1}
+              className="rounded-md px-2 py-1 text-sm text-navy-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+              aria-label="Previous gameweek"
+            >
+              ‹
+            </button>
+            <span className="text-sm font-semibold text-white">GW{selectedGameweek}</span>
+            <select
+              value={selectedGameweek}
+              onChange={(e) => setSelectedGameweek(Number(e.target.value))}
+              className="rounded-md border border-navy-700 bg-navy-950 px-2 py-1 text-xs text-white"
+            >
+              {Array.from({ length: seasonGameweeks }, (_, i) => i + 1).map((gw) => (
+                <option key={gw} value={gw}>
+                  GW{gw}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => setSelectedGameweek((gw) => Math.min(seasonGameweeks, gw + 1))}
+              disabled={selectedGameweek >= seasonGameweeks}
+              className="rounded-md px-2 py-1 text-sm text-navy-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-30"
+              aria-label="Next gameweek"
+            >
+              ›
+            </button>
+          </div>
+          <div className="flex gap-4 text-xs">
+            <span className="text-navy-300">
+              Expected <span className="font-semibold text-sky-400">{(gwSnapshot?.squadExpected ?? 0).toFixed(1)} pts</span>
+            </span>
+            <span className="text-navy-300">
+              Actual{" "}
+              <span className="font-semibold text-white">
+                {gwSnapshot?.squadActual != null ? `${gwSnapshot.squadActual.toFixed(1)} pts` : "—"}
+              </span>
+            </span>
+          </div>
+        </div>
+      )}
+
       <p className="mb-2 text-xs text-navy-400">
         {selectedForSwapId !== null
           ? "Pick a highlighted player to complete the swap - any swap that leaves a valid formation is allowed, not just same-position."
@@ -380,10 +531,11 @@ export default function LineupBuilder({
 
       <PitchView
         starting={startingPlayers}
-        bench={benchPlayers}
+        bench={benchPlayers.map((p) => ({ ...p, benchOrder: p.position === "GK" ? null : benchOrderIds.indexOf(p.game_player_id) + 1 || null }))}
         selectedId={selectedForSwapId}
         swappableIds={swappableIds}
         onSelect={handlePitchSelect}
+        onReorderBench={setBenchPosition}
       />
 
       <PlayerActionMenu

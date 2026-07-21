@@ -85,7 +85,17 @@ export default function GameweekPlanRow({
                 {step.transfers.map((t, i) => (
                   <div key={`${t.outGamePlayerId}-${t.inGamePlayerId}`}>
                     {i > 0 && <p className="mb-2 text-center text-xs text-navy-500">↓</p>}
-                    <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Transfer {i + 1}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Transfer {i + 1}</p>
+                      {t.pairedLegIndex != null && (
+                        <span
+                          className="rounded-full bg-sky-950 px-2 py-0.5 text-[10px] font-medium text-sky-300"
+                          title="These two transfers are evaluated together as one bundle - the combined gain across both is what has to clear the cost, not each one alone."
+                        >
+                          🔗 paired with Transfer {t.pairedLegIndex + 1}
+                        </span>
+                      )}
+                    </div>
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-sm">
                       <span className="text-navy-400">{t.position} ·</span>
                       <span className="text-white">{t.outName}</span>
@@ -96,6 +106,13 @@ export default function GameweekPlanRow({
                       <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${RISK_TONE[t.risk]}`}>{t.risk} risk</span>
                       <span className="rounded-full bg-navy-800 px-2 py-0.5 text-[10px] font-medium text-navy-300">{t.confidence}% confidence</span>
                     </div>
+                    {t.pairedLegIndex != null && (
+                      <p className="mt-1 text-xs text-sky-300">
+                        {t.pointsGain < 0
+                          ? `Sold to help fund Transfer ${t.pairedLegIndex + 1}'s upgrade - not a downgrade in isolation, a budget reallocation.`
+                          : `Partly funded by Transfer ${t.pairedLegIndex + 1}'s sale, freeing up the budget to land this upgrade.`}
+                      </p>
+                    )}
                     <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-navy-300">
                       <span>Gain: {t.pointsGain >= 0 ? "+" : ""}{t.pointsGain.toFixed(1)} pts</span>
                       <span>Cost: {t.costPoints === 0 ? "free" : `${t.costPoints} pts`}</span>

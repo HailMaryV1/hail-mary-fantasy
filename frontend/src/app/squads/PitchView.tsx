@@ -15,6 +15,10 @@ export type PitchPlayer = {
   lineup?: string | null;
   status?: string | null;
   nextFixture?: { opponentAbbr: string; isHome: boolean } | null;
+  // Auto-substitution priority (1st/2nd/3rd reserve) for an outfield
+  // bench player - null for starters, the reserve GK (always exactly
+  // one, nothing to order), and any game with no bench concept at all.
+  benchOrder?: number | null;
 };
 
 type Formation = { gk: number; def: number; mid: number; fwd: number };
@@ -33,50 +37,87 @@ export default function PitchView({
   selectedId,
   swappableIds,
   onSelect,
+  onReorderBench,
 }: {
   starting: PitchPlayer[];
   bench: PitchPlayer[];
   selectedId: number | null;
   swappableIds: Set<number> | null;
   onSelect: (player: PitchPlayer, zone: "pitch" | "bench") => void;
+  // Bench auto-substitution priority isn't editable unless the caller
+  // wires this up (LineupBuilder does; the Transfers pool doesn't need
+  // it) - omit it and the bench renders read-only, same as before.
+  // targetOrder is the reserve slot (1/2/3) to swap this player into -
+  // whoever currently holds that slot swaps back to this player's old
+  // one, a direct one-step swap rather than nudging one place at a time.
+  onReorderBench?: (gamePlayerId: number, targetOrder: number) => void;
 }) {
   const rows: { pos: PitchPlayer["position"]; players: PitchPlayer[] }[] = (["FWD", "MID", "DEF", "GK"] as const).map(
     (pos) => ({ pos, players: starting.filter((p) => p.position === pos) })
   );
+  const maxBenchOrder = Math.max(0, ...bench.map((p) => p.benchOrder ?? 0));
+  // GK reserve first (a fixed, unordered role), then outfield reserves in
+  // their actual auto-sub priority - display order should read the same
+  // way the real substitution priority works, not just squad-array order.
+  const orderedBench = bench.slice().sort((a, b) => {
+    if (a.position === "GK" && b.position !== "GK") return -1;
+    if (b.position === "GK" && a.position !== "GK") return 1;
+    return (a.benchOrder ?? 99) - (b.benchOrder ?? 99);
+  });
 
   function chip(player: PitchPlayer, zone: "pitch" | "bench") {
     const isSelected = selectedId === player.game_player_id;
     // The selected player always stays clickable (so it can be deselected/
     // reconsidered) even if it wouldn't otherwise be in swappableIds.
     const isClickable = isSelected || swappableIds === null || swappableIds.has(player.game_player_id);
+    const showReorder = zone === "bench" && onReorderBench && player.benchOrder != null;
     return (
-      <button
-        key={player.game_player_id}
-        onClick={() => isClickable && onSelect(player, zone)}
-        disabled={!isClickable}
-        className={`flex w-14 flex-col items-center rounded-lg px-1 py-1.5 text-center transition-opacity sm:w-20 md:w-24 ${
-          isSelected
-            ? "bg-navy-900 ring-2 ring-sky-400"
-            : isClickable
-              ? "bg-navy-900/90 ring-1 ring-navy-700 hover:ring-sky-500"
-              : "cursor-not-allowed bg-navy-900/40 opacity-40"
-        }`}
-      >
-        <Kit teamName={player.team_name} size="lg" />
-        <span className="flex w-full min-w-0 items-center justify-center gap-0.5">
-          <span className="min-w-0 truncate text-[10px] font-medium text-white sm:text-xs" title={player.full_name}>
-            {shortenPlayerName(player.full_name)}
+      <div key={player.game_player_id} className="flex flex-col items-center">
+        <button
+          onClick={() => isClickable && onSelect(player, zone)}
+          disabled={!isClickable}
+          className={`flex w-14 flex-col items-center rounded-lg px-1 py-1.5 text-center transition-opacity sm:w-20 md:w-24 ${
+            isSelected
+              ? "bg-navy-900 ring-2 ring-sky-400"
+              : isClickable
+                ? "bg-navy-900/90 ring-1 ring-navy-700 hover:ring-sky-500"
+                : "cursor-not-allowed bg-navy-900/40 opacity-40"
+          }`}
+        >
+          <Kit teamName={player.team_name} size="lg" />
+          <span className="flex w-full min-w-0 items-center justify-center gap-0.5">
+            <span className="min-w-0 truncate text-[10px] font-medium text-white sm:text-xs" title={player.full_name}>
+              {shortenPlayerName(player.full_name)}
+            </span>
+            <StatusPill lineup={player.lineup} status={player.status} />
           </span>
-          <StatusPill lineup={player.lineup} status={player.status} />
-        </span>
-        {player.score != null && <span className="text-[10px] text-sky-400">{player.score.toFixed(1)} pts</span>}
-        {player.price != null && <span className="text-[10px] text-navy-300">£{Number(player.price).toFixed(1)}m</span>}
-        {player.nextFixture && (
-          <span className="text-[9px] text-navy-400">
-            {player.nextFixture.isHome ? "vs" : "@"} {player.nextFixture.opponentAbbr}
-          </span>
+          {player.score != null && <span className="text-[10px] text-sky-400">{player.score.toFixed(1)} pts</span>}
+          {player.price != null && <span className="text-[10px] text-navy-300">£{Number(player.price).toFixed(1)}m</span>}
+          {player.nextFixture && (
+            <span className="text-[9px] text-navy-400">
+              {player.nextFixture.isHome ? "vs" : "@"} {player.nextFixture.opponentAbbr}
+            </span>
+          )}
+        </button>
+        {zone === "bench" && player.position === "GK" && <span className="mt-0.5 text-[9px] text-navy-500">Reserve GK</span>}
+        {showReorder && (
+          <label className="mt-0.5 flex items-center gap-1 text-[9px] text-navy-500">
+            Res
+            <select
+              value={player.benchOrder ?? ""}
+              onChange={(e) => onReorderBench!(player.game_player_id, Number(e.target.value))}
+              aria-label={`${player.full_name}'s bench order - swaps places with whoever's currently in the chosen slot`}
+              className="rounded border border-navy-700 bg-navy-950 px-0.5 py-px text-[9px] text-navy-300"
+            >
+              {Array.from({ length: maxBenchOrder }, (_, i) => i + 1).map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
         )}
-      </button>
+      </div>
     );
   }
 
@@ -101,7 +142,7 @@ export default function PitchView({
       <div className="mt-3 rounded-xl border border-navy-700 bg-navy-900 p-3">
         <p className="mb-2 text-xs font-medium uppercase tracking-wide text-navy-400">Bench</p>
         <div className="flex flex-wrap gap-2">
-          {bench.map((p) => chip(p, "bench"))}
+          {orderedBench.map((p) => chip(p, "bench"))}
           {bench.length === 0 && <span className="text-xs text-navy-400">No bench players.</span>}
         </div>
       </div>

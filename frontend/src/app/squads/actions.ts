@@ -6,6 +6,8 @@ import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
 import { suggestBestXI } from "@/lib/squadOptimizer";
 import { wildcardWindowFor, isWildcardActive, TRANSFER_HIT_COST } from "@/lib/transferEconomy";
+import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
+import { recordPredictions } from "@/app/ask-mary/actions";
 
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
@@ -347,27 +349,30 @@ type SaveLineupArgs = {
   squadId: number;
   formationCode: string;
   startingGamePlayerIds: number[];
+  // Auto-substitution priority for the 3 outfield bench spots (1/2/3) -
+  // game_player_id -> order. Undefined/missing entries (the GK reserve,
+  // or a caller that predates this) are written as bench_order = null.
+  benchOrder?: Record<number, number>;
 };
 
 /**
- * Sets which squad members start this gameweek (games with a bench,
- * e.g. FanTeam's 15-man squad / 11 starters). Re-validates ownership and
- * the formation quota server-side, same trust-boundary reasoning as
- * saveSquad above.
+ * Validates and writes a lineup (formation + starting/bench split + bench
+ * auto-sub order) to squad_players/squads - the part shared by saveLineup
+ * (a normal, unlocked edit) and saveTeamForGameweek below (the same
+ * write, plus locking it in as the official submission for a gameweek).
+ * Doesn't redirect - callers decide what happens next.
  */
-export async function saveLineup({ squadId, formationCode, startingGamePlayerIds }: SaveLineupArgs) {
-  const supabase = await createAuthServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
-
+async function writeLineup(
+  supabase: Supabase,
+  userId: string,
+  { squadId, formationCode, startingGamePlayerIds, benchOrder }: SaveLineupArgs
+): Promise<{ error?: string; gameId?: number }> {
   const { data: squad } = await supabase
     .from("squads")
     .select("id, user_id, game_id")
     .eq("id", squadId)
     .single();
-  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+  if (!squad || squad.user_id !== userId) return { error: "Squad not found." };
 
   const { data: rules } = await supabase
     .from("game_squad_rules")
@@ -420,22 +425,113 @@ export async function saveLineup({ squadId, formationCode, startingGamePlayerIds
 
   const { error: startError } = await supabase
     .from("squad_players")
-    .update({ is_starting: true })
+    .update({ is_starting: true, bench_order: null })
     .eq("squad_id", squadId)
     .in("game_player_id", startingGamePlayerIds);
   if (startError) return { error: startError.message };
 
+  // Written per-player rather than one bulk update, since bench_order
+  // differs per player (null for the reserve GK, 1/2/3 for the outfield
+  // reserves) - the bench is always at most 4 players, so this is a
+  // handful of extra round trips, not a real cost.
   const benchIds = Array.from(validIds).filter((id) => !startingSet.has(id));
-  if (benchIds.length > 0) {
+  for (const benchId of benchIds) {
     const { error: benchError } = await supabase
       .from("squad_players")
-      .update({ is_starting: false })
+      .update({ is_starting: false, bench_order: benchOrder?.[benchId] ?? null })
       .eq("squad_id", squadId)
-      .in("game_player_id", benchIds);
+      .eq("game_player_id", benchId);
     if (benchError) return { error: benchError.message };
   }
 
-  redirect(`/squads/${squadId}`);
+  return { gameId: squad.game_id };
+}
+
+/**
+ * Sets which squad members start this gameweek (games with a bench,
+ * e.g. FanTeam's 15-man squad / 11 starters). A normal, freely-editable
+ * save - see saveTeamForGameweek below for the separate "this is my
+ * final, locked-in submission" action.
+ */
+export async function saveLineup(args: SaveLineupArgs) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const result = await writeLineup(supabase, user.id, args);
+  if (result.error) return result;
+
+  redirect(`/squads/${args.squadId}`);
+}
+
+/**
+ * "Save Team" - the same lineup write as saveLineup, plus locking it in
+ * as the official submission for the current gameweek
+ * (squad_gameweek_locks, migration 0043) and archiving Ask Mary's current
+ * recommendation as one immutable prediction snapshot right at that
+ * moment. Meant to be pressed once the user has actually locked their
+ * team in on the real FanTeam site - this mirrors that real action inside
+ * the app, rather than the old behaviour of re-archiving a fresh
+ * "recommendation" on every idle Ask Mary / Performance Lab page view
+ * (mostly noise from mid-tinkering, not genuine decisions - see migration
+ * 0043's docstring). Upserts on (squad_id, gameweek), so pressing this
+ * again before the real deadline updates the locked snapshot rather than
+ * erroring - a reasonable "I changed my mind" path.
+ */
+export async function saveTeamForGameweek(args: SaveLineupArgs) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const writeResult = await writeLineup(supabase, user.id, args);
+  if (writeResult.error) return writeResult;
+
+  const gameweek = await getCurrentGameweek(supabase, writeResult.gameId!);
+  if (gameweek === null) {
+    return { error: "Lineup saved, but there's no published gameweek yet to lock this team in against." };
+  }
+
+  const { data: snapshot } = await supabase
+    .from("squad_players")
+    .select("game_player_id, is_starting, bench_order")
+    .eq("squad_id", args.squadId);
+
+  const { error: lockError } = await supabase
+    .from("squad_gameweek_locks")
+    .upsert(
+      { squad_id: args.squadId, gameweek, lineup_snapshot: snapshot ?? [], locked_at: new Date().toISOString() },
+      { onConflict: "squad_id,gameweek" }
+    );
+  if (lockError) return { error: lockError.message };
+
+  const { data: squadRow } = await supabase
+    .from("squads")
+    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, fantasy_games(id, slug, display_name)")
+    .eq("id", args.squadId)
+    .single();
+  const game = squadRow?.fantasy_games as unknown as { id: number; slug: string; display_name: string } | undefined;
+  if (squadRow && game?.slug === "fanteam") {
+    await runAskMaryAnalysis(
+      supabase,
+      {
+        id: squadRow.id,
+        name: squadRow.name,
+        free_transfers: squadRow.free_transfers,
+        wildcard_1_used_gameweek: squadRow.wildcard_1_used_gameweek,
+        wildcard_2_used_gameweek: squadRow.wildcard_2_used_gameweek,
+      },
+      { id: game.id, display_name: game.display_name },
+      "balanced",
+      1,
+      recordPredictions
+    ).catch(() => null);
+  }
+
+  redirect(`/squads/${args.squadId}`);
 }
 
 type MakeTransferArgs = {
@@ -779,9 +875,32 @@ export async function applyRecommendation({ squadId, transfers, useWildcard }: A
   // than leaving the squad half-applied - a partial bundle would be a
   // more confusing state than the single-transfer failure this feature
   // was built to fix.
+  //
+  // Execution order matters even though the bundle as a whole is
+  // affordable: each leg is written one at a time, and performSwap
+  // re-checks budget against whatever's in the DB at that instant - a
+  // budget-pooled recommendation (see askMaryEngine.ts's paired-transfer
+  // search, e.g. selling a premium to help fund a bigger signing
+  // elsewhere) can have one leg that needs more money than it alone
+  // frees, funded by another leg's sale. Applying that purchase leg
+  // before its funding sale would transiently blow the budget even
+  // though the fully-applied bundle doesn't. Sorting every leg by its
+  // own price delta (incoming - outgoing) ascending - biggest
+  // budget-freeing sells first, biggest budget-consuming buys last -
+  // guarantees no intermediate step ever exceeds budget: sorting a
+  // sequence of deltas ascending minimizes every prefix sum, so since the
+  // starting total and the fully-applied total are both already known to
+  // be within budget (checked above), every point in between is too.
+  const outgoingPriceById = new Map(currentRows.map((r) => [r.game_player_id, Number(r.game_players.price)]));
+  const orderedTransfers = transfers.slice().sort((a, b) => {
+    const deltaA = Number(incomingById.get(a.inGamePlayerId)!.price) - (outgoingPriceById.get(a.outGamePlayerId) ?? 0);
+    const deltaB = Number(incomingById.get(b.inGamePlayerId)!.price) - (outgoingPriceById.get(b.outGamePlayerId) ?? 0);
+    return deltaA - deltaB;
+  });
+
   const completed: { outGamePlayerId: number; inGamePlayerId: number; transferId?: number }[] = [];
   let workingSquad: SquadForTransfer = squad;
-  for (const { outGamePlayerId, inGamePlayerId } of transfers) {
+  for (const { outGamePlayerId, inGamePlayerId } of orderedTransfers) {
     const result = await executeTransfer(supabase, workingSquad, outGamePlayerId, inGamePlayerId, useWildcard);
     if (result.error) {
       await rollbackCompletedTransfers(supabase, squad, completed);

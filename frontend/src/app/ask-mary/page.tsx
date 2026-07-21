@@ -5,7 +5,6 @@ import { STRATEGIES, type Strategy } from "@/lib/recommendationScoring";
 import { runAskMaryAnalysis, CAPTAIN_HORIZONS } from "@/lib/askMaryEngine";
 import GameweekPlanRow from "./GameweekPlanRow";
 import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
-import { recordPredictions } from "./actions";
 import GameSecondaryNav from "../GameSecondaryNav";
 
 // RPC results depend on the chosen horizon/strategy/squad but Supabase's
@@ -228,7 +227,13 @@ export default async function AskMaryPage({
     );
   }
 
-  const analysis = await runAskMaryAnalysis(supabase, selectedSquad, fanteamGame, activeStrategy, captainHorizon.gameweeks, recordPredictions);
+  // No recordPredictionsFn here - viewing/exploring an analysis
+  // shouldn't archive anything. Predictions are only recorded once, at
+  // the moment the user presses Save Team on the squad page (see
+  // squads/actions.ts's saveTeamForGameweek and migration 0043's
+  // docstring) - that's the one point "what Mary suggested" is being
+  // compared against a squad that's actually final, not mid-tinkering.
+  const analysis = await runAskMaryAnalysis(supabase, selectedSquad, fanteamGame, activeStrategy, captainHorizon.gameweeks);
 
   if (!analysis) {
     return (

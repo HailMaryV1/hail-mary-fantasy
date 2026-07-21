@@ -43,26 +43,40 @@ KNOWN LIMITATIONS (status multiplier, new):
     scripts/verify_player_status_mapping.py once real variance appears
     (close to matchday) to confirm/correct these.
 
-KNOWN LIMITATIONS (v2-decomposed, new):
-  - Matrix line items with no historical data source to project from
-    (shot_on_target, caused_penalty, caused_scoring_free_kick,
-    penalty_miss, own_goal, positive_impact, negative_impact,
-    penalty_save) simply aren't in the projected-stats dict, so they
-    contribute 0. Real signal for these would need player-prop odds
-    (fixture_player_props) or live in-season stats - neither exists yet
-    (see migration 0004's own docstring, and compute_projections' sibling
-    scripts - both confirmed empty this far from a live season).
-  - "appearance" / "minutes_60_plus" / "played_full_match" are all driven
-    by one shared involvement_rate (last season's minutes / a 38-game
-    season, uncapped by shrinkage - low minutes IS the signal here, not
-    noise to smooth out) rather than separately modelling start vs.
-    sub-appearance probability. Simple on purpose - a real minutes model
-    needs expected-lineups data this project doesn't have.
-  - Saves and goals-conceded are driven by defensive PRESSURE (the inverse
-    of clean_sheet_score - a keeper facing a stronger attack makes more
-    saves and concedes more), not by the team's own attack_score. Goals/
-    assists are driven by attack_score. Cards get no fixture adjustment -
-    no fixture signal predicts card risk.
+KNOWN LIMITATIONS (v2-decomposed, updated):
+  - shot_on_target, own_goal, and penalty_save are now projected from last
+    season's raw_stats (SOT/ownGoals/penaltySaves), same shrinkage +
+    fixture-adjustment treatment as the original 7 stats - see
+    STAT_COLUMNS. Still contribute 0, with no historical source to project
+    from at all: caused_penalty, caused_scoring_free_kick, penalty_miss
+    (would need player-prop odds - see fixture_player_props, confirmed
+    still empty), and positive_impact/negative_impact (FanTeam's own
+    subjective judge-panel stat - not projectable from any data source,
+    ever).
+  - "appearance" / "minutes_60_plus" / "played_full_match" are now three
+    separately shrunk probabilities derived from last season's PT1/PT60/
+    PT90 (games featured / games with 60+ minutes / games with a full 90)
+    instead of one linear involvement_rate copied across all three - see
+    compute_involvement_rates(). Still doesn't model start vs. sub
+    appearance as genuinely separate events (a real minutes model needs
+    expected-lineups data this project doesn't have) - just a richer
+    empirical proxy for the same underlying question.
+  - Saves, goals-conceded, and now penalty_save/own_goal are driven by
+    defensive PRESSURE (the inverse of clean_sheet_score - a keeper/
+    defence facing a stronger attack makes more saves, concedes more, and
+    faces/commits more), not by the team's own attack_score. Goals/
+    assists/shot_on_target are driven by attack_score. Cards get no
+    fixture adjustment - no fixture signal predicts card risk.
+  - neutral_attack is now self-calibrating at runtime (mean attack_score
+    across this game's fixtures, ~0.380 for the EPL) instead of a
+    hardcoded 1/3 three-way-market assumption that ignored the real ~24%
+    draw rate - see resolve_neutral_attack(). neutral_clean_sheet stays
+    0.5 (provably exact by construction: win+draw+loss=1 summed over both
+    fixture sides always averages to 0.5). clean_sheet_score itself still
+    prefers the real team-goals market when it exists, falling back to
+    the win%+half-draw% approximation otherwise (unchanged - see KNOWN
+    LIMITATIONS (v1) above; fixture_clean_sheet_probabilities confirmed
+    still empty).
 
 RUN:
     python3 scripts/compute_projections.py fanteam --gameweek 1
@@ -103,22 +117,11 @@ DEFAULT_WEIGHTS = {
     "shrinkage_games": 10,
 }
 
-# v2-decomposed reuses neutral_attack/neutral_clean_sheet/shrinkage_games
-# from the same DEFAULT_WEIGHTS shape (no position_weights needed - the
-# matrix itself already encodes position-specific point values).
-DEFAULT_WEIGHTS_V2 = {
-    "neutral_attack": DEFAULT_WEIGHTS["neutral_attack"],
-    "neutral_clean_sheet": DEFAULT_WEIGHTS["neutral_clean_sheet"],
-    "shrinkage_games": DEFAULT_WEIGHTS["shrinkage_games"],
-    # Used only for involvement_rate = minutes_played / 90 / season_games,
-    # clipped to 1 - a rough "how nailed-on is this player" proxy.
-    "season_games": 38,
-}
-
-# stat -> game_player_stats column, for every stat we can actually project
-# from last season's totals. Matrix entries with no entry here (shot_on_target,
-# caused_penalty, caused_scoring_free_kick, penalty_miss, own_goal,
-# positive_impact, negative_impact, penalty_save) contribute 0 - see docstring.
+# stat -> game_player_stats column (either a typed column, or a raw_stats
+# jsonb key pulled into the historical row dict in main()), for every stat
+# we can actually project from last season's totals. Matrix entries with
+# no entry here (caused_penalty, caused_scoring_free_kick, penalty_miss,
+# positive_impact, negative_impact) contribute 0 - see docstring.
 STAT_COLUMNS = {
     "goal": "goals",
     "assist": "assists",
@@ -127,6 +130,9 @@ STAT_COLUMNS = {
     "goals_conceded_per_2": "goals_conceded",
     "yellow_card": "yellow_cards",
     "red_card": "red_cards",
+    "shot_on_target": "shots_on_target",
+    "own_goal": "own_goals",
+    "penalty_save": "penalty_saves",
 }
 # How each stat's per-90 rate gets fixture-adjusted.
 #   "attack": scaled by attack_score / neutral_attack
@@ -142,13 +148,51 @@ STAT_FIXTURE_MODE = {
     "goals_conceded_per_2": "pressure",
     "yellow_card": "flat",
     "red_card": "flat",
+    "shot_on_target": "attack",  # same driver as goal/assist
+    # Weakly-justified but directionally right: DEF/GK own_goal rate
+    # (0.163/0.125 per season) is much higher than MID/FWD (0.023/0.05) -
+    # a defensive-pressure signature. Magnitude is small enough either way
+    # (avg 0.02-0.16/season) that shrinkage(k=10) dominates the projection
+    # regardless of which fixture-mode bucket this lands in.
+    "own_goal": "pressure",
+    # Same bucket as save - a keeper facing a stronger attack sees (and
+    # saves) more penalties. Meaningful magnitude here (GK avg 0.275/
+    # season, ~1 in 4 keepers), worth getting right.
+    "penalty_save": "pressure",
 }
 # goals_conceded_per_2's point value in the matrix is "per 2 conceded" -
 # our projected rate is per single goal, so halve it before pricing.
 STAT_RATE_SCALE = {"goals_conceded_per_2": 0.5}
-# involvement-driven stats: no historical column, projected value is just
-# involvement_rate itself (capped [0, 1]).
-INVOLVEMENT_STATS = ("appearance", "minutes_60_plus", "played_full_match")
+
+# v2-decomposed reuses neutral_clean_sheet/shrinkage_games from the same
+# DEFAULT_WEIGHTS shape (no position_weights needed - the matrix itself
+# already encodes position-specific point values).
+DEFAULT_WEIGHTS_V2 = {
+    # Resolved at runtime via resolve_neutral_attack() - mean(attack_score)
+    # over team_fixture_difficulty for this game, i.e. the real
+    # season-average win probability. Was a hardcoded 1/3 (an even
+    # win/draw/loss split); confirmed live that the real measured average
+    # is 0.380 for the EPL (760 fixture-sides) because the real draw rate
+    # is ~24%, not ~33% - the hardcoded constant baked a ~14% systematic
+    # inflation into every attack/pressure-mode stat, for every fixture.
+    # The "auto" sentinel (not the resolved number) is what's hashed into
+    # this dict via get_or_create_algorithm_version, so day-to-day odds
+    # movement doesn't mint a new algorithm revision on its own.
+    "neutral_attack": "auto",
+    "neutral_clean_sheet": DEFAULT_WEIGHTS["neutral_clean_sheet"],
+    "shrinkage_games": DEFAULT_WEIGHTS["shrinkage_games"],
+    # Used for appearance_rate = PT1 / season_games in
+    # compute_involvement_rates() - how many of a season's fixtures a
+    # position-average player features in at all.
+    "season_games": 38,
+    # Neither the projected-stat set nor the involvement formula below is
+    # otherwise represented in this dict - bumping either of these two
+    # keys forces get_or_create_algorithm_version to mint a new revision
+    # instead of silently reusing the last one when only the surrounding
+    # Python code (not a literal weight) changes.
+    "stat_set": sorted(STAT_COLUMNS.keys()),
+    "involvement_model": "pt1_pt60_pt90_v1",
+}
 
 # Guessed raw-string -> multiplier mapping for FanTeam's pre-match status
 # fields (`lineup`/`status` on each playerChoices record - see
@@ -251,6 +295,19 @@ def get_or_create_algorithm_version(cur, family, description, weights):
     return cur.fetchone()
 
 
+def resolve_neutral_attack(cur, game_id, weights):
+    """Resolves the "auto" sentinel in DEFAULT_WEIGHTS_V2's neutral_attack
+    to the real, live season-average attack_score for this game - see the
+    comment on DEFAULT_WEIGHTS_V2 for why this is computed at runtime
+    rather than stored as a fixed number. Passes through unchanged for v1
+    (DEFAULT_WEIGHTS' neutral_attack is still a literal 1/3 - out of scope
+    for this pass, see docstring)."""
+    if weights["neutral_attack"] != "auto":
+        return float(weights["neutral_attack"])
+    cur.execute("select avg(attack_score) from team_fixture_difficulty where game_id = %s", (game_id,))
+    return float(cur.fetchone()[0])
+
+
 def fixture_factor(position, attack_score, clean_sheet_score, weights):
     pw = weights["position_weights"][position]
     neutral_attack = weights["neutral_attack"]
@@ -349,7 +406,39 @@ def compute_shrunk_rates(players, historical_rows):
     return position_avg
 
 
-def project_player_stats(position, historical_row, fixture, weights, position_avg):
+def compute_involvement_rates(players, historical_rows, season_games):
+    """
+    players: [(game_player_id, position, player_id)]
+    historical_rows: {player_id: {..., pt1, pt60, pt90}}
+    Returns {pos: {"appearance": x, "cond60": x, "cond90": x}} - unshrunk
+    position averages used as the shrinkage prior for each player's own
+    appearance/cond60/cond90 rate in project_player_stats, same technique
+    as compute_shrunk_rates above but in "games" units, not per-90 units:
+      appearance = PT1 / season_games   (P(features at all) in a fixture)
+      cond60     = PT60 / PT1           (P(60+ min | featured), PT1-weighted)
+      cond90     = PT90 / PT1           (P(full 90 | featured), PT1-weighted)
+    """
+    totals = {pos: {"pt1": 0.0, "pt60": 0.0, "pt90": 0.0, "players": 0} for pos in POSITIONS}
+    for _, position, player_id in players:
+        row = historical_rows.get(player_id)
+        if not row:
+            continue
+        t = totals[position]
+        t["pt1"] += row["pt1"]
+        t["pt60"] += row["pt60"]
+        t["pt90"] += row["pt90"]
+        t["players"] += 1
+    return {
+        pos: {
+            "appearance": (totals[pos]["pt1"] / (totals[pos]["players"] * season_games)) if totals[pos]["players"] else 0.0,
+            "cond60": (totals[pos]["pt60"] / totals[pos]["pt1"]) if totals[pos]["pt1"] else 0.0,
+            "cond90": (totals[pos]["pt90"] / totals[pos]["pt1"]) if totals[pos]["pt1"] else 0.0,
+        }
+        for pos in POSITIONS
+    }
+
+
+def project_player_stats(position, historical_row, fixture, weights, position_avg, position_involvement):
     """Per-stat projected count for one player's one fixture (v2-decomposed)."""
     k = weights["shrinkage_games"]
     neutral_attack = weights["neutral_attack"]
@@ -364,14 +453,35 @@ def project_player_stats(position, historical_row, fixture, weights, position_av
 
     games90 = historical_row["minutes_played"] / 90.0
     season_games = weights["season_games"]
-    involvement_rate = min(1.0, games90 / season_games)
 
-    projected = {stat: involvement_rate for stat in INVOLVEMENT_STATS}
+    # Involvement: three separately-shrunk probabilities derived from last
+    # season's PT1/PT60/PT90 (games featured / games with 60+ minutes /
+    # games with a full 90), instead of one linear minutes/90/season_games
+    # number copied across all three stats below - see
+    # compute_involvement_rates(). pt1 is floored to 1 defensively (never
+    # 0 in live data when minutes_played > 0, but avoids a div/0 if that
+    # ever changes).
+    pt1 = max(historical_row["pt1"], 1.0)
+    pt60 = historical_row["pt60"]
+    pt90 = historical_row["pt90"]
+    pos_inv = position_involvement[position]
+
+    appearance_rate = (pt1 + k * pos_inv["appearance"]) / (season_games + k)
+    cond60_rate = (pt60 + k * pos_inv["cond60"]) / (pt1 + k)
+    cond90_rate = (pt90 + k * pos_inv["cond90"]) / (pt1 + k)
+    avg_minutes_per_appearance = historical_row["minutes_played"] / pt1
+    expected_minutes_fraction = min(1.0, appearance_rate * avg_minutes_per_appearance / 90.0)
+
+    projected = {
+        "appearance": appearance_rate,
+        "minutes_60_plus": appearance_rate * cond60_rate,
+        "played_full_match": appearance_rate * cond90_rate,
+    }
     for stat, col in STAT_COLUMNS.items():
         raw_rate = (historical_row[col] + k * position_avg[position][col]) / (games90 + k)
         factor = factor_by_mode[STAT_FIXTURE_MODE[stat]]
         rate_scale = STAT_RATE_SCALE.get(stat, 1.0)
-        projected[stat] = raw_rate * factor * involvement_rate * rate_scale
+        projected[stat] = raw_rate * factor * expected_minutes_fraction * rate_scale
     return projected
 
 
@@ -449,7 +559,9 @@ def main():
         if use_v2:
             algo_id, weights = get_or_create_algorithm_version(
                 cur, "v2-decomposed",
-                "per-stat projection (goals/assists/clean sheets/cards/saves) priced through game_scoring_rules",
+                "per-stat projection (goals/assists/clean sheets/cards/saves/shots on target/own goals/"
+                "penalty saves) priced through game_scoring_rules, PT1/60/90-based involvement, "
+                "self-calibrating neutral_attack",
                 DEFAULT_WEIGHTS_V2,
             )
         else:
@@ -459,14 +571,23 @@ def main():
         if isinstance(weights, str):
             weights = json.loads(weights)
 
-        # Players + last season's historical totals.
-        cur.execute(
+        # Players + last season's historical totals. RealDictCursor so
+        # adding columns (shots_on_target/own_goals/penalty_saves/pt1/
+        # pt60/pt90, pulled from raw_stats) can't silently misalign the
+        # positional tuple-index unpacking a plain cursor would need.
+        dict_cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        dict_cur.execute(
             """
-            select gp.id, p.position, gp.player_id,
+            select gp.id as game_player_id, p.position, gp.player_id, p.full_name,
                    gps.total_points, gps.minutes_played,
                    gps.goals, gps.assists, gps.clean_sheets, gps.saves,
                    gps.goals_conceded, gps.yellow_cards, gps.red_cards,
-                   p.full_name
+                   coalesce((gps.raw_stats->>'SOT')::numeric, 0) as shots_on_target,
+                   coalesce((gps.raw_stats->>'ownGoals')::numeric, 0) as own_goals,
+                   coalesce((gps.raw_stats->>'penaltySaves')::numeric, 0) as penalty_saves,
+                   coalesce((gps.raw_stats->>'PT1')::numeric, 0) as pt1,
+                   coalesce((gps.raw_stats->>'PT60')::numeric, 0) as pt60,
+                   coalesce((gps.raw_stats->>'PT90')::numeric, 0) as pt90
             from game_players gp
             join players p on p.id = gp.player_id
             join game_player_stats gps
@@ -475,29 +596,45 @@ def main():
             """,
             (HISTORICAL_SEASON, game_id),
         )
-        raw_players = cur.fetchall()
-        players = [(r[0], r[1], r[2]) for r in raw_players]
-        full_name_by_game_player_id = {r[0]: r[12] for r in raw_players}
+        raw_players = dict_cur.fetchall()
+        dict_cur.close()
+        players = [(r["game_player_id"], r["position"], r["player_id"]) for r in raw_players]
+        full_name_by_game_player_id = {r["game_player_id"]: r["full_name"] for r in raw_players}
         historical_by_player_id = {
-            r[2]: {
-                "total_points": float(r[3]), "minutes_played": r[4],
-                "goals": r[5], "assists": r[6], "clean_sheets": r[7], "saves": r[8],
-                "goals_conceded": r[9], "yellow_cards": r[10], "red_cards": r[11],
+            r["player_id"]: {
+                "total_points": float(r["total_points"]), "minutes_played": r["minutes_played"],
+                "goals": r["goals"], "assists": r["assists"], "clean_sheets": r["clean_sheets"], "saves": r["saves"],
+                "goals_conceded": r["goals_conceded"], "yellow_cards": r["yellow_cards"], "red_cards": r["red_cards"],
+                "shots_on_target": float(r["shots_on_target"]), "own_goals": float(r["own_goals"]),
+                "penalty_saves": float(r["penalty_saves"]),
+                # pt1 floored to 1 defensively - never 0 in live data when
+                # minutes_played > 0 (confirmed), but avoids a div/0 in
+                # project_player_stats if that ever changes.
+                "pt1": max(float(r["pt1"]), 1.0), "pt60": float(r["pt60"]), "pt90": float(r["pt90"]),
             }
             for r in raw_players
         }
-        game_player_meta = {r[0]: (r[1], r[2]) for r in raw_players}  # game_player_id -> (position, player_id)
+        game_player_meta = {r["game_player_id"]: (r["position"], r["player_id"]) for r in raw_players}
 
         # Position-average points-per-90 (v1) and per-stat position averages (v2),
         # weighted by minutes - not a plain average of individual rates, same
         # small-sample reasoning as the shrinkage above.
         position_totals = {}
-        for _, position, _, total_points, minutes_played, *_ in raw_players:
-            agg = position_totals.setdefault(position, [0.0, 0.0])
-            agg[0] += float(total_points)
-            agg[1] += float(minutes_played) / 90.0
+        for r in raw_players:
+            agg = position_totals.setdefault(r["position"], [0.0, 0.0])
+            agg[0] += float(r["total_points"])
+            agg[1] += float(r["minutes_played"]) / 90.0
         position_avg_pp90 = {pos: pts / games for pos, (pts, games) in position_totals.items()}
         position_avg_rates = compute_shrunk_rates(players, historical_by_player_id)
+        # Only meaningful for v2 (weights["season_games"] doesn't exist on
+        # v1's DEFAULT_WEIGHTS) - v1 never calls project_player_stats.
+        position_involvement = (
+            compute_involvement_rates(players, historical_by_player_id, weights["season_games"]) if use_v2 else None
+        )
+
+        # neutral_attack resolved once here (not per-player below) so this
+        # doesn't cost an extra query per player - see resolve_neutral_attack().
+        runtime_weights = {**weights, "neutral_attack": resolve_neutral_attack(cur, game_id, weights)} if use_v2 else weights
 
         if gameweek is not None:
             rows = fetch_fixtures_by_gameweek(cur, game_id, gameweek)
@@ -538,14 +675,21 @@ def main():
                 # player_projection_fixtures (which read inputs->>'points_per_90'
                 # and per-fixture fixture_factor) keep working unchanged instead
                 # of silently showing 0.0 for every FanTeam player.
-                neutral_fixture = {"attack_score": weights["neutral_attack"], "clean_sheet_score": weights["neutral_clean_sheet"]}
-                neutral_stats = project_player_stats(position, historical_row, neutral_fixture, weights, position_avg_rates)
+                neutral_fixture = {
+                    "attack_score": runtime_weights["neutral_attack"],
+                    "clean_sheet_score": runtime_weights["neutral_clean_sheet"],
+                }
+                neutral_stats = project_player_stats(
+                    position, historical_row, neutral_fixture, runtime_weights, position_avg_rates, position_involvement
+                )
                 points_per_90, _ = price_projected_stats(position, neutral_stats, scoring_rules)
 
                 score = 0.0
                 fixture_breakdown = []
                 for fx in player_fixtures:
-                    projected_stats = project_player_stats(position, historical_row, fx, weights, position_avg_rates)
+                    projected_stats = project_player_stats(
+                        position, historical_row, fx, runtime_weights, position_avg_rates, position_involvement
+                    )
                     contribution, priced = price_projected_stats(position, projected_stats, scoring_rules)
                     score += contribution
                     fixture_factor_equiv = contribution / points_per_90 if points_per_90 > 0 else 0.0
@@ -555,7 +699,11 @@ def main():
                         "fixture_factor": round(fixture_factor_equiv, 3),
                         "contribution": round(contribution, 3), "stats": priced,
                     })
-                inputs = {"points_per_90": round(points_per_90, 3), "fixtures": fixture_breakdown}
+                inputs = {
+                    "points_per_90": round(points_per_90, 3),
+                    "neutral_attack_used": round(runtime_weights["neutral_attack"], 4),
+                    "fixtures": fixture_breakdown,
+                }
             else:
                 games_played = historical_row["minutes_played"] / 90.0
                 k = weights["shrinkage_games"]

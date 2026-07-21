@@ -2,13 +2,20 @@ import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
 import { suggestBestXI } from "@/lib/squadOptimizer";
+import { TEAM_COLORS } from "@/lib/teamColors";
+import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "@/lib/playerStatus";
+import { computeAutoSubAwareTotal, type AutoSubPlayer } from "@/lib/benchAutoSub";
 import GameSecondaryNav from "@/app/GameSecondaryNav";
-import LineupBuilder from "./LineupBuilder";
+import LineupBuilder, { type GameweekSnapshot } from "./LineupBuilder";
 import CaptainPicker from "./CaptainPicker";
 import TransferBoard from "./TransferBoard";
 import MaryRecommendationsPanel from "./MaryRecommendationsPanel";
 import FixtureSwingPanel from "./FixtureSwingPanel";
 import RecentTransfers from "./RecentTransfers";
+
+// EPL season length - same 38 used throughout the scoring pipeline
+// (compute_projections.py's season_games weight, wildcard windows below).
+const SEASON_GAMEWEEKS = 38;
 
 // Squad state (transfers, lineup, wildcard/free-transfer counts) all
 // change from server actions elsewhere - same "never serve a stale
@@ -18,6 +25,7 @@ export const dynamic = "force-dynamic";
 type SquadPlayerRow = {
   game_player_id: number;
   is_starting: boolean;
+  bench_order: number | null;
   game_players: {
     price: number;
     players: { full_name: string; position: "GK" | "DEF" | "MID" | "FWD"; team_id: number; teams: { id: number; name: string } };
@@ -84,7 +92,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
 
   const { data: squadPlayersRaw } = await supabase
     .from("squad_players")
-    .select("game_player_id, is_starting, game_players(price, players(full_name, position, team_id, teams(id, name)))")
+    .select("game_player_id, is_starting, bench_order, game_players(price, players(full_name, position, team_id, teams(id, name)))")
     .eq("squad_id", squadId)
     .returns<SquadPlayerRow[]>();
 
@@ -114,6 +122,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
     team_name: sp.game_players.players.teams.name,
     price: Number(sp.game_players.price),
     is_starting: sp.is_starting,
+    bench_order: sp.bench_order,
     score: scoreByGamePlayerId.get(sp.game_player_id) ?? null,
     lineup: poolByGamePlayerId.get(sp.game_player_id)?.lineup ?? null,
     status: poolByGamePlayerId.get(sp.game_player_id)?.status ?? null,
@@ -140,6 +149,128 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
   const wildcardActiveThisWeek = wc1Active || wc2Active;
   const wc1Available = currentGameweek !== null && currentGameweek >= 2 && currentGameweek <= 19 && squad.wildcard_1_used_gameweek === null;
   const wc2Available = currentGameweek !== null && currentGameweek >= 20 && currentGameweek <= 38 && squad.wildcard_2_used_gameweek === null;
+
+  // Full-season fixture/expected-points/actual-points data for every
+  // squad player, one snapshot per gameweek - fetched once, in full, so
+  // flicking between gameweeks in the pitch view is instant client-side
+  // with no extra round trips. Only meaningful for bench games with a
+  // real published calendar (FanTeam today) - Dream Team has no live
+  // gameweek data yet, NFL doesn't use this pitch view at all.
+  let gameweekData: Record<number, GameweekSnapshot> = {};
+  if (hasBench && hasCalendar) {
+    const gamePlayerIds = players.map((p) => p.game_player_id);
+
+    const { data: fixtureRows } = await supabase
+      .from("game_fixture_gameweeks")
+      .select("gameweek, fixtures(home_team_id, away_team_id)")
+      .eq("game_id", squad.game_id)
+      .returns<{ gameweek: number; fixtures: { home_team_id: number; away_team_id: number } | null }[]>();
+
+    const { data: teamRows } = await supabase.from("teams").select("id, name").returns<{ id: number; name: string }[]>();
+    const teamNameById = new Map((teamRows ?? []).map((t) => [t.id, t.name]));
+
+    const { data: projRows } = await supabase
+      .from("projections")
+      .select("game_player_id, gameweek, hail_mary_score, created_at")
+      .in("game_player_id", gamePlayerIds)
+      .order("created_at", { ascending: false })
+      .returns<{ game_player_id: number; gameweek: number | null; hail_mary_score: number; created_at: string }[]>();
+    // "Latest wins" per (game_player_id, gameweek) - same dedup rule as
+    // player_score_by_horizon_from (migration 0025). Rows are ordered
+    // created_at desc above, so the first occurrence kept per key is the
+    // most recent one.
+    const scoreByPlayerGw = new Map<string, number>();
+    for (const r of projRows ?? []) {
+      if (r.gameweek == null) continue; // period-mode row, not relevant here
+      const key = `${r.game_player_id}:${r.gameweek}`;
+      if (!scoreByPlayerGw.has(key)) scoreByPlayerGw.set(key, Number(r.hail_mary_score));
+    }
+
+    const { data: actualRows } = await supabase
+      .from("player_gameweek_results")
+      .select("game_player_id, gameweek, actual_points")
+      .eq("game_id", squad.game_id)
+      .in("game_player_id", gamePlayerIds)
+      .returns<{ game_player_id: number; gameweek: number; actual_points: number | null }[]>();
+    const actualByPlayerGw = new Map(
+      (actualRows ?? []).map((r) => [`${r.game_player_id}:${r.gameweek}`, r.actual_points != null ? Number(r.actual_points) : null])
+    );
+    const gameweeksWithActuals = new Set((actualRows ?? []).map((r) => r.gameweek));
+
+    // Opponent (name, not yet abbreviated) per (team_id, gameweek) -
+    // covers both fixture sides from the one query, one lookup per side.
+    const opponentByTeamGw = new Map<string, { opponentName: string; isHome: boolean }>();
+    for (const row of fixtureRows ?? []) {
+      const f = row.fixtures;
+      if (!f) continue;
+      const homeName = teamNameById.get(f.home_team_id) ?? "?";
+      const awayName = teamNameById.get(f.away_team_id) ?? "?";
+      opponentByTeamGw.set(`${f.home_team_id}:${row.gameweek}`, { opponentName: awayName, isHome: true });
+      opponentByTeamGw.set(`${f.away_team_id}:${row.gameweek}`, { opponentName: homeName, isHome: false });
+    }
+
+    // The real, currently-saved starting XI + bench auto-sub order -
+    // "Expected points" per gameweek should reflect what THIS squad
+    // (with its actual lineup) would realistically score, not a flat sum
+    // of all 15 players (bench points don't count - see
+    // lib/benchAutoSub.ts) and not some hypothetical re-optimized XI.
+    const startingSet = new Set(players.filter((p) => p.is_starting).map((p) => p.game_player_id));
+    const benchPlayers = players.filter((p) => !startingSet.has(p.game_player_id));
+    const reserveGKId = benchPlayers.find((p) => p.position === "GK")?.game_player_id ?? null;
+    const outfieldBenchIdsInOrder = benchPlayers
+      .filter((p) => p.position !== "GK")
+      .slice()
+      .sort((a, b) => (a.bench_order ?? 99) - (b.bench_order ?? 99))
+      .map((p) => p.game_player_id);
+    function survivalProbabilityFor(p: { lineup: string | null; status: string | null }): number {
+      return (LINEUP_SECURITY_SCORES[p.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE) * (INJURY_AVAILABILITY_SCORES[p.status ?? ""] ?? DEFAULT_SECURITY_SCORE);
+    }
+
+    for (let gw = 1; gw <= SEASON_GAMEWEEKS; gw++) {
+      const gwPlayers: GameweekSnapshot["players"] = {};
+      for (const p of players) {
+        const opp = opponentByTeamGw.get(`${p.team_id}:${gw}`);
+        const fixture = opp
+          ? { opponentAbbr: TEAM_COLORS[opp.opponentName]?.abbr ?? opp.opponentName.slice(0, 3).toUpperCase(), isHome: opp.isHome }
+          : null;
+        const expectedPoints = scoreByPlayerGw.get(`${p.game_player_id}:${gw}`) ?? null;
+        const actualPoints = actualByPlayerGw.get(`${p.game_player_id}:${gw}`) ?? null;
+        gwPlayers[p.game_player_id] = { fixture, expectedPoints, actualPoints };
+      }
+
+      // Real lineup/status is only meaningful for the currently-editable
+      // gameweek - FanTeam's live feed doesn't expose it for any other
+      // one, so every other gameweek defaults to "nailed on" (1), which
+      // correctly collapses the auto-sub math to a plain starters-only sum.
+      const toAutoSubPlayer = (p: (typeof players)[number]): AutoSubPlayer => ({
+        gamePlayerId: p.game_player_id,
+        position: p.position,
+        score: gwPlayers[p.game_player_id].expectedPoints ?? 0,
+        survivalProbability: gw === currentGameweek ? survivalProbabilityFor(p) : 1,
+      });
+      const starters = players.filter((p) => startingSet.has(p.game_player_id)).map(toAutoSubPlayer);
+      const reserveGK = reserveGKId != null ? toAutoSubPlayer(players.find((p) => p.game_player_id === reserveGKId)!) : null;
+      const outfieldBench = outfieldBenchIdsInOrder.map((id) => toAutoSubPlayer(players.find((p) => p.game_player_id === id)!));
+      const squadExpected = computeAutoSubAwareTotal(starters, reserveGK, outfieldBench, formations ?? []);
+
+      // Starters only, same principle as squadExpected - but NOT yet
+      // auto-sub-aware itself (unlike squadExpected's probability-blended
+      // version): once player_gameweek_results has real actual_minutes,
+      // a starter who genuinely didn't play should be swapped for
+      // whichever bench player really was subbed in, which is knowable
+      // fact by then, not a probability estimate. No real actuals exist
+      // yet to build or verify that against - a follow-up once GW1 completes.
+      const squadActual = gameweeksWithActuals.has(gw)
+        ? starters.reduce((sum, p) => sum + (gwPlayers[p.gamePlayerId].actualPoints ?? 0), 0)
+        : null;
+      gameweekData[gw] = {
+        gameweek: gw,
+        players: gwPlayers,
+        squadExpected: Math.round(squadExpected * 10) / 10,
+        squadActual: squadActual != null ? Math.round(squadActual * 10) / 10 : null,
+      };
+    }
+  }
 
   // Pre-season only: recent transfers, undoable since they're free/
   // unlimited right now (see squads/actions.ts's reverseTransfer).
@@ -271,6 +402,9 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
               }))}
               budget={Number(rules.budget)}
               maxPerClub={rules.max_per_club ?? null}
+              gameweekData={hasCalendar ? gameweekData : undefined}
+              initialGameweek={currentGameweek}
+              seasonGameweeks={SEASON_GAMEWEEKS}
             />
           </div>
 

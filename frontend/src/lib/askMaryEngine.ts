@@ -1,6 +1,8 @@
 import type { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
-import { findBuyCandidatesForOutgoing, type TransferCandidate } from "@/lib/transferMatching";
+import { findLegalReplacementsForOutgoing, type TransferCandidate } from "@/lib/transferMatching";
+import { suggestBestXI, type Formation } from "@/lib/squadOptimizer";
+import { computeAutoSubAwareTotal, type AutoSubPlayer } from "@/lib/benchAutoSub";
 import { type FixtureDifficultyRow } from "@/lib/fixtureRuns";
 import { deriveTeamFixtureRatings, type TeamFixtureRating } from "@/lib/fixtureSwing";
 import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "@/lib/playerStatus";
@@ -66,14 +68,20 @@ export type BundleTransfer = {
   // "these two are about as good as each other" rather than silently
   // picking one.
   alternatives?: BundleTransfer[];
+  // Index (within this same step's transfers[]) of the other leg this one
+  // was budget-pooled with - see findBestPairBundle. Set on both sides of
+  // a pair, undefined for an ordinary single leg that clears its own cost
+  // alone. Lets the UI show "these two were evaluated together" instead
+  // of a leg with a negative raw gain looking like an unexplained mistake.
+  pairedLegIndex?: number;
 };
 
 /**
  * What Mary recommends for one specific upcoming gameweek - zero to
  * MAX_TRANSFERS_PER_STEP transfers, always jointly legal (each leg
  * validated against the cumulative state left by the legs before it, via
- * the same findBuyCandidatesForOutgoing budget/position/club-limit filter
- * every other transfer surface in this app already uses), so an illegal
+ * the same findLegalReplacementsForOutgoing budget/position/club-limit
+ * filter every other transfer surface in this app already uses), so an illegal
  * recommendation can never be produced. Steps are sequential - GW2's
  * working squad/budget/free-transfer count is whatever GW1's step left
  * behind, not independently recomputed from today's actual squad.
@@ -86,7 +94,11 @@ export type GameweekPlanStep = {
   freeTransfersAvailable: number | "unlimited"; // available going into this step, after this gameweek's grant lands
   freeTransfersAfter: number | "unlimited"; // left over after this step's transfers, carried into the next step
   budgetRemainingAfter: number;
-  resultingSquadExpectedPoints: number; // whole squad's projected points for this specific gameweek, after this step
+  // The optimal STARTING XI's projected points for this specific
+  // gameweek, after this step - not a flat sum of all 15 squad players,
+  // since bench points don't count toward the real total (see
+  // optimalXITotal).
+  resultingSquadExpectedPoints: number;
   writeup: string; // plain-English summary of what this step recommends and why
 };
 
@@ -209,6 +221,21 @@ export async function runAskMaryAnalysis(
   // declarations below.
   const rules = rulesRow;
 
+  // Needed to know which players in a hypothetical squad would actually
+  // START (and therefore actually score) - see optimalXITotal below.
+  const { data: formationsRaw } = await supabase
+    .from("game_formations")
+    .select("code, gk_count, def_count, mid_count, fwd_count")
+    .eq("game_id", fanteamGame.id)
+    .order("code");
+  const formations: Formation[] = (formationsRaw ?? []).map((f) => ({
+    code: f.code,
+    gk_count: f.gk_count,
+    def_count: f.def_count,
+    mid_count: f.mid_count,
+    fwd_count: f.fwd_count,
+  }));
+
   const { data: squadPlayersRaw } = await supabase
     .from("squad_players")
     .select("game_player_id, is_starting, game_players(price, players(full_name, position, team_id, teams(name)))")
@@ -301,6 +328,67 @@ export async function runAskMaryAnalysis(
     return hms != null ? Number(hms) : 0;
   }
 
+  // Same real-world meaning as compute_projections.py's status_multiplier
+  // (lineup likelihood x injury/suspension availability) - mirrored here
+  // via lib/playerStatus.ts's numeric tables rather than duplicating the
+  // Python mapping. Defaults to 1 (nailed on) when no live status exists
+  // yet, which is every player right now, pre-season.
+  function survivalProbabilityFor(gamePlayerId: number): number {
+    const row = poolByGamePlayerId.get(gamePlayerId);
+    const lineupScore = LINEUP_SECURITY_SCORES[row?.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE;
+    const injuryScore = INJURY_AVAILABILITY_SCORES[row?.status ?? ""] ?? DEFAULT_SECURITY_SCORE;
+    return lineupScore * injuryScore;
+  }
+
+  /**
+   * The realized total for one hypothetical squad state at one gameweek's
+   * scores: only the OPTIMAL STARTING XI's points actually count (see
+   * suggestBestXI, which picks the best-legal formation and its top
+   * scorers per position) - bench value is credited only through real
+   * auto-substitution (see computeAutoSubAwareTotal), never assumed. This
+   * is what the whole transfer search below optimizes for instead of a
+   * flat sum of all 15 players' scores, which would silently credit
+   * points a bench player was never actually going to score.
+   *
+   * Mary doesn't manage a persisted bench order for her own hypothetical
+   * squads (that's a real LineupBuilder concern - see squads/[id]/page.tsx
+   * for where the user's actual saved bench_order feeds the same
+   * auto-sub math) - the non-starters are ranked by their own score,
+   * highest first, the obvious default a rational manager would pick
+   * absent any other instruction.
+   */
+  function optimalXITotal(squad: WorkingSquadPlayer[], scoreMapForStep: Map<number, number>): number {
+    const withScores = squad.map((p) => ({ game_player_id: p.game_player_id, position: p.position, score: avgFor(scoreMapForStep, p.game_player_id) }));
+    const best = suggestBestXI(withScores, formations);
+    if (!best) return withScores.reduce((sum, p) => sum + p.score, 0);
+
+    const toAutoSubPlayer = (p: (typeof withScores)[number]): AutoSubPlayer => ({
+      gamePlayerId: p.game_player_id,
+      position: p.position,
+      score: p.score,
+      survivalProbability: survivalProbabilityFor(p.game_player_id),
+    });
+
+    const startingSet = new Set(best.startingGamePlayerIds);
+    const starters = withScores.filter((p) => startingSet.has(p.game_player_id)).map(toAutoSubPlayer);
+    const benchAll = withScores.filter((p) => !startingSet.has(p.game_player_id)).map(toAutoSubPlayer);
+    const reserveGK = benchAll.find((p) => p.position === "GK") ?? null;
+    const outfieldBench = benchAll.filter((p) => p.position !== "GK").sort((a, b) => b.score - a.score);
+
+    return computeAutoSubAwareTotal(starters, reserveGK, outfieldBench, formations);
+  }
+
+  function toWorkingSquadPlayer(cand: TransferCandidate): WorkingSquadPlayer {
+    return {
+      game_player_id: cand.gamePlayerId,
+      full_name: cand.fullName,
+      position: cand.position,
+      team_id: cand.teamId,
+      team_name: cand.teamName,
+      price: cand.price,
+    };
+  }
+
   const { data: fixturesRaw } = await supabase
     .from("game_fixture_gameweeks")
     .select(
@@ -344,20 +432,213 @@ export async function runAskMaryAnalysis(
     freeRemaining: number;
   };
 
+  type SlotMove = { input: MoveCandidateInput; outPlayer: WorkingSquadPlayer; inCandidate: TransferCandidate };
+
   /**
-   * Greedy incremental search for one gameweek step: find the single best
-   * legal transfer against the CURRENT working squad state, apply it
-   * hypothetically, re-search from the new state for a possible next
-   * transfer, and stop once nothing left clears its own points cost (or
-   * MAX_TRANSFERS_PER_STEP is reached - a safety bound, not a real limit,
+   * Builds the full MoveCandidateInput (fixture/status/form context etc.)
+   * for one hypothetical sell/buy leg - shared by the single-slot search
+   * and the pair-bundle search below so this lookup isn't duplicated.
+   * `realizedPointsGain` is the actual starting-XI-aware value of this
+   * leg (see optimalXITotal) - always supplied by both call sites now;
+   * the raw score delta fallback only exists so this can't silently
+   * produce NaN if a future caller forgets it.
+   */
+  function buildLegInput(outPlayer: WorkingSquadPlayer, inCand: TransferCandidate, outScore: number, realizedPointsGain?: number): SlotMove {
+    const inPoolRow = poolByGamePlayerId.get(inCand.gamePlayerId);
+    const outPoolRow = poolByGamePlayerId.get(outPlayer.game_player_id);
+    const outTeamRating = ratingByTeam.get(outPlayer.team_name);
+    const inTeamRating = ratingByTeam.get(inCand.teamName);
+    return {
+      outPlayer,
+      inCandidate: inCand,
+      input: {
+        outGamePlayerId: outPlayer.game_player_id,
+        inGamePlayerId: inCand.gamePlayerId,
+        outName: outPlayer.full_name,
+        inName: inCand.fullName,
+        outTeam: outPlayer.team_name,
+        inTeam: inCand.teamName,
+        position: outPlayer.position,
+        expectedPointsGain: realizedPointsGain ?? inCand.score - outScore,
+        hailMaryScoreDiff:
+          (inPoolRow?.hail_mary_score != null ? Number(inPoolRow.hail_mary_score) : 0) -
+          (outPoolRow?.hail_mary_score != null ? Number(outPoolRow.hail_mary_score) : 0),
+        fixtureSwingDiff: (inTeamRating?.swingValue ?? 0) - (outTeamRating?.swingValue ?? 0),
+        priceDelta: inCand.price - outPlayer.price,
+        incomingMinutesSecurity: LINEUP_SECURITY_SCORES[inPoolRow?.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
+        outgoingMinutesSecurity: LINEUP_SECURITY_SCORES[outPoolRow?.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
+        incomingInjuryAvailability: INJURY_AVAILABILITY_SCORES[inPoolRow?.status ?? ""] ?? DEFAULT_SECURITY_SCORE,
+        incomingForm: inPoolRow?.form != null ? Number(inPoolRow.form) : null,
+        outgoingForm: outPoolRow?.form != null ? Number(outPoolRow.form) : null,
+        incomingIsConfirmedStarter: inPoolRow?.lineup === "confirmed_starting",
+        hasFixtureData: !!outTeamRating && !!inTeamRating,
+        hasStatusData: inPoolRow?.lineup != null && outPoolRow?.lineup != null,
+      },
+    };
+  }
+
+  /**
+   * Budget-pooled 2-leg search. The single-slot search below can only ever
+   * suggest a leg that individually clears its own cost (a strictly
+   * better same-position replacement) - so a player who's already the
+   * best in their position (e.g. a premium whose price has simply caught
+   * up with them) can never be flagged for sale, even when selling them
+   * would free enough budget to fund a much bigger combined upgrade
+   * elsewhere (e.g. selling an expensive slot plus a budget slot to land
+   * two mid-price players whose combined output beats the premium alone -
+   * a real strategy the per-slot search structurally couldn't see, since
+   * neither leg has to justify itself alone, only the pair together).
+   * This searches every pair of current squad members (any positions -
+   * money isn't position-locked, only each leg's replacement is), pools
+   * their combined sale value, and finds the best-scoring affordable
+   * same-position replacement for each leg. Shortlisted to the top 15
+   * pool candidates per position (by this step's score) before pairing,
+   * since the true best combo is overwhelmingly unlikely to need a
+   * low-scoring candidate the price constraint wouldn't reward anyway -
+   * keeps this O(pairs x 15 x 15) instead of O(pairs x poolSize^2).
+   * Triples and larger bundles aren't searched - pairs already cover the
+   * reported gap, and the combinatorial cost grows fast.
+   */
+  function findBestPairBundle(
+    state: SearchState,
+    scoreMapForStep: Map<number, number>,
+    wildcardActive: boolean,
+    soldIds: Set<number>,
+    boughtIds: Set<number>,
+    currentXITotal: number
+  ): { legA: SlotMove; legB: SlotMove; costA: number; costB: number; netGain: number } | null {
+    const { workingSquad, workingSquadIds, workingBudget, workingClubCounts, freeRemaining } = state;
+    const sellable = workingSquad.filter((p) => !boughtIds.has(p.game_player_id));
+    const maxPerClub = rules.max_per_club;
+
+    const shortlistByPosition = new Map<string, TransferCandidate[]>();
+    for (const position of ["GK", "DEF", "MID", "FWD"]) {
+      const shortlist = (pool ?? [])
+        .filter(
+          (p) =>
+            p.position === position &&
+            !workingSquadIds.has(p.game_player_id) &&
+            !soldIds.has(p.game_player_id) &&
+            !boughtIds.has(p.game_player_id)
+        )
+        .map((p) => ({
+          gamePlayerId: p.game_player_id,
+          fullName: p.full_name,
+          teamId: p.team_id,
+          teamName: p.team_name,
+          price: Number(p.price),
+          score: avgFor(scoreMapForStep, p.game_player_id),
+          position: p.position,
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 15);
+      shortlistByPosition.set(position, shortlist);
+    }
+
+    let best: {
+      outA: WorkingSquadPlayer; outB: WorkingSquadPlayer; inA: TransferCandidate; inB: TransferCandidate;
+      netGain: number; costA: number; costB: number; gainA: number; gainB: number;
+    } | null = null;
+
+    for (let i = 0; i < sellable.length; i++) {
+      for (let j = i + 1; j < sellable.length; j++) {
+        const outA = sellable[i];
+        const outB = sellable[j];
+        const freedBudget = workingBudget + outA.price + outB.price;
+        const candA = shortlistByPosition.get(outA.position) ?? [];
+        const candB = shortlistByPosition.get(outB.position) ?? [];
+
+        // Raw combined score picks which CANDIDATES to even consider - a
+        // cheap, reliable proxy for "worth full evaluation" (a low-score
+        // candidate is essentially never going to raise the starting XI
+        // total). The actual accept/reject decision below uses real,
+        // starting-XI-aware value instead - see the netGain comment.
+        let bestCombo: { inA: TransferCandidate; inB: TransferCandidate; combinedScore: number } | null = null;
+        for (const inA of candA) {
+          for (const inB of candB) {
+            if (inA.gamePlayerId === inB.gamePlayerId) continue;
+            if (inA.price + inB.price > freedBudget) continue;
+            if (maxPerClub) {
+              const delta = new Map<number, number>();
+              delta.set(outA.team_id, (delta.get(outA.team_id) ?? 0) - 1);
+              delta.set(outB.team_id, (delta.get(outB.team_id) ?? 0) - 1);
+              delta.set(inA.teamId, (delta.get(inA.teamId) ?? 0) + 1);
+              delta.set(inB.teamId, (delta.get(inB.teamId) ?? 0) + 1);
+              let overLimit = false;
+              for (const [teamId, d] of delta) {
+                if ((workingClubCounts.get(teamId) ?? 0) + d > maxPerClub) {
+                  overLimit = true;
+                  break;
+                }
+              }
+              if (overLimit) continue;
+            }
+            const combinedScore = inA.score + inB.score;
+            if (!bestCombo || combinedScore > bestCombo.combinedScore) bestCombo = { inA, inB, combinedScore };
+          }
+        }
+        if (!bestCombo) continue;
+
+        const costA = transferCost(freeRemaining, wildcardActive);
+        const freeAfterA = costA === 0 && !wildcardActive ? freeRemaining - 1 : freeRemaining;
+        const costB = transferCost(freeAfterA, wildcardActive);
+
+        // Realized (starting-XI-aware) value, not raw score sums - selling
+        // one asset specifically to fund a bigger upgrade elsewhere only
+        // pays off if that upgrade actually cracks the starting XI, not
+        // just raises a bench player's raw score. Sequential attribution
+        // (apply A, measure the new total; apply B, measure again) so
+        // gainA + gainB always telescopes to the pair's true combined
+        // delta, while each leg still gets a sensible individual number.
+        const squadAfterA = workingSquad.filter((p) => p.game_player_id !== outA.game_player_id).concat(toWorkingSquadPlayer(bestCombo.inA));
+        const xiTotalAfterA = optimalXITotal(squadAfterA, scoreMapForStep);
+        const squadAfterBoth = squadAfterA.filter((p) => p.game_player_id !== outB.game_player_id).concat(toWorkingSquadPlayer(bestCombo.inB));
+        const xiTotalAfterBoth = optimalXITotal(squadAfterBoth, scoreMapForStep);
+        const gainA = xiTotalAfterA - currentXITotal;
+        const gainB = xiTotalAfterBoth - xiTotalAfterA;
+        const netGain = gainA + gainB + costA + costB;
+        if (netGain <= 0) continue; // pair doesn't clear its combined cost - not worth it
+
+        if (!best || netGain > best.netGain) {
+          best = { outA, outB, inA: bestCombo.inA, inB: bestCombo.inB, netGain, costA, costB, gainA, gainB };
+        }
+      }
+    }
+
+    if (!best) return null;
+    const outScoreA = avgFor(scoreMapForStep, best.outA.game_player_id);
+    const outScoreB = avgFor(scoreMapForStep, best.outB.game_player_id);
+    return {
+      legA: buildLegInput(best.outA, best.inA, outScoreA, best.gainA),
+      legB: buildLegInput(best.outB, best.inB, outScoreB, best.gainB),
+      costA: best.costA,
+      costB: best.costB,
+      netGain: best.netGain,
+    };
+  }
+
+  /**
+   * Greedy incremental search for one gameweek step: each round, compares
+   * the single best legal transfer against the CURRENT working squad
+   * state with the best budget-pooled PAIR of transfers (see
+   * findBestPairBundle - doesn't require either leg to individually clear
+   * cost, only the pair combined), takes whichever has the higher net
+   * gain, applies it hypothetically, and re-searches from the new state -
+   * stopping once neither option clears cost (or MAX_TRANSFERS_PER_STEP
+   * is reached - a safety bound on loop iterations, not a real limit,
    * since the cost-clearing check already does the real work). "Best" for
-   * picking which slot to fill is the raw projected points gain over this
-   * gameweek, not the normalized 0-100 Mary Move Score - that score is
+   * picking which slot to fill is the REALIZED, starting-XI-aware points
+   * gain (see optimalXITotal) - not each candidate's raw projected score,
+   * and not the normalized 0-100 Mary Move Score either (that score is
    * min-max normalized within whichever candidate set produced it, so
-   * scores from two different search steps (different candidate pools)
-   * aren't on a comparable scale. scoreMoveCandidates is still called each
-   * step purely to surface a real score/confidence/risk/reasons for
-   * whichever move gets chosen (and its runner-up, if kept as an
+   * scores from two different search rounds aren't on a comparable
+   * scale). Points sitting on the bench don't count toward a squad's real
+   * total, so a swap that only raises a bench player's raw score - one
+   * that would never actually start - correctly shows ~0 realized gain
+   * and gets passed over in favour of a move that actually changes who's
+   * in the starting XI. scoreMoveCandidates is still called each round
+   * purely to surface a real score/confidence/risk/reasons for whichever
+   * move(s) get chosen (and a single leg's runner-up, if kept as an
    * alternative), for display - it never decides which move to take.
    */
   function searchBestMoves(
@@ -369,6 +650,40 @@ export async function runAskMaryAnalysis(
   ): { transfers: BundleTransfer[] } & SearchState {
     let { workingSquad, workingSquadIds, workingBudget, workingClubCounts, freeRemaining } = state;
     const transfers: BundleTransfer[] = [];
+
+    function toLeg(move: SlotMove, score: MoveScore, costPoints: number): BundleTransfer {
+      return {
+        outGamePlayerId: move.input.outGamePlayerId,
+        outName: move.input.outName,
+        outTeam: move.input.outTeam,
+        outPrice: move.outPlayer.price,
+        inGamePlayerId: move.input.inGamePlayerId,
+        inName: move.input.inName,
+        inTeam: move.input.inTeam,
+        inPrice: move.inCandidate.price,
+        position: move.input.position,
+        pointsGain: Math.round(move.input.expectedPointsGain * 10) / 10,
+        costPoints,
+        risk: score.risk,
+        confidence: score.confidence,
+        overall: score.overall,
+        reasons: score.reasons,
+        warnings: score.warnings,
+      };
+    }
+
+    // Applies one accepted leg to the working state (shared by both the
+    // single-leg and pair-bundle paths below) before the next round.
+    function applyLeg(move: SlotMove, consumesFree: boolean) {
+      workingBudget -= move.input.priceDelta;
+      workingClubCounts.set(move.inCandidate.teamId, (workingClubCounts.get(move.inCandidate.teamId) ?? 0) + 1);
+      workingClubCounts.set(move.outPlayer.team_id, (workingClubCounts.get(move.outPlayer.team_id) ?? 0) - 1);
+      workingSquad = workingSquad.filter((p) => p.game_player_id !== move.outPlayer.game_player_id).concat(toWorkingSquadPlayer(move.inCandidate));
+      workingSquadIds = new Set(workingSquad.map((p) => p.game_player_id));
+      soldIds.add(move.outPlayer.game_player_id);
+      boughtIds.add(move.inCandidate.gamePlayerId);
+      if (consumesFree) freeRemaining -= 1;
+    }
 
     for (let slot = 0; slot < MAX_TRANSFERS_PER_STEP; slot++) {
       const poolCandidates: TransferCandidate[] = (pool ?? [])
@@ -383,12 +698,23 @@ export async function runAskMaryAnalysis(
           position: p.position,
         }));
 
-      type SlotMove = { input: MoveCandidateInput; outPlayer: WorkingSquadPlayer; inCandidate: TransferCandidate };
+      // What the squad's realized total actually is right now - the
+      // baseline every candidate leg below is measured against.
+      const currentXITotal = optimalXITotal(workingSquad, scoreMapForStep);
+
       const slotMoves: SlotMove[] = [];
       for (const outPlayer of workingSquad) {
         if (boughtIds.has(outPlayer.game_player_id)) continue;
         const outScore = avgFor(scoreMapForStep, outPlayer.game_player_id);
-        const matches = findBuyCandidatesForOutgoing(
+        // Legality only (position/budget/club-limit) - no "must be
+        // individually better" requirement here, unlike the old
+        // findBuyCandidatesForOutgoing this replaced. That requirement
+        // used to be the ONLY thing filtering candidates, using each
+        // player's raw score; now the real filter is realized value
+        // below, which correctly handles the case a raw-score comparison
+        // can't: a same-position swap to a higher scorer that would still
+        // just sit on the bench is worth exactly 0, not "an upgrade".
+        const legalCandidates = findLegalReplacementsForOutgoing(
           poolCandidates,
           {
             gamePlayerId: outPlayer.game_player_id,
@@ -404,66 +730,73 @@ export async function runAskMaryAnalysis(
           workingClubCounts,
           rules.max_per_club
         );
-        const best = matches[0];
-        if (!best) continue;
-        const inCand = best.candidate;
-        const inPoolRow = poolByGamePlayerId.get(inCand.gamePlayerId);
-        const outPoolRow = poolByGamePlayerId.get(outPlayer.game_player_id);
-        const outTeamRating = ratingByTeam.get(outPlayer.team_name);
-        const inTeamRating = ratingByTeam.get(inCand.teamName);
-        slotMoves.push({
-          outPlayer,
-          inCandidate: inCand,
-          input: {
-            outGamePlayerId: outPlayer.game_player_id,
-            inGamePlayerId: inCand.gamePlayerId,
-            outName: outPlayer.full_name,
-            inName: inCand.fullName,
-            outTeam: outPlayer.team_name,
-            inTeam: inCand.teamName,
-            position: outPlayer.position,
-            expectedPointsGain: best.delta,
-            hailMaryScoreDiff:
-              (inPoolRow?.hail_mary_score != null ? Number(inPoolRow.hail_mary_score) : 0) -
-              (outPoolRow?.hail_mary_score != null ? Number(outPoolRow.hail_mary_score) : 0),
-            fixtureSwingDiff: (inTeamRating?.swingValue ?? 0) - (outTeamRating?.swingValue ?? 0),
-            priceDelta: inCand.price - outPlayer.price,
-            incomingMinutesSecurity: LINEUP_SECURITY_SCORES[inPoolRow?.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
-            outgoingMinutesSecurity: LINEUP_SECURITY_SCORES[poolByGamePlayerId.get(outPlayer.game_player_id)?.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
-            incomingInjuryAvailability: INJURY_AVAILABILITY_SCORES[inPoolRow?.status ?? ""] ?? DEFAULT_SECURITY_SCORE,
-            incomingForm: inPoolRow?.form != null ? Number(inPoolRow.form) : null,
-            outgoingForm: poolByGamePlayerId.get(outPlayer.game_player_id)?.form != null ? Number(poolByGamePlayerId.get(outPlayer.game_player_id)!.form) : null,
-            incomingIsConfirmedStarter: inPoolRow?.lineup === "confirmed_starting",
-            hasFixtureData: !!outTeamRating && !!inTeamRating,
-            hasStatusData: inPoolRow?.lineup != null && outPoolRow?.lineup != null,
-          },
-        });
+        // Shortlisted to the top 20 by raw score before evaluating
+        // realized value - same pragmatic bound as findBestPairBundle's
+        // shortlist and for the same reason: raw score reliably predicts
+        // which candidates are even worth full evaluation, and this keeps
+        // worst-case cost predictable against a large player pool.
+        let bestCandidate: TransferCandidate | null = null;
+        let bestGain = 0; // must clear 0 (i.e. actually raise the realized total) to be worth recommending at all
+        for (const match of legalCandidates.slice(0, 20)) {
+          const hypotheticalSquad = workingSquad.filter((p) => p.game_player_id !== outPlayer.game_player_id).concat(toWorkingSquadPlayer(match.candidate));
+          const gain = optimalXITotal(hypotheticalSquad, scoreMapForStep) - currentXITotal;
+          if (gain > bestGain) {
+            bestGain = gain;
+            bestCandidate = match.candidate;
+          }
+        }
+        if (!bestCandidate) continue;
+        slotMoves.push(buildLegInput(outPlayer, bestCandidate, outScore, bestGain));
       }
 
-      if (slotMoves.length === 0) break; // no legal move available at all - stop the search here
+      let bestSingleIdx = -1;
+      for (let i = 0; i < slotMoves.length; i++) {
+        if (bestSingleIdx === -1 || slotMoves[i].input.expectedPointsGain > slotMoves[bestSingleIdx].input.expectedPointsGain) bestSingleIdx = i;
+      }
+      const singleCost = transferCost(freeRemaining, wildcardActive);
+      const singleNetGain = bestSingleIdx !== -1 ? slotMoves[bestSingleIdx].input.expectedPointsGain + singleCost : -Infinity;
+
+      const pairResult = findBestPairBundle(
+        { workingSquad, workingSquadIds, workingBudget, workingClubCounts, freeRemaining },
+        scoreMapForStep,
+        wildcardActive,
+        soldIds,
+        boughtIds,
+        currentXITotal
+      );
+      const pairNetGain = pairResult ? pairResult.netGain : -Infinity;
+
+      if (bestSingleIdx === -1 && !pairResult) break; // nothing legal at all - stop the search here
+
+      if (pairResult && pairNetGain > singleNetGain) {
+        const pairScores = scoreMoveCandidates([pairResult.legA.input, pairResult.legB.input], activeStrategy);
+        const legA = toLeg(pairResult.legA, pairScores[0], pairResult.costA);
+        const legB = toLeg(pairResult.legB, pairScores[1], pairResult.costB);
+        const idxA = transfers.length;
+        const idxB = idxA + 1;
+        legA.pairedLegIndex = idxB;
+        legB.pairedLegIndex = idxA;
+        transfers.push(legA, legB);
+        applyLeg(pairResult.legA, pairResult.costA === 0 && !wildcardActive);
+        applyLeg(pairResult.legB, pairResult.costB === 0 && !wildcardActive);
+        continue;
+      }
+
+      if (bestSingleIdx === -1 || singleNetGain <= 0) break; // doesn't clear its own cost - not worth recommending
 
       const scores = scoreMoveCandidates(
         slotMoves.map((m) => m.input),
         activeStrategy
       );
-
-      let pickIdx = 0;
-      for (let i = 1; i < slotMoves.length; i++) {
-        if (slotMoves[i].input.expectedPointsGain > slotMoves[pickIdx].input.expectedPointsGain) pickIdx = i;
-      }
-      const chosen = slotMoves[pickIdx];
-      const chosenScore = scores[pickIdx];
-
-      const cost = transferCost(freeRemaining, wildcardActive);
-      const netGain = chosen.input.expectedPointsGain + cost;
-      if (netGain <= 0) break; // doesn't clear its own cost - not worth recommending
+      const chosen = slotMoves[bestSingleIdx];
+      const chosenScore = scores[bestSingleIdx];
 
       // A runner-up within ~10% of the chosen move's raw gain (or within
       // a small absolute band for near-zero gains) is a real toss-up -
       // surface it instead of silently discarding it.
       let runnerUpIdx = -1;
       for (let i = 0; i < slotMoves.length; i++) {
-        if (i === pickIdx) continue;
+        if (i === bestSingleIdx) continue;
         const gap = chosen.input.expectedPointsGain - slotMoves[i].input.expectedPointsGain;
         const tolerance = Math.max(0.3, chosen.input.expectedPointsGain * 0.1);
         if (gap <= tolerance && (runnerUpIdx === -1 || slotMoves[i].input.expectedPointsGain > slotMoves[runnerUpIdx].input.expectedPointsGain)) {
@@ -471,52 +804,12 @@ export async function runAskMaryAnalysis(
         }
       }
 
-      function toLeg(move: SlotMove, score: MoveScore): BundleTransfer {
-        return {
-          outGamePlayerId: move.input.outGamePlayerId,
-          outName: move.input.outName,
-          outTeam: move.input.outTeam,
-          outPrice: move.outPlayer.price,
-          inGamePlayerId: move.input.inGamePlayerId,
-          inName: move.input.inName,
-          inTeam: move.input.inTeam,
-          inPrice: move.inCandidate.price,
-          position: move.input.position,
-          pointsGain: Math.round(move.input.expectedPointsGain * 10) / 10,
-          costPoints: cost,
-          risk: score.risk,
-          confidence: score.confidence,
-          overall: score.overall,
-          reasons: score.reasons,
-          warnings: score.warnings,
-        };
-      }
-
-      const leg = toLeg(chosen, chosenScore);
+      const leg = toLeg(chosen, chosenScore, singleCost);
       if (runnerUpIdx !== -1) {
-        leg.alternatives = [toLeg(slotMoves[runnerUpIdx], scores[runnerUpIdx])];
+        leg.alternatives = [toLeg(slotMoves[runnerUpIdx], scores[runnerUpIdx], singleCost)];
       }
       transfers.push(leg);
-
-      // Apply the accepted move to the working state before searching
-      // for a possible next slot.
-      workingBudget -= chosen.input.priceDelta;
-      workingClubCounts.set(chosen.inCandidate.teamId, (workingClubCounts.get(chosen.inCandidate.teamId) ?? 0) + 1);
-      workingClubCounts.set(chosen.outPlayer.team_id, (workingClubCounts.get(chosen.outPlayer.team_id) ?? 0) - 1);
-      workingSquad = workingSquad
-        .filter((p) => p.game_player_id !== chosen.outPlayer.game_player_id)
-        .concat({
-          game_player_id: chosen.inCandidate.gamePlayerId,
-          full_name: chosen.inCandidate.fullName,
-          position: chosen.inCandidate.position,
-          team_id: chosen.inCandidate.teamId,
-          team_name: chosen.inCandidate.teamName,
-          price: chosen.inCandidate.price,
-        });
-      workingSquadIds = new Set(workingSquad.map((p) => p.game_player_id));
-      soldIds.add(chosen.outPlayer.game_player_id);
-      boughtIds.add(chosen.inCandidate.gamePlayerId);
-      if (cost === 0 && !wildcardActive) freeRemaining -= 1; // consumed one banked free transfer
+      applyLeg(chosen, singleCost === 0 && !wildcardActive);
     }
 
     return { transfers, workingSquad, workingSquadIds, workingBudget, workingClubCounts, freeRemaining };
@@ -614,7 +907,7 @@ export async function runAskMaryAnalysis(
       const result = searchBestMoves(state, scoreMapForStep, wildcardActiveHere, soldIds, boughtIds);
       state = { workingSquad: result.workingSquad, workingSquadIds: result.workingSquadIds, workingBudget: result.workingBudget, workingClubCounts: result.workingClubCounts, freeRemaining: result.freeRemaining };
 
-      const resultingSquadExpectedPoints = state.workingSquad.reduce((sum, p) => sum + avgFor(scoreMapForStep, p.game_player_id), 0);
+      const resultingSquadExpectedPoints = optimalXITotal(state.workingSquad, scoreMapForStep);
 
       // "freeAfter" for both the write-up and the returned field is a
       // PREVIEW of what the *next* gameweek brings - not just this step's
