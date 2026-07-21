@@ -15,6 +15,7 @@ raw_response.json
 players.csv
 fanteam_players_raw.json
 fanteam_fixtures_raw.json
+golf_tournament_raw.json
 
 # Local tool config, not project source
 .claude/

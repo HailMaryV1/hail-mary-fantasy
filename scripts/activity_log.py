@@ -19,5 +19,5 @@ def log_event(cur, event_type, summary, *, game_id=None, game_player_id=None, fi
         insert into activity_log (event_type, game_id, game_player_id, fixture_id, summary, details)
         values (%s, %s, %s, %s, %s, %s)
         """,
-        (event_type, game_id, game_player_id, fixture_id, summary, json.dumps(details or {})),
+        (event_type, game_id, game_player_id, fixture_id, summary, json.dumps(details or {}, default=str)),
     )
