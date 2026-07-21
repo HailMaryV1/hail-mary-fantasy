@@ -89,6 +89,7 @@ def main():
     results.append(run_step("FanTeam players (no login needed)", ["scraper_fanteam.py", "--players-only"]))
     results.append(run_step("Import FanTeam players", ["import_fanteam_live.py", "--skip-fixtures"]))
     results.append(run_step("Capture gameweek actuals", ["scripts/capture_gameweek_actuals.py"]))
+    results.append(run_step("Attach gameweek results to frozen predictions", ["scripts/attach_gameweek_results.py"]))
 
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:
@@ -105,6 +106,7 @@ def main():
                 run_step(f"Recompute FanTeam GW{gw}", ["scripts/compute_projections.py", "fanteam", "--gameweek", str(gw)])
             )
 
+    results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
     results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
 
     failed = results.count(False)

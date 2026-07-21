@@ -6,6 +6,8 @@ import { addToWatchlist } from "@/app/watchlist/actions";
 import { findLegalReplacementsForOutgoing, type TransferCandidate } from "@/lib/transferMatching";
 import PitchView from "../PitchView";
 import PlayerActionMenu, { type PlayerAction } from "../PlayerActionMenu";
+import FormPill from "../../FormPill";
+import type { FormStatus } from "@/lib/hailMaryForm";
 
 // position widened to string (not the soccer-only literal union) purely so
 // this still type-checks against PitchView's now-shared PitchPlayer type -
@@ -23,6 +25,7 @@ type Player = {
   score: number | null;
   lineup?: string | null;
   status?: string | null;
+  formStatus?: FormStatus | null;
 };
 
 type Formation = {
@@ -78,6 +81,7 @@ function toCandidate(player: Player): TransferCandidate {
     price: player.price,
     score: player.score ?? 0,
     position: player.position as TransferCandidate["position"],
+    formStatus: player.formStatus ?? null,
   };
 }
 
@@ -602,7 +606,10 @@ export default function LineupBuilder({
                   className="flex items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-navy-800 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <span className="text-white">
-                    {m.candidate.fullName}
+                    <span className="inline-flex items-center">
+                      {m.candidate.fullName}
+                      <FormPill status={m.candidate.formStatus} />
+                    </span>
                     <span className="block text-xs text-navy-400">
                       {m.candidate.teamName} · £{m.candidate.price.toFixed(1)}m
                     </span>

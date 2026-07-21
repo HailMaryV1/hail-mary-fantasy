@@ -6,6 +6,7 @@ import { computeAutoSubAwareTotal, type AutoSubPlayer } from "@/lib/benchAutoSub
 import { type FixtureDifficultyRow } from "@/lib/fixtureRuns";
 import { deriveTeamFixtureRatings, type TeamFixtureRating } from "@/lib/fixtureSwing";
 import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "@/lib/playerStatus";
+import { buildFormByGamePlayerId, type FormStatus } from "@/lib/hailMaryForm";
 import { transferCost, isWildcardActive, accrueFreeTransfers } from "@/lib/transferEconomy";
 import {
   scoreMoveCandidates,
@@ -56,6 +57,7 @@ export type BundleTransfer = {
   inName: string;
   inTeam: string;
   inPrice: number;
+  inFormStatus?: FormStatus | null; // is the incoming player hot/cold against Mary's own model - see lib/hailMaryForm.ts
   position: string;
   pointsGain: number; // raw projected points over this gameweek, before this leg's cost
   costPoints: number; // 0 or -4 - see lib/transferEconomy.ts
@@ -113,6 +115,7 @@ type PoolRow = {
   lineup: string | null;
   status: string | null;
   form: number | null;
+  formStatus?: FormStatus | null;
 };
 
 type SquadPlayerRow = {
@@ -242,8 +245,20 @@ export async function runAskMaryAnalysis(
     .eq("squad_id", squad.id)
     .returns<SquadPlayerRow[]>();
 
-  const { data: pool } = await supabase.from("game_player_pool").select("*").eq("game_slug", "fanteam").returns<PoolRow[]>();
-  const poolByGamePlayerId = new Map((pool ?? []).map((p) => [p.game_player_id, p]));
+  const { data: poolRaw } = await supabase.from("game_player_pool").select("*").eq("game_slug", "fanteam").returns<PoolRow[]>();
+
+  // Hail Mary Form - same merge pattern as every other surface, sourced
+  // from the frozen prediction archive (migration 0044) rather than
+  // game_player_pool. Threaded through poolCandidates below so a
+  // recommended buy's form shows up on BundleTransfer.inFormStatus.
+  const { data: formRows } = await supabase
+    .from("player_gameweek_predictions")
+    .select("game_player_id, gameweek, points_difference")
+    .eq("game_id", fanteamGame.id)
+    .not("points_difference", "is", null); // completed gameweeks only - also keeps this well under PostgREST's default row cap across a full season
+  const formByGamePlayerId = buildFormByGamePlayerId(formRows ?? []);
+  const pool: PoolRow[] = (poolRaw ?? []).map((p) => ({ ...p, formStatus: formByGamePlayerId.get(p.game_player_id)?.status ?? null }));
+  const poolByGamePlayerId = new Map(pool.map((p) => [p.game_player_id, p]));
 
   const squadPlayers = (squadPlayersRaw ?? []).map((sp) => {
     const poolRow = poolByGamePlayerId.get(sp.game_player_id);
@@ -661,6 +676,7 @@ export async function runAskMaryAnalysis(
         inName: move.input.inName,
         inTeam: move.input.inTeam,
         inPrice: move.inCandidate.price,
+        inFormStatus: move.inCandidate.formStatus ?? null,
         position: move.input.position,
         pointsGain: Math.round(move.input.expectedPointsGain * 10) / 10,
         costPoints,
@@ -696,6 +712,7 @@ export async function runAskMaryAnalysis(
           price: Number(p.price),
           score: avgFor(scoreMapForStep, p.game_player_id),
           position: p.position,
+          formStatus: p.formStatus,
         }));
 
       // What the squad's realized total actually is right now - the

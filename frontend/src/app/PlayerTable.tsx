@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import StatusPill from "./StatusPill";
+import FormPill from "./FormPill";
+import type { FormStatus } from "@/lib/hailMaryForm";
 
 export type ProjectionRow = {
   game_player_id: number;
@@ -14,6 +16,7 @@ export type ProjectionRow = {
   points_per_90: number;
   lineup?: string | null;
   status?: string | null;
+  formStatus?: FormStatus | null;
 };
 
 type SortKey = "hail_mary_score" | "price" | "points_per_90";
@@ -170,6 +173,7 @@ export default function PlayerTable({ data, horizon }: { data: ProjectionRow[]; 
                       <span className="inline-flex items-center">
                         {row.full_name}
                         <StatusPill lineup={row.lineup} status={row.status} />
+                        <FormPill status={row.formStatus} />
                       </span>
                       <span className="block text-xs font-normal text-navy-400 sm:hidden">
                         {row.team_name} · {row.position}

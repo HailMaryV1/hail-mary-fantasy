@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { applyRecommendation } from "../squads/actions";
 import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
+import FormPill from "../FormPill";
 import type { GameweekPlanStep, BundleTransfer } from "@/lib/askMaryEngine";
 
 const RISK_TONE: Record<BundleTransfer["risk"], string> = {
@@ -101,7 +102,10 @@ export default function GameweekPlanRow({
                       <span className="text-white">{t.outName}</span>
                       <span className="text-navy-500">(£{t.outPrice.toFixed(1)}m)</span>
                       <span className="text-navy-500">→</span>
-                      <span className="font-medium text-white">{t.inName}</span>
+                      <span className="inline-flex items-center font-medium text-white">
+                        {t.inName}
+                        <FormPill status={t.inFormStatus} />
+                      </span>
                       <span className="text-navy-500">(£{t.inPrice.toFixed(1)}m)</span>
                       <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${RISK_TONE[t.risk]}`}>{t.risk} risk</span>
                       <span className="rounded-full bg-navy-800 px-2 py-0.5 text-[10px] font-medium text-navy-300">{t.confidence}% confidence</span>

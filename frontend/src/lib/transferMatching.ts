@@ -1,3 +1,5 @@
+import type { FormStatus } from "./hailMaryForm";
+
 export type TransferCandidate = {
   gamePlayerId: number;
   fullName: string;
@@ -6,6 +8,7 @@ export type TransferCandidate = {
   price: number;
   score: number;
   position: "GK" | "DEF" | "MID" | "FWD";
+  formStatus?: FormStatus | null;
 };
 
 export type SquadMember = TransferCandidate;

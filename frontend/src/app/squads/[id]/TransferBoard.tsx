@@ -6,7 +6,9 @@ import PitchView from "../PitchView";
 import NflRosterView from "../NflRosterView";
 import Badge from "../Badge";
 import StatusPill from "../../StatusPill";
+import FormPill from "../../FormPill";
 import { shortenPlayerName } from "@/lib/playerName";
+import type { FormStatus } from "@/lib/hailMaryForm";
 
 type SortKey = "score" | "price";
 
@@ -27,6 +29,7 @@ type SquadMember = {
   score: number | null;
   lineup?: string | null;
   status?: string | null;
+  formStatus?: FormStatus | null;
   nextFixture?: { opponentAbbr: string; isHome: boolean } | null;
 };
 
@@ -40,6 +43,7 @@ type PoolCandidate = {
   score: number | null;
   lineup?: string | null;
   status?: string | null;
+  formStatus?: FormStatus | null;
 };
 
 /**
@@ -249,6 +253,7 @@ export default function TransferBoard({
                       <span className="inline-flex items-center" title={p.full_name}>
                         {shortenPlayerName(p.full_name)}
                         <StatusPill lineup={p.lineup} status={p.status} />
+                        <FormPill status={p.formStatus} />
                       </span>
                       <span className="block text-xs text-navy-400">
                         {p.team_name} · {p.position} · £{Number(p.price).toFixed(1)}m

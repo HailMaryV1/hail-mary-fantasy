@@ -2,7 +2,9 @@
 
 import Kit from "./Kit";
 import StatusPill from "../StatusPill";
+import FormPill from "../FormPill";
 import { shortenPlayerName } from "@/lib/playerName";
+import type { FormStatus } from "@/lib/hailMaryForm";
 
 export type PitchPlayer = {
   game_player_id: number;
@@ -14,6 +16,7 @@ export type PitchPlayer = {
   score: number | null;
   lineup?: string | null;
   status?: string | null;
+  formStatus?: FormStatus | null;
   nextFixture?: { opponentAbbr: string; isHome: boolean } | null;
   // Auto-substitution priority (1st/2nd/3rd reserve) for an outfield
   // bench player - null for starters, the reserve GK (always exactly
@@ -90,6 +93,7 @@ export default function PitchView({
               {shortenPlayerName(player.full_name)}
             </span>
             <StatusPill lineup={player.lineup} status={player.status} />
+            <FormPill status={player.formStatus} />
           </span>
           {player.score != null && <span className="text-[10px] text-sky-400">{player.score.toFixed(1)} pts</span>}
           {player.price != null && <span className="text-[10px] text-navy-300">£{Number(player.price).toFixed(1)}m</span>}

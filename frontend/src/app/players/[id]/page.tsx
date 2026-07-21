@@ -3,7 +3,10 @@ import { Fragment } from "react";
 import { notFound } from "next/navigation";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import StatusPill from "../../StatusPill";
+import FormPill from "../../FormPill";
 import { resolveStatusBadge } from "@/lib/playerStatus";
+import { buildFormByGamePlayerId } from "@/lib/hailMaryForm";
+import { resolveFormBadge } from "@/lib/formStatus";
 
 // See rankings/page.tsx for why this is needed - Supabase's .rpc() POSTs
 // to a fixed URL regardless of parameters, so Next's fetch Data Cache can
@@ -80,9 +83,9 @@ export default async function PlayerDetail({
 
   const { data: gamePlayer } = await supabase
     .from("game_players")
-    .select("fantasy_games(slug)")
+    .select("game_id, fantasy_games(slug)")
     .eq("id", gamePlayerId)
-    .maybeSingle<{ fantasy_games: { slug: string } }>();
+    .maybeSingle<{ game_id: number; fantasy_games: { slug: string } }>();
   if (!gamePlayer) notFound();
   const gameSlug = gamePlayer.fantasy_games.slug;
 
@@ -155,6 +158,18 @@ export default async function PlayerDetail({
   // a light discount (might start/expected) doesn't need this called out.
   const showStatusCaveat = statusBadge && statusBadge.tone !== "green";
 
+  // Hail Mary Form - see rankings/page.tsx for the same merge pattern,
+  // here narrowed to a single player's full history instead of a
+  // per-page batch.
+  const { data: formRows } = await supabase
+    .from("player_gameweek_predictions")
+    .select("game_player_id, gameweek, points_difference")
+    .eq("game_id", gamePlayer.game_id)
+    .not("points_difference", "is", null)
+    .eq("game_player_id", gamePlayerId);
+  const formResult = buildFormByGamePlayerId(formRows ?? []).get(gamePlayerId) ?? null;
+  const formBadge = resolveFormBadge(formResult?.status);
+
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-2xl">
@@ -168,6 +183,7 @@ export default async function PlayerDetail({
         <h1 className="mt-3 flex items-center text-2xl font-semibold text-white">
           {summary.full_name}
           <StatusPill lineup={statusRow?.lineup} status={statusRow?.status} />
+          <FormPill status={formResult?.status} />
         </h1>
         <p className="mt-1 text-sm text-navy-300">
           {summary.team_name} · {summary.position} · £{Number(summary.price).toFixed(1)}
@@ -223,6 +239,19 @@ export default async function PlayerDetail({
                 : `${formatDate(summary.period_start)} – ${formatDate(summary.period_end)}`}
             </p>
           </div>
+          {formResult && formResult.gamesUsed >= 2 && (
+            <div className="col-span-2 rounded-xl border border-navy-700 bg-navy-900 p-4 sm:col-span-1">
+              <p className="text-xs uppercase tracking-wide text-navy-400">Hail Mary Form</p>
+              <p className="mt-1 flex items-center text-xl font-semibold text-white">
+                {formResult.recentScore !== null && formResult.recentScore >= 0 ? "+" : ""}
+                {formResult.recentScore?.toFixed(1) ?? "–"}
+                {formBadge && <span className="ml-1.5 text-base" title={formBadge.label}>{formBadge.icon}</span>}
+              </p>
+              <p className="mt-0.5 text-xs text-navy-400">
+                vs Mary&apos;s prediction, last {Math.min(formResult.gamesUsed, 4)} GW{Math.min(formResult.gamesUsed, 4) === 1 ? "" : "s"}
+              </p>
+            </div>
+          )}
         </div>
 
         <h2 className="mt-8 text-sm font-semibold uppercase tracking-wide text-navy-400">

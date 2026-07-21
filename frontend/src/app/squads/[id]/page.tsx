@@ -5,6 +5,7 @@ import { suggestBestXI } from "@/lib/squadOptimizer";
 import { TEAM_COLORS } from "@/lib/teamColors";
 import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "@/lib/playerStatus";
 import { computeAutoSubAwareTotal, type AutoSubPlayer } from "@/lib/benchAutoSub";
+import { buildFormByGamePlayerId } from "@/lib/hailMaryForm";
 import GameSecondaryNav from "@/app/GameSecondaryNav";
 import LineupBuilder, { type GameweekSnapshot } from "./LineupBuilder";
 import CaptainPicker from "./CaptainPicker";
@@ -103,6 +104,18 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
     .returns<PoolRow[]>();
   const poolByGamePlayerId = new Map((pool ?? []).map((p) => [p.game_player_id, p]));
 
+  // Hail Mary Form badge - every player in this game's frozen prediction
+  // archive (migration 0044), same "fetch once, merge everywhere" shape
+  // as lineup/status above. Covers squad members' pitch chips AND pool
+  // candidates' rows (LineupBuilder's swap picker, TransferBoard) from
+  // one query.
+  const { data: formRows } = await supabase
+    .from("player_gameweek_predictions")
+    .select("game_player_id, gameweek, points_difference")
+    .eq("game_id", squad.game_id)
+    .not("points_difference", "is", null); // completed gameweeks only - also keeps this well under PostgREST's default row cap across a full season
+  const formByGamePlayerId = buildFormByGamePlayerId(formRows ?? []);
+
   // 1-gameweek expected-points score for every player in this game - the
   // same metric used consistently for squad players AND pool candidates
   // (see the lineup-page scoring-mismatch bug fixed earlier this session).
@@ -126,6 +139,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
     score: scoreByGamePlayerId.get(sp.game_player_id) ?? null,
     lineup: poolByGamePlayerId.get(sp.game_player_id)?.lineup ?? null,
     status: poolByGamePlayerId.get(sp.game_player_id)?.status ?? null,
+    formStatus: formByGamePlayerId.get(sp.game_player_id)?.status ?? null,
   }));
 
   const budgetRemaining = Number(rules.budget) - players.reduce((sum, p) => sum + p.price, 0);
@@ -320,7 +334,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
     const squadMembersForBoard = players.map((p) => ({ ...p, nextFixture: null }));
     const poolCandidates = (pool ?? [])
       .filter((p) => !players.some((sp) => sp.game_player_id === p.game_player_id))
-      .map((p) => ({ ...p, score: scoreByGamePlayerId.get(p.game_player_id) ?? null }));
+      .map((p) => ({ ...p, score: scoreByGamePlayerId.get(p.game_player_id) ?? null, formStatus: formByGamePlayerId.get(p.game_player_id)?.status ?? null }));
     const clubCountsObj: Record<number, number> = {};
     clubCounts.forEach((count, teamId) => (clubCountsObj[teamId] = count));
 
@@ -399,6 +413,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
                 price: Number(p.price),
                 score: scoreByGamePlayerId.get(p.game_player_id) ?? 0,
                 position: p.position,
+                formStatus: formByGamePlayerId.get(p.game_player_id)?.status ?? null,
               }))}
               budget={Number(rules.budget)}
               maxPerClub={rules.max_per_club ?? null}

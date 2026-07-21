@@ -15,12 +15,17 @@ export type GameFeatureSet = {
   activity: boolean;
   askMary: boolean;
   performanceLab: boolean;
+  // Hail Mary Form (migration 0044) needs a captured, deadline-locked
+  // prediction history to mean anything - only FanTeam has that pipeline
+  // wired up (scripts/capture_gameweek_predictions.py only scans games
+  // with a published gameweek calendar it's actually being run against).
+  hailMaryForm: boolean;
 };
 
 export const GAME_FEATURES: Record<string, GameFeatureSet> = {
-  fanteam: { rankings: true, fixtures: true, watchlist: true, activity: true, askMary: true, performanceLab: true },
-  dreamteam: { rankings: true, fixtures: true, watchlist: false, activity: false, askMary: false, performanceLab: false },
-  "nfl-fanteam": { rankings: true, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false },
+  fanteam: { rankings: true, fixtures: true, watchlist: true, activity: true, askMary: true, performanceLab: true, hailMaryForm: true },
+  dreamteam: { rankings: true, fixtures: true, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false },
+  "nfl-fanteam": { rankings: true, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false },
 };
 
 export const NO_FEATURES: GameFeatureSet = {
@@ -30,6 +35,7 @@ export const NO_FEATURES: GameFeatureSet = {
   activity: false,
   askMary: false,
   performanceLab: false,
+  hailMaryForm: false,
 };
 
 export function featuresForGame(slug: string): GameFeatureSet {

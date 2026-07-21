@@ -2,6 +2,7 @@ import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import PlayerTable, { type ProjectionRow } from "../PlayerTable";
 import GameSecondaryNav from "../GameSecondaryNav";
+import { buildFormByGamePlayerId } from "@/lib/hailMaryForm";
 
 // Supabase's .rpc() always POSTs to the same URL regardless of parameters
 // (they're in the body, not the URL) - Next's fetch Data Cache can key
@@ -113,6 +114,30 @@ export default async function RankingsPage({
       lineup: statusById.get(r.game_player_id)?.lineup ?? null,
       status: statusById.get(r.game_player_id)?.status ?? null,
     }));
+
+    // Hail Mary Form badge - same merge pattern as lineup/status above,
+    // sourced from the frozen prediction archive (migration 0044) rather
+    // than game_player_pool. Fetches every gameweek's points_difference
+    // for this game's players in one query - buildFormByGamePlayerId does
+    // its own per-player grouping/recency weighting from there.
+    const { data: game } = await supabase
+      .from("fantasy_games")
+      .select("id")
+      .eq("slug", activeGame.slug)
+      .maybeSingle<{ id: number }>();
+    if (game) {
+      const { data: formRows } = await supabase
+        .from("player_gameweek_predictions")
+        .select("game_player_id, gameweek, points_difference")
+        .eq("game_id", game.id)
+        .not("points_difference", "is", null) // completed gameweeks only - also keeps this well under PostgREST's default row cap across a full season
+        .in("game_player_id", data.map((r) => r.game_player_id));
+      const formByPlayer = buildFormByGamePlayerId(formRows ?? []);
+      data = data.map((r) => ({
+        ...r,
+        formStatus: formByPlayer.get(r.game_player_id)?.status ?? null,
+      }));
+    }
   }
 
   return (

@@ -77,6 +77,12 @@ KNOWN LIMITATIONS (v2-decomposed, updated):
     the win%+half-draw% approximation otherwise (unchanged - see KNOWN
     LIMITATIONS (v1) above; fixture_clean_sheet_probabilities confirmed
     still empty).
+  - v2's inputs now also carries "games90" (sample-size signal) and each
+    fixture entry a "predicted_minutes" figure, for the Hail Mary Form
+    System (player_gameweek_predictions, migration 0044) to freeze -
+    predicted_minutes describes only fixtures[0] (the first fixture), so
+    a double gameweek's figure isn't a combined one; hail_mary_score
+    itself still correctly sums every fixture in the window.
 
 RUN:
     python3 scripts/compute_projections.py fanteam --gameweek 1
@@ -439,7 +445,11 @@ def compute_involvement_rates(players, historical_rows, season_games):
 
 
 def project_player_stats(position, historical_row, fixture, weights, position_avg, position_involvement):
-    """Per-stat projected count for one player's one fixture (v2-decomposed)."""
+    """Per-stat projected count for one player's one fixture (v2-decomposed).
+    Returns (projected, expected_minutes_fraction) - the fraction is also
+    exposed as predicted_minutes on each fixture_breakdown entry in main(),
+    for the Hail Mary Form System (player_gameweek_predictions, migration
+    0044) to freeze - it was previously computed here and discarded."""
     k = weights["shrinkage_games"]
     neutral_attack = weights["neutral_attack"]
     neutral_clean_sheet = weights["neutral_clean_sheet"]
@@ -482,7 +492,7 @@ def project_player_stats(position, historical_row, fixture, weights, position_av
         factor = factor_by_mode[STAT_FIXTURE_MODE[stat]]
         rate_scale = STAT_RATE_SCALE.get(stat, 1.0)
         projected[stat] = raw_rate * factor * expected_minutes_fraction * rate_scale
-    return projected
+    return projected, expected_minutes_fraction
 
 
 def price_projected_stats(position, projected_stats, scoring_rules):
@@ -679,7 +689,7 @@ def main():
                     "attack_score": runtime_weights["neutral_attack"],
                     "clean_sheet_score": runtime_weights["neutral_clean_sheet"],
                 }
-                neutral_stats = project_player_stats(
+                neutral_stats, _ = project_player_stats(
                     position, historical_row, neutral_fixture, runtime_weights, position_avg_rates, position_involvement
                 )
                 points_per_90, _ = price_projected_stats(position, neutral_stats, scoring_rules)
@@ -687,7 +697,7 @@ def main():
                 score = 0.0
                 fixture_breakdown = []
                 for fx in player_fixtures:
-                    projected_stats = project_player_stats(
+                    projected_stats, expected_minutes_fraction = project_player_stats(
                         position, historical_row, fx, runtime_weights, position_avg_rates, position_involvement
                     )
                     contribution, priced = price_projected_stats(position, projected_stats, scoring_rules)
@@ -698,10 +708,20 @@ def main():
                         "attack_score": fx["attack_score"], "clean_sheet_score": fx["clean_sheet_score"],
                         "fixture_factor": round(fixture_factor_equiv, 3),
                         "contribution": round(contribution, 3), "stats": priced,
+                        # For the Hail Mary Form System (player_gameweek_predictions) -
+                        # a double gameweek only reflects fixtures[0] here, same
+                        # single-fixture caveat as the probability fields below;
+                        # hail_mary_score itself still correctly sums both fixtures.
+                        "predicted_minutes": round(expected_minutes_fraction * 90, 1),
                     })
                 inputs = {
                     "points_per_90": round(points_per_90, 3),
                     "neutral_attack_used": round(runtime_weights["neutral_attack"], 4),
+                    # Sample-size signal for the Hail Mary Form System's
+                    # confidence formula (scripts/capture_gameweek_predictions.py) -
+                    # how many 90-minute games of real history this player's
+                    # shrunk rates are actually based on.
+                    "games90": round(historical_row["minutes_played"] / 90.0, 2),
                     "fixtures": fixture_breakdown,
                 }
             else:
@@ -715,7 +735,11 @@ def main():
                     contribution = points_per_90 * factor
                     score += contribution
                     fixture_breakdown.append({**fx, "fixture_factor": factor, "contribution": contribution})
-                inputs = {"points_per_90": round(points_per_90, 3), "fixtures": fixture_breakdown}
+                inputs = {
+                    "points_per_90": round(points_per_90, 3),
+                    "games90": round(games_played, 2),
+                    "fixtures": fixture_breakdown,
+                }
 
             lineup, status = player_status.get(game_player_id, (None, None))
             multiplier = status_multiplier(lineup, status)

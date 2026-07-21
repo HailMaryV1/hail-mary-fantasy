@@ -13,6 +13,7 @@ export default function GameSecondaryNav({ gameSlug, gameDisplayName }: { gameSl
   if (features.performanceLab) links.push({ label: "Performance Lab", href: "/performance-lab" });
   if (features.watchlist) links.push({ label: "Watchlist", href: "/watchlist" });
   if (features.rankings) links.push({ label: "Player Rankings", href: `/rankings?game=${gameSlug}` });
+  if (features.hailMaryForm) links.push({ label: "Hail Mary Form", href: `/form?game=${gameSlug}` });
   // Not one of the 6 named links in the nav redesign, but Fixtures is a
   // real, working page - the old inline button row it's replacing linked
   // to it, so dropping it here would silently orphan it (no other nav
