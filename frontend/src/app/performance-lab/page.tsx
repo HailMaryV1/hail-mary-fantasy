@@ -10,6 +10,7 @@ import {
 } from "@/lib/performanceAnalytics";
 import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
 import { recordPredictions } from "@/app/ask-mary/actions";
+import GameSecondaryNav from "../GameSecondaryNav";
 
 // Reflects whatever the pipeline's evaluate_predictions.py just graded -
 // same "never serve a stale cached response" reasoning as every other
@@ -75,6 +76,9 @@ export default async function PerformanceLabPage({
 
   const header = (
     <div>
+      <div className="mb-4">
+        <GameSecondaryNav gameSlug="fanteam" gameDisplayName="FanTeam" />
+      </div>
       <h1 className="text-2xl font-semibold text-white">Mary Performance Lab</h1>
       <p className="mt-1 text-sm text-navy-300">
         Every recommendation Ask Mary has made, measured against what actually happened.
@@ -283,17 +287,29 @@ export default async function PerformanceLabPage({
     return nameById.get(id) ?? `#${id}`;
   }
 
-  // A "Best Transfer" recommendation can bundle more than one simultaneous
-  // transfer (see lib/askMaryEngine.ts) - each leg is its own predictions
-  // row (sharing recommendation_type/planning_horizon/gameweek/kind), so
-  // group them back into one history entry with a single "Recommendation
-  // Followed" verdict (every leg applied) rather than showing each leg's
-  // applied badge separately, which read as N separate recommendations
-  // instead of the one bundle the user actually saw and could apply.
+  // A "Best Transfer"/gameweek-plan recommendation can bundle more than one
+  // simultaneous transfer (see lib/askMaryEngine.ts) - each leg is its own
+  // predictions row (sharing recommendation_type/planning_horizon/
+  // gameweek/kind), so group them back into one history entry with a
+  // single "Recommendation Followed" verdict (every leg applied) rather
+  // than showing each leg's applied badge separately, which read as N
+  // separate recommendations instead of the one bundle the user actually
+  // saw and could apply.
+  //
+  // `createdAt` is part of the grouping key, not just squad/gameweek/
+  // horizon/kind/type - performance-lab re-runs the analysis (and
+  // re-archives it) on every page load, so revisiting a day later after
+  // projections refresh produces a genuinely separate, immutable
+  // prediction batch that happens to share every other field with an
+  // earlier visit's batch. All legs of one real INSERT share the exact
+  // same DB-generated timestamp (see recordPredictions - each
+  // (horizon, kind) group is one .insert() call), so this reliably keeps
+  // one batch as one card without merging two real, distinct historical
+  // predictions into what looks like a single doubled-up recommendation.
   const historyGroups = (() => {
     const byKey = new Map<string, PredictionEvalRow[]>();
     for (const r of rows) {
-      const key = `${r.squadId}:${r.gameweek}:${r.planningHorizon}:${r.kind}:${r.recommendationType}`;
+      const key = `${r.squadId}:${r.gameweek}:${r.planningHorizon}:${r.kind}:${r.recommendationType}:${r.createdAt}`;
       const list = byKey.get(key) ?? [];
       list.push(r);
       byKey.set(key, list);
@@ -307,7 +323,7 @@ export default async function PerformanceLabPage({
           ? legs.reduce((sum, l) => sum + (l.evaluation!.actualGain ?? 0), 0)
           : null;
         const allEvaluated = legs.every((l) => l.evaluation != null);
-        return { key: `${first.squadId}:${first.gameweek}:${first.planningHorizon}:${first.kind}:${first.recommendationType}`, first, legs, applied, totalActualGain, allEvaluated };
+        return { key: `${first.squadId}:${first.gameweek}:${first.planningHorizon}:${first.kind}:${first.recommendationType}:${first.createdAt}`, first, legs, applied, totalActualGain, allEvaluated };
       })
       .sort((a, b) => new Date(b.first.createdAt).getTime() - new Date(a.first.createdAt).getTime());
   })();

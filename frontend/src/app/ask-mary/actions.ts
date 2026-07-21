@@ -5,14 +5,23 @@ import { toPredictionRow, type PredictionRecord } from "@/lib/predictionArchive"
 
 /**
  * Records a batch of predictions from one Ask Mary analysis, which now
- * spans all three planning horizons (1/3/5 GW) plus a captain pick in a
- * single call - grouped by (planning horizon, kind) since each group is
- * its own distinct "analysis" that should archive once, not once per
- * page view. A batch-wide dedupe would be wrong here: the captain pick
- * is tagged horizon=1 regardless of which horizon the transfer groups
- * used, so it needs its own existence check separate from the transfer/
- * hold group that happens to share that same horizon number. Predictions
- * are otherwise immutable - no update path exists (see migration 0033).
+ * spans the whole gameweek plan plus a captain pick in a single call -
+ * grouped by (planning horizon, kind) since each group is its own
+ * distinct "analysis" that should archive once, not once per page view.
+ * A batch-wide dedupe would be wrong here: the captain pick is tagged
+ * with its own horizon regardless of which step's transfer group used
+ * that same number, so it needs its own uniqueness check separate from
+ * the transfer/hold group. Predictions are otherwise immutable - no
+ * update path exists (see migration 0033).
+ *
+ * Existence is enforced by the `predictions_dedup_key` unique index
+ * (migration 0041), not a SELECT-before-INSERT check - the earlier
+ * check-then-act version had a race (two near-simultaneous calls, e.g.
+ * from performance-lab/page.tsx re-running on every load, could both
+ * pass the SELECT before either INSERT committed) that duplicated every
+ * leg of a batch, visible as doubled rows in Performance Lab. A unique-
+ * violation (23505) now means "this exact batch was already recorded" -
+ * an expected, harmless outcome, not an error.
  */
 export async function recordPredictions(records: PredictionRecord[]) {
   if (records.length === 0) return { recorded: 0 };
@@ -33,24 +42,12 @@ export async function recordPredictions(records: PredictionRecord[]) {
 
   let recorded = 0;
   for (const group of byGroup.values()) {
-    const first = group[0];
-    const { data: existing } = await supabase
-      .from("predictions")
-      .select("id")
-      .eq("user_id", user.id)
-      .eq("squad_id", first.squadId)
-      .eq("gameweek", first.gameweek)
-      .eq("algorithm_version_id", first.algorithmVersionId)
-      .eq("planning_horizon", first.planningHorizon)
-      .eq("strategy", first.strategy)
-      .eq("kind", first.kind)
-      .limit(1)
-      .maybeSingle();
-    if (existing) continue;
-
     const rows = group.map((r) => toPredictionRow(r, user.id));
     const { error } = await supabase.from("predictions").insert(rows);
-    if (error) return { error: error.message };
+    if (error) {
+      if (error.code === "23505") continue; // already recorded - not an error
+      return { error: error.message };
+    }
     recorded += rows.length;
   }
 
