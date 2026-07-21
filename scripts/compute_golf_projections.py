@@ -37,15 +37,33 @@ golf's own confirmed stats instead of goals/assists/clean-sheets:
   itself is still reported as its own output (your explicit spec asked for
   it), just not double-applied to the points total.
 
-COURSE HISTORY vs COURSE FIT - the decision made with you before this was
-built: FanTeam's API has NO course/venue data at all (no name, par,
-yardage, and no course-specific "how did they play at THIS venue" history -
-confirmed by direct inspection, not assumed). So neither is computed as a
-real signal in this v1 - course_fit_score is left null with
-inputs.course_data_available = false on every projection, rather than
-fabricating a heuristic that pretends to measure something with zero
-underlying data. Revisit once/if a real course-characteristics source is
-integrated (see the plan's Data Availability section for candidates).
+COURSE HISTORY vs COURSE FIT - still two genuinely distinct things, per the
+original decision. COURSE FIT (a statistical-profile heuristic - does this
+golfer's game suit what the data says about the course, independent of
+whether they've ever played it) remains unbuilt: course_fit_score is still
+left null with inputs.course_fit_available = false, rather than fabricating
+a heuristic with zero underlying course-characteristics data behind it.
+
+COURSE HISTORY (how a golfer has actually scored at THIS course before) is
+now real, when available: migration 0050 added a manual-import path for
+DataGolf's Course History tool (datagolf.com/course-history-tool) - the
+user downloads its CSV export and uploads it via /golf/course-history,
+since DataGolf's API needs a paid subscription and scraping their site
+instead isn't something to do without one. Once a tournament's
+golf_tournaments.course_id is linked to an uploaded course, each golfer's
+real historical_true_sg/versus_expected/ch_adjustment/rounds_played
+feeds in below as course_history_points_adjustment - shrunk toward 0 by
+rounds_played (same shrink() mechanism as everything else here, just with
+a neutral-zero prior instead of a field average, since "no course signal"
+should mean "no adjustment", not "assume field-average course history").
+
+Converting DataGolf's strokes-gained scale into FanTeam points needs an
+explicit, honestly-approximate constant (POINTS_PER_STROKE_GAINED_PER_ROUND
+below) - there's no authoritative stroke-to-fantasy-point exchange rate to
+look up, so this is a reasoned assumption (roughly splitting the point gap
+between a par and a birdie), not a fact, and is called out here rather than
+buried. If a course has no import yet, course_history_points_adjustment is
+0.0 and inputs.course_history is null - an honest gap, not a guess.
 
 CAPTAIN (x1.25) / UNDERDOG (x1.25 on your cheapest pick, automatic) /
 SAFETY-NET (a withdrawn pick is auto-replaced by an active same-or-cheaper
@@ -95,6 +113,17 @@ SHRINKAGE_TOURNAMENTS = 8
 
 SIMULATIONS = 3000
 
+# Course history shrinkage + strokes-gained-to-fantasy-points conversion -
+# see module docstring for why POINTS_PER_STROKE_GAINED_PER_ROUND is a
+# documented assumption, not a known constant. SHRINKAGE_COURSE_ROUNDS is
+# in ROUNDS (not tournaments, unlike SHRINKAGE_TOURNAMENTS above) - 16
+# rounds is roughly 4 years of a course's typical single-visit-per-year
+# tour stop, chosen as "several real years of signal" the same way
+# SHRINKAGE_TOURNAMENTS was reasoned from a season's worth of starts.
+SHRINKAGE_COURSE_ROUNDS = 16
+POINTS_PER_STROKE_GAINED_PER_ROUND = 2.0
+ROUNDS_PER_TOURNAMENT = 4
+
 # avg_stats jsonb key -> game_scoring_rules.stat - only the stats
 # confirmed live in the real FanTeam scoring table (migration 0047) are
 # priced; anything else in avg_stats (rank1-9, remainingHoles, ...) has no
@@ -141,7 +170,12 @@ DEFAULT_WEIGHTS = {
     # "stat_set"/"involvement_model".
     "count_stats": sorted(COUNT_STAT_KEYS.values()),
     "finish_tiers": [t for t, _ in FINISH_TIERS],
-    "course_data_available": False,
+    "course_fit_available": False,
+    "course_history_mechanism": {
+        "shrinkage_course_rounds": SHRINKAGE_COURSE_ROUNDS,
+        "points_per_stroke_gained_per_round": POINTS_PER_STROKE_GAINED_PER_ROUND,
+        "rounds_per_tournament": ROUNDS_PER_TOURNAMENT,
+    },
 }
 
 
@@ -204,7 +238,7 @@ def fetch_scoring_rules(cur, game_id):
 
 def fetch_tournament(cur, tournament_ref):
     cur.execute(
-        "select id, game_id, fanteam_tournament_id, name, event_number, season_year from golf_tournaments where fanteam_tournament_id = %s",
+        "select id, game_id, fanteam_tournament_id, name, event_number, season_year, course_id from golf_tournaments where fanteam_tournament_id = %s",
         (tournament_ref,),
     )
     row = cur.fetchone()
@@ -216,7 +250,7 @@ def fetch_tournament(cur, tournament_ref):
 def fetch_entries(cur, tournament_id):
     cur.execute(
         """
-        select gte.id, gte.game_player_id, g.full_name, gte.price, gte.lineup, gte.status,
+        select gte.id, gte.game_player_id, gp.golfer_id, g.full_name, gte.price, gte.lineup, gte.status,
                gte.match_count, gte.avg_stats
         from golf_tournament_entries gte
         join game_players gp on gp.id = gte.game_player_id
@@ -226,13 +260,14 @@ def fetch_entries(cur, tournament_id):
         (tournament_id,),
     )
     entries = []
-    for entry_id, game_player_id, full_name, price, lineup, status, match_count, avg_stats in cur.fetchall():
+    for entry_id, game_player_id, golfer_id, full_name, price, lineup, status, match_count, avg_stats in cur.fetchall():
         if isinstance(avg_stats, str):
             avg_stats = json.loads(avg_stats)
         entries.append(
             {
                 "entry_id": entry_id,
                 "game_player_id": game_player_id,
+                "golfer_id": golfer_id,
                 "full_name": full_name,
                 "price": float(price) if price is not None else None,
                 "lineup": lineup,
@@ -242,6 +277,58 @@ def fetch_entries(cur, tournament_id):
             }
         )
     return entries
+
+
+def fetch_course_history(cur, course_id):
+    """golfer_id -> real DataGolf course-history row, keyed for O(1) lookup
+    per entry below. Empty dict (not an error) when course_id is None -
+    the normal, expected state for any tournament nobody's uploaded a
+    course-history CSV for yet."""
+    if course_id is None:
+        return {}
+    cur.execute(
+        """
+        select golfer_id, rounds_played, historical_true_sg, versus_expected, ch_adjustment, experience_adjustment, year_finishes
+        from golf_course_history_entries
+        where course_id = %s and golfer_id is not null
+        """,
+        (course_id,),
+    )
+    result = {}
+    for golfer_id, rounds_played, true_sg, versus_expected, ch_adjustment, experience_adjustment, year_finishes in cur.fetchall():
+        result[golfer_id] = {
+            "rounds_played": rounds_played,
+            "historical_true_sg": float(true_sg) if true_sg is not None else None,
+            "versus_expected": float(versus_expected) if versus_expected is not None else None,
+            "ch_adjustment": float(ch_adjustment) if ch_adjustment is not None else None,
+            "experience_adjustment": float(experience_adjustment) if experience_adjustment is not None else None,
+            "year_finishes": year_finishes,
+        }
+    return result
+
+
+def course_history_adjustment(ch_row):
+    """Real course-history signal -> a shrunk FanTeam points adjustment.
+    See module docstring for why the strokes-to-points conversion is a
+    documented assumption. Shrinks ch_adjustment toward a neutral 0 (not
+    a field average - "no course signal" should mean "no adjustment") by
+    rounds_played, so a golfer with 2 rounds at this course barely moves
+    while one with 20+ gets close to their full course-history figure."""
+    if not ch_row or ch_row["ch_adjustment"] is None or not ch_row["rounds_played"]:
+        return 0.0, None
+    shrunk = shrink(ch_row["ch_adjustment"], ch_row["rounds_played"], 0.0, SHRINKAGE_COURSE_ROUNDS)
+    points = shrunk * POINTS_PER_STROKE_GAINED_PER_ROUND * ROUNDS_PER_TOURNAMENT
+    detail = {
+        "rounds_played": ch_row["rounds_played"],
+        "raw_ch_adjustment_strokes_per_round": ch_row["ch_adjustment"],
+        "shrunk_ch_adjustment_strokes_per_round": round(shrunk, 4),
+        "points_adjustment": round(points, 3),
+        "historical_true_sg": ch_row["historical_true_sg"],
+        "versus_expected": ch_row["versus_expected"],
+        "year_finishes": ch_row["year_finishes"],
+        "source": "datagolf",
+    }
+    return points, detail
 
 
 def field_averages(entries):
@@ -417,7 +504,7 @@ def main():
     cur = conn.cursor()
 
     try:
-        tournament_id, game_id, fanteam_tournament_id, name, event_number, season_year = fetch_tournament(cur, tournament_ref)
+        tournament_id, game_id, fanteam_tournament_id, name, event_number, season_year, course_id = fetch_tournament(cur, tournament_ref)
         scoring_rules = fetch_scoring_rules(cur, game_id)
         if not scoring_rules:
             raise SystemExit("No game_scoring_rules found for fanteam-golf - run migrations 0045/0047 first.")
@@ -425,6 +512,12 @@ def main():
         entries = fetch_entries(cur, tournament_id)
         if not entries:
             raise SystemExit(f"No golf_tournament_entries for tournament {tournament_id} - run import_fanteam_golf.py first.")
+
+        course_history = fetch_course_history(cur, course_id)
+        if course_id is None:
+            print(f"No course linked to \"{name}\" yet - course_history_points_adjustment will be 0.0 for every golfer. Link one at /golf/course-history.")
+        else:
+            print(f"Course history: {len(course_history)} golfer(s) matched for this tournament's linked course.")
 
         cohort = field_averages(entries)
         algo_id = get_or_create_algorithm_version(
@@ -440,11 +533,18 @@ def main():
         for entry in entries:
             proj = project_entry(entry, cohort, scoring_rules, DEFAULT_WEIGHTS)
             avail = availability_multiplier(entry["lineup"], entry["status"])
-            expected_points = proj["expected_points"] * avail
+            ch_points, ch_detail = course_history_adjustment(course_history.get(entry["golfer_id"]))
+            expected_points = (proj["expected_points"] + ch_points) * avail
 
             sim_totals = sorted(
                 v * avail for v in simulate(proj["shrunk_rates"], proj["exclusive_tier_probs"], scoring_rules, DEFAULT_WEIGHTS["simulations"])
             ) if avail > 0 else [0.0] * DEFAULT_WEIGHTS["simulations"]
+            # Course history is a deterministic adjustment (no per-round
+            # variance estimate exists for it), so it shifts the whole
+            # simulated distribution by a constant rather than being drawn
+            # stochastically like the count/finish-tier stats above.
+            if avail > 0 and ch_points:
+                sim_totals = sorted(v + ch_points for v in sim_totals)
 
             floor = percentile(sim_totals, 0.05)
             ceiling = percentile(sim_totals, 0.95)
@@ -472,6 +572,12 @@ def main():
                     reasons.append(f"Biggest single contributor: {top_stat[0]} ({top_stat[1]['contribution']:+.2f} pts from a {top_stat[1].get('rate', top_stat[1].get('probability'))} rate).")
                 if entry["match_count"] < DEFAULT_WEIGHTS["shrinkage_tournaments"]:
                     reasons.append(f"Only {entry['match_count']} tracked tournament(s) - projection leans toward the field average until more history accumulates.")
+                if ch_detail:
+                    sign = "boosts" if ch_points >= 0 else "docks"
+                    reasons.append(
+                        f"Course history at this venue ({ch_detail['rounds_played']} rounds, {ch_detail['versus_expected']:+.2f} strokes gained vs expectation) "
+                        f"{sign} the projection by {ch_points:+.2f} pts."
+                    )
 
             inputs = {
                 "tournament_id": tournament_id,
@@ -492,8 +598,10 @@ def main():
                 "bust_probability": round(bust_probability, 4),
                 "value": value,
                 "price": entry["price"],
-                "course_fit_score": None,  # honest - no course data source integrated yet, see module docstring
-                "course_data_available": False,
+                "course_fit_score": None,  # honest - no course-characteristics data source integrated, see module docstring
+                "course_fit_available": False,
+                "course_history_points_adjustment": round(ch_points, 3),
+                "course_history": ch_detail,  # null when no course linked, or golfer has no history there
                 "explanation": " ".join(reasons),
             }
 

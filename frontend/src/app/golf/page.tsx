@@ -7,6 +7,7 @@ type TournamentRow = { fanteam_tournament_id: string; name: string; event_number
 
 const SINGLE_GAMEWEEK_LINKS: { label: string; href: string; description: string }[] = [
   { label: "Import Tournament", href: "/golf/import", description: "Paste this week's FanTeam contest URL" },
+  { label: "Course History", href: "/golf/course-history", description: "Upload DataGolf's course-history CSV for the week's course" },
   { label: "Player Rankings", href: "/golf/rankings", description: "Hail Mary Golf's per-golfer projections" },
   { label: "Team Builder", href: "/golf/team", description: "Optimised teams, player picker, saved teams" },
   {
