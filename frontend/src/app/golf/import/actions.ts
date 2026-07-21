@@ -56,7 +56,7 @@ const CORE_AVG_STAT_COLUMNS: Record<string, string> = {
 };
 const CORE_TOTAL_STAT_COLUMNS: Record<string, string> = { match_count: "matchCount", start_count: "startCount" };
 
-export function parseTournamentId(input: string): string {
+function parseTournamentId(input: string): string {
   const match = input.match(/\/participate\/(\d+)/);
   if (match) return match[1];
   const trimmed = input.trim();
