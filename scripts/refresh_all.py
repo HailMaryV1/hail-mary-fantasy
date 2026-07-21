@@ -109,6 +109,16 @@ def main():
     results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
     results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
 
+    # FanTeam Golf - deliberately NOT the scraper/importer/projections
+    # steps above (a new tournament ID drops every week with no
+    # auto-discovery endpoint, so that stays the manual weekly workflow -
+    # paste a URL at /golf/import or run scraper_fanteam_golf.py by hand).
+    # These two scans need no tournament ID at all - they operate on
+    # every already-imported golf_tournaments row, so they're exactly as
+    # safe to run unattended as their football counterparts above.
+    results.append(run_step("Freeze golf predictions (Hail Mary Golf)", ["scripts/capture_golf_predictions.py"]))
+    results.append(run_step("Attach golf tournament results", ["scripts/attach_golf_tournament_results.py"]))
+
     failed = results.count(False)
     print(f"\n{len(results) - failed}/{len(results)} steps succeeded.")
     if failed:

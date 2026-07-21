@@ -9,16 +9,14 @@ const SINGLE_GAMEWEEK_LINKS: { label: string; href: string; description: string 
   { label: "Import Tournament", href: "/golf/import", description: "Paste this week's FanTeam contest URL" },
   { label: "Player Rankings", href: "/golf/rankings", description: "Hail Mary Golf's per-golfer projections" },
   { label: "Team Builder", href: "/golf/team", description: "Optimised teams, player picker, saved teams" },
+  {
+    label: "Algorithm Performance",
+    href: "/golf/algorithm-performance",
+    description: "Frozen pre-tournament predictions graded against real results",
+  },
 ];
 
-// Expected vs Actual / Algorithm Performance are Phase 4 (the learning
-// loop) - not built yet. Shown, not hidden, so the roadmap reads as
-// intentional, but explicitly not linked - same "don't link to
-// unfinished functionality" principle Season Game gets below.
-const COMING_SOON_LINKS = [
-  { label: "Expected vs Actual", description: "Frozen pre-tournament predictions vs real results" },
-  { label: "Algorithm Performance", description: "How Hail Mary Golf's calls have graded out" },
-];
+const COMING_SOON_LINKS: { label: string; description: string }[] = [];
 
 export default async function GolfLandingPage() {
   const supabase = createServerSupabaseClient();
