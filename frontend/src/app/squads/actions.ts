@@ -579,7 +579,7 @@ async function executeTransfer(
   outGamePlayerId: number,
   inGamePlayerId: number,
   useWildcard: boolean | undefined
-): Promise<{ error?: string }> {
+): Promise<{ error?: string; transferId?: number }> {
   const swapResult = await performSwap(supabase, squad, outGamePlayerId, inGamePlayerId);
   if (swapResult.error) return swapResult;
 
@@ -621,20 +621,25 @@ async function executeTransfer(
   }
 
   if (gameweek !== null) {
-    const { error: insertError } = await supabase.from("squad_transfers").insert({
-      squad_id: squad.id,
-      gameweek,
-      out_game_player_id: outGamePlayerId,
-      in_game_player_id: inGamePlayerId,
-      cost_points: costPoints,
-      used_wildcard: usedWildcard,
-    });
+    const { data: inserted, error: insertError } = await supabase
+      .from("squad_transfers")
+      .insert({
+        squad_id: squad.id,
+        gameweek,
+        out_game_player_id: outGamePlayerId,
+        in_game_player_id: inGamePlayerId,
+        cost_points: costPoints,
+        used_wildcard: usedWildcard,
+      })
+      .select("id")
+      .single();
     if (insertError) return { error: insertError.message };
     const { error: updateError } = await supabase
       .from("squads")
       .update({ free_transfers: newFreeTransfers, ...squadUpdate })
       .eq("id", squad.id);
     if (updateError) return { error: updateError.message };
+    return { transferId: inserted?.id };
   }
 
   return {};
@@ -768,21 +773,65 @@ export async function applyRecommendation({ squadId, transfers, useWildcard }: A
 
   // Whole bundle is jointly legal - execute sequentially, re-reading
   // free-transfer/wildcard state fresh each iteration so consumption
-  // across multiple transfers in one gameweek falls out correctly.
+  // across multiple transfers in one gameweek falls out correctly. If a
+  // later leg fails (e.g. a genuine concurrent edit between the joint
+  // validation above and now), undo every already-completed leg rather
+  // than leaving the squad half-applied - a partial bundle would be a
+  // more confusing state than the single-transfer failure this feature
+  // was built to fix.
+  const completed: { outGamePlayerId: number; inGamePlayerId: number; transferId?: number }[] = [];
   let workingSquad: SquadForTransfer = squad;
   for (const { outGamePlayerId, inGamePlayerId } of transfers) {
     const result = await executeTransfer(supabase, workingSquad, outGamePlayerId, inGamePlayerId, useWildcard);
-    if (result.error) return result;
+    if (result.error) {
+      await rollbackCompletedTransfers(supabase, squad, completed);
+      return { error: `${result.error} The rest of this recommendation wasn't applied.` };
+    }
+    completed.push({ outGamePlayerId, inGamePlayerId, transferId: result.transferId });
+
     const { data: refreshed } = await supabase
       .from("squads")
       .select("id, game_id, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek")
       .eq("id", squadId)
       .single();
-    if (!refreshed) return { error: "Lost track of the squad mid-transfer - please check your squad and try again." };
+    if (!refreshed) {
+      await rollbackCompletedTransfers(supabase, squad, completed);
+      return { error: "Lost track of the squad mid-transfer - the recommendation wasn't applied." };
+    }
     workingSquad = refreshed;
   }
 
   redirect(`/squads/${squadId}/transfers`);
+}
+
+/**
+ * Undoes every leg in `completed`, most recent first, by swapping each
+ * back (performSwap with roles reversed, same idea as reverseTransfer)
+ * and deleting its squad_transfers row, then restores the squad's
+ * free-transfer/wildcard bookkeeping to what it was before the bundle
+ * started - `squad` here is the pre-bundle snapshot, not the current row.
+ */
+async function rollbackCompletedTransfers(
+  supabase: Supabase,
+  squad: SquadForTransfer,
+  completed: { outGamePlayerId: number; inGamePlayerId: number; transferId?: number }[]
+) {
+  for (const leg of completed.slice().reverse()) {
+    await performSwap(supabase, squad, leg.inGamePlayerId, leg.outGamePlayerId);
+    if (leg.transferId != null) {
+      await supabase.from("squad_transfers").delete().eq("id", leg.transferId);
+    }
+  }
+  if (completed.length > 0) {
+    await supabase
+      .from("squads")
+      .update({
+        free_transfers: squad.free_transfers,
+        wildcard_1_used_gameweek: squad.wildcard_1_used_gameweek,
+        wildcard_2_used_gameweek: squad.wildcard_2_used_gameweek,
+      })
+      .eq("id", squad.id);
+  }
 }
 
 type ReverseTransferArgs = {

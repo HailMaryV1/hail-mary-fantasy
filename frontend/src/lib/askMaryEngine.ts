@@ -336,6 +336,7 @@ export async function runAskMaryAnalysis(
     let workingBudget = budgetRemaining;
     const workingClubCounts = new Map(clubCounts);
     const soldIds = new Set<number>();
+    const boughtIds = new Set<number>(); // can't resell a player this bundle just bought
     let freeRemaining = freeTransfersBanked;
 
     const transfers: BundleTransfer[] = [];
@@ -356,6 +357,7 @@ export async function runAskMaryAnalysis(
       type SlotMove = { input: MoveCandidateInput; outPlayer: WorkingSquadPlayer; inCandidate: TransferCandidate };
       const slotMoves: SlotMove[] = [];
       for (const outPlayer of workingSquad) {
+        if (boughtIds.has(outPlayer.game_player_id)) continue;
         const outScoreH = avgFor(scoreMapForHorizon, outPlayer.game_player_id);
         const matches = findBuyCandidatesForOutgoing(
           poolCandidates,
@@ -463,6 +465,7 @@ export async function runAskMaryAnalysis(
         });
       workingSquadIds = new Set(workingSquad.map((p) => p.game_player_id));
       soldIds.add(chosen.outPlayer.game_player_id);
+      boughtIds.add(chosen.inCandidate.gamePlayerId);
       if (cost === 0 && !wildcardActive) freeRemaining -= 1; // consumed one banked free transfer
     }
 
