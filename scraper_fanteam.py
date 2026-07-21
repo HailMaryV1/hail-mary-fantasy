@@ -27,6 +27,7 @@ RUN:
 
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -49,13 +50,32 @@ def get_ft_token():
     raise SystemExit("ftToken not found in auth_state_fanteam.json - re-run discover_fanteam.py and log in.")
 
 
-def fetch_json(url, headers=None):
+def fetch_json(url, headers=None, retries=3, backoff_seconds=5):
+    # A single bad response used to kill the whole twice-daily run outright
+    # (confirmed live: a one-off HTTP 401 from this endpoint - which is
+    # otherwise reliably unauthenticated, see the module docstring - broke
+    # the 2026-07-21 morning run even though the endpoint was back to a
+    # normal 200 minutes later). Retrying a few times with a short pause
+    # covers exactly that class of transient blip (rate-limiting, a
+    # momentary WAF hiccup, a dropped connection) without masking a real,
+    # persistent failure - it still gives up and reports the failure after
+    # `retries` attempts.
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", **(headers or {})})
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return resp.status, json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        return e.code, None
+    last_status = None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            last_status = e.code
+        except urllib.error.URLError as e:
+            print(f"  Network error on attempt {attempt}/{retries}: {e.reason}")
+            last_status = None
+        if attempt < retries:
+            status_desc = f"HTTP {last_status}" if last_status is not None else "a network error"
+            print(f"  Attempt {attempt}/{retries} got {status_desc} - retrying in {backoff_seconds}s ...")
+            time.sleep(backoff_seconds)
+    return last_status, None
 
 
 def fetch_players():
