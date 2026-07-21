@@ -201,6 +201,22 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
             if len(narrowed) == 1:
                 candidates = narrowed
 
+        # A LONE candidate still needs this same first-initial check - the
+        # surname-suffix rule above is a literal string test with no
+        # first-name awareness, so two genuinely different real people who
+        # share a surname (confirmed live: FanTeam really does list both a
+        # "Boubacar Kamara" and an "Abu Kamara", different clubs, same
+        # position) silently merge into one row the moment only one of
+        # them has ever been imported - len(candidates) > 1 above never
+        # triggers because there's only one existing DB row to begin with.
+        # Real bug found this way: it flip-flopped Boubacar Kamara's team
+        # between his two clubs on every import run. An exact full-name
+        # match is exempted (deliberately not requiring the initial check)
+        # since that's already an unambiguous identity match.
+        if len(candidates) == 1 and not is_mononym and compact(candidates[0][1]) != live_compact:
+            if candidates[0][1][0].lower() != live_full_name[0].lower():
+                candidates = []
+
         # Last resort for genuine name collisions (e.g. two players called
         # "Gabriel"): prefer whichever candidate's stored team already
         # matches the live team. Team can be stale after a transfer, but

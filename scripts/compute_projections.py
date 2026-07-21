@@ -396,7 +396,12 @@ def compute_shrunk_rates(players, historical_rows):
     position_totals = {pos: {col: 0.0 for col in stat_cols + ["games90"]} for pos in POSITIONS}
     for _, position, player_id in players:
         row = historical_rows.get(player_id)
-        if not row:
+        # minutes_played <= 0 (not just "row missing") - every active
+        # player now has a row (see main()'s left join), including
+        # zero-history ones (newly promoted squads, fresh signings) whose
+        # all-zero stats must NOT count toward the cohort this shrinkage
+        # prior is drawn from, same as when they were absent entirely.
+        if not row or row["minutes_played"] <= 0:
             continue
         games90 = row["minutes_played"] / 90.0
         position_totals[position]["games90"] += games90
@@ -416,29 +421,45 @@ def compute_involvement_rates(players, historical_rows, season_games):
     """
     players: [(game_player_id, position, player_id)]
     historical_rows: {player_id: {..., pt1, pt60, pt90}}
-    Returns {pos: {"appearance": x, "cond60": x, "cond90": x}} - unshrunk
-    position averages used as the shrinkage prior for each player's own
-    appearance/cond60/cond90 rate in project_player_stats, same technique
-    as compute_shrunk_rates above but in "games" units, not per-90 units:
+    Returns {pos: {"appearance": x, "cond60": x, "cond90": x, "avg_minutes_per_appearance": x}} -
+    unshrunk position averages used as the shrinkage prior for each
+    player's own appearance/cond60/cond90 rate in project_player_stats,
+    same technique as compute_shrunk_rates above but in "games" units, not
+    per-90 units:
       appearance = PT1 / season_games   (P(features at all) in a fixture)
       cond60     = PT60 / PT1           (P(60+ min | featured), PT1-weighted)
       cond90     = PT90 / PT1           (P(full 90 | featured), PT1-weighted)
+    avg_minutes_per_appearance is the position's own minutes/PT1 -
+    project_player_stats falls back to this for a player with zero
+    historical PT1 (a real appearance-per-90 average, not a guess) instead
+    of computing 0 minutes played / 0 appearances.
     """
-    totals = {pos: {"pt1": 0.0, "pt60": 0.0, "pt90": 0.0, "players": 0} for pos in POSITIONS}
+    totals = {pos: {"pt1": 0.0, "pt60": 0.0, "pt90": 0.0, "minutes": 0.0, "players": 0} for pos in POSITIONS}
     for _, position, player_id in players:
         row = historical_rows.get(player_id)
-        if not row:
+        # Same "minutes_played <= 0 excludes, not just a missing row"
+        # reasoning as compute_shrunk_rates above - critically also keeps
+        # totals["players"] (the appearance-rate denominator) from being
+        # inflated by zero-signal players, which would silently shrink
+        # the whole position's appearance rate downward.
+        if not row or row["minutes_played"] <= 0:
             continue
         t = totals[position]
         t["pt1"] += row["pt1"]
         t["pt60"] += row["pt60"]
         t["pt90"] += row["pt90"]
+        t["minutes"] += row["minutes_played"]
         t["players"] += 1
     return {
         pos: {
             "appearance": (totals[pos]["pt1"] / (totals[pos]["players"] * season_games)) if totals[pos]["players"] else 0.0,
             "cond60": (totals[pos]["pt60"] / totals[pos]["pt1"]) if totals[pos]["pt1"] else 0.0,
             "cond90": (totals[pos]["pt90"] / totals[pos]["pt1"]) if totals[pos]["pt1"] else 0.0,
+            # 70.0 fallback only fires if literally every player at this
+            # position has zero historical minutes - shouldn't happen in
+            # practice but avoids a div/0 in the (impossible in normal
+            # data) all-new-position case.
+            "avg_minutes_per_appearance": (totals[pos]["minutes"] / totals[pos]["pt1"]) if totals[pos]["pt1"] else 70.0,
         }
         for pos in POSITIONS
     }
@@ -471,7 +492,8 @@ def project_player_stats(position, historical_row, fixture, weights, position_av
     # compute_involvement_rates(). pt1 is floored to 1 defensively (never
     # 0 in live data when minutes_played > 0, but avoids a div/0 if that
     # ever changes).
-    pt1 = max(historical_row["pt1"], 1.0)
+    raw_pt1 = historical_row["pt1"]
+    pt1 = max(raw_pt1, 1.0)
     pt60 = historical_row["pt60"]
     pt90 = historical_row["pt90"]
     pos_inv = position_involvement[position]
@@ -479,7 +501,17 @@ def project_player_stats(position, historical_row, fixture, weights, position_av
     appearance_rate = (pt1 + k * pos_inv["appearance"]) / (season_games + k)
     cond60_rate = (pt60 + k * pos_inv["cond60"]) / (pt1 + k)
     cond90_rate = (pt90 + k * pos_inv["cond90"]) / (pt1 + k)
-    avg_minutes_per_appearance = historical_row["minutes_played"] / pt1
+    # A player with zero historical appearances (raw_pt1 == 0 - a newly
+    # promoted team's whole squad, most transfer-window signings, ...)
+    # has no personal minutes/appearance ratio to compute - historical_row
+    # ["minutes_played"] is 0 too, so 0/pt1_floored would silently project
+    # 0 expected minutes regardless of how confident appearance_rate is.
+    # Falls back to the position's own average instead, same shrink-to-
+    # cohort philosophy as every other stat here.
+    if raw_pt1 > 0:
+        avg_minutes_per_appearance = historical_row["minutes_played"] / raw_pt1
+    else:
+        avg_minutes_per_appearance = pos_inv["avg_minutes_per_appearance"]
     expected_minutes_fraction = min(1.0, appearance_rate * avg_minutes_per_appearance / 90.0)
 
     projected = {
@@ -589,9 +621,11 @@ def main():
         dict_cur.execute(
             """
             select gp.id as game_player_id, p.position, gp.player_id, p.full_name,
-                   gps.total_points, gps.minutes_played,
-                   gps.goals, gps.assists, gps.clean_sheets, gps.saves,
-                   gps.goals_conceded, gps.yellow_cards, gps.red_cards,
+                   coalesce(gps.total_points, 0) as total_points, coalesce(gps.minutes_played, 0) as minutes_played,
+                   coalesce(gps.goals, 0) as goals, coalesce(gps.assists, 0) as assists,
+                   coalesce(gps.clean_sheets, 0) as clean_sheets, coalesce(gps.saves, 0) as saves,
+                   coalesce(gps.goals_conceded, 0) as goals_conceded, coalesce(gps.yellow_cards, 0) as yellow_cards,
+                   coalesce(gps.red_cards, 0) as red_cards,
                    coalesce((gps.raw_stats->>'SOT')::numeric, 0) as shots_on_target,
                    coalesce((gps.raw_stats->>'ownGoals')::numeric, 0) as own_goals,
                    coalesce((gps.raw_stats->>'penaltySaves')::numeric, 0) as penalty_saves,
@@ -600,9 +634,9 @@ def main():
                    coalesce((gps.raw_stats->>'PT90')::numeric, 0) as pt90
             from game_players gp
             join players p on p.id = gp.player_id
-            join game_player_stats gps
+            left join game_player_stats gps
                 on gps.game_player_id = gp.id and gps.season = %s and gps.gameweek = 0
-            where gp.game_id = %s and gps.minutes_played > 0
+            where gp.game_id = %s and gp.is_active = true
             """,
             (HISTORICAL_SEASON, game_id),
         )
@@ -617,10 +651,16 @@ def main():
                 "goals_conceded": r["goals_conceded"], "yellow_cards": r["yellow_cards"], "red_cards": r["red_cards"],
                 "shots_on_target": float(r["shots_on_target"]), "own_goals": float(r["own_goals"]),
                 "penalty_saves": float(r["penalty_saves"]),
-                # pt1 floored to 1 defensively - never 0 in live data when
-                # minutes_played > 0 (confirmed), but avoids a div/0 in
-                # project_player_stats if that ever changes.
-                "pt1": max(float(r["pt1"]), 1.0), "pt60": float(r["pt60"]), "pt90": float(r["pt90"]),
+                # Deliberately NOT floored here (unlike the old behavior) -
+                # a genuinely-0 pt1 (no historical minutes at all, e.g. a
+                # newly-promoted team's whole squad, who FanTeam's own
+                # query used to silently exclude via an inner join) needs
+                # to stay distinguishable from "had 1 real appearance" so
+                # project_player_stats can fall back to a position-average
+                # minutes-per-appearance instead of dividing 0/1 -> 0
+                # minutes. The safety floor still applies locally in
+                # project_player_stats for the rate formulas themselves.
+                "pt1": float(r["pt1"]), "pt60": float(r["pt60"]), "pt90": float(r["pt90"]),
             }
             for r in raw_players
         }
@@ -634,7 +674,14 @@ def main():
             agg = position_totals.setdefault(r["position"], [0.0, 0.0])
             agg[0] += float(r["total_points"])
             agg[1] += float(r["minutes_played"]) / 90.0
-        position_avg_pp90 = {pos: pts / games for pos, (pts, games) in position_totals.items()}
+        # games==0 for a whole position is now reachable (the left join
+        # above includes zero-history players instead of excluding them -
+        # a position where literally everyone is zero-history, e.g. a
+        # squad's entire allocation at a position turning over, previously
+        # just never appeared in raw_players at all under the old inner
+        # join, masking this). Same 0.0-fallback shape as compute_shrunk_
+        # rates' own position_avg dict just below.
+        position_avg_pp90 = {pos: (pts / games if games > 0 else 0.0) for pos, (pts, games) in position_totals.items()}
         position_avg_rates = compute_shrunk_rates(players, historical_by_player_id)
         # Only meaningful for v2 (weights["season_games"] doesn't exist on
         # v1's DEFAULT_WEIGHTS) - v1 never calls project_player_stats.
