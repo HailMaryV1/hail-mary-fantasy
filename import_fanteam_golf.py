@@ -64,6 +64,19 @@ CORE_STAT_COLUMNS = {
     "bounce_back_rate": "bounceBack",
     "score_avg": "score",
     "total_score_avg": "totalScore",
+}
+
+# match_count/start_count are deliberately sourced from totalStats, not
+# avgStats - confirmed live that avgStats.matchCount is always 1 across
+# every golfer in a real pool (an artifact of however FanTeam computes
+# that blob, not a real sample size), while totalStats.matchCount is the
+# real number of tournaments behind the averages above (12-21 in the
+# reference pool). Using avgStats.matchCount as the shrinkage-reliability
+# signal would over-shrink every golfer's projection toward the field
+# average regardless of how established they actually are - caught by
+# inspecting Scottie Scheffler's own make-cut probability coming out
+# suspiciously low during Phase 2 verification.
+TOTAL_STAT_COLUMNS = {
     "match_count": "matchCount",
     "start_count": "startCount",
 }
@@ -281,6 +294,7 @@ def import_tournament_players(cur, game_id, tournament_id, data):
         avg_stats = pc.get("avgStats") or {}
         total_stats = pc.get("totalStats") or {}
         core_values = {col: avg_stats.get(key) for col, key in CORE_STAT_COLUMNS.items()}
+        core_values.update({col: total_stats.get(key) for col, key in TOTAL_STAT_COLUMNS.items()})
 
         new_state = {
             "price": price, "lineup": pc.get("lineup"), "status": pc.get("status"),

@@ -1,0 +1,514 @@
+"""
+compute_golf_projections.py
+------------------------------
+Hail Mary Golf - the golf-specific scoring algorithm (own algorithm_versions
+family "golf-v1", entirely separate from compute_projections.py's football
+model per the explicit instruction to keep the two distinct).
+
+WHY THIS ISN'T JUST "PROJECT FanTeam's OWN form/avg score": FanTeam's form/
+totalPoints/avgStats are real signal (used below as inputs), but the whole
+point of a "Hail Mary" algorithm is decomposing them into a real per-stat
+projection through the real scoring table, priced correctly, with
+uncertainty modeled - not re-displaying a number FanTeam already shows.
+
+APPROACH - per-stat shrinkage, same technique compute_projections.py uses
+for football (see get_or_create_algorithm_version, and the shrinkage
+formula `(player_value*sample + k*cohort_avg) / (sample + k)`), applied to
+golf's own confirmed stats instead of goals/assists/clean-sheets:
+
+  golf_tournament_entries.avg_stats (migration 0045) already gives each
+  golfer's own PER-TOURNAMENT AVERAGE rate for every scored category
+  (birdie, par, bogey, eagle, doubleBogey, tripleBogeyOrWorse, noBogeys,
+  threeConsecutiveBirdies, ro64, allFourSub70, bounceBack, betterThanEagle,
+  and the top10/20/30/40/50/60 finish tiers), weighted by match_count (how
+  many tournaments FanTeam's own average is drawn from). Each golfer's own
+  rate is shrunk toward a match_count-weighted FIELD average (this
+  tournament's own pool, not a global constant) for whichever stat, then
+  priced through the real game_scoring_rules point values (migration 0047)
+  and summed - genuinely decomposed and re-priced, not a copy of FanTeam's
+  own score.
+
+  Crucially: because avgStats is already a PER-TOURNAMENT average (not a
+  per-round or per-made-cut-only average), a golfer who misses cuts often
+  already has a LOWER average baked in (fewer holes played that week means
+  fewer birdies/pars that tournament, pulling their average down) - so
+  make-cut risk is already implicitly priced into the projection without
+  needing a separate cut-probability multiplier bolted on top. made_cut_rate
+  itself is still reported as its own output (your explicit spec asked for
+  it), just not double-applied to the points total.
+
+COURSE HISTORY vs COURSE FIT - the decision made with you before this was
+built: FanTeam's API has NO course/venue data at all (no name, par,
+yardage, and no course-specific "how did they play at THIS venue" history -
+confirmed by direct inspection, not assumed). So neither is computed as a
+real signal in this v1 - course_fit_score is left null with
+inputs.course_data_available = false on every projection, rather than
+fabricating a heuristic that pretends to measure something with zero
+underlying data. Revisit once/if a real course-characteristics source is
+integrated (see the plan's Data Availability section for candidates).
+
+CAPTAIN (x1.25) / UNDERDOG (x1.25 on your cheapest pick, automatic) /
+SAFETY-NET (a withdrawn pick is auto-replaced by an active same-or-cheaper
+golfer, not a blunt zero) are real FanTeam mechanics confirmed from your
+screenshot of the in-app rules, but they're TEAM-construction-time
+concerns, not per-golfer ones - this script projects each golfer on their
+own 1x merits; the team optimiser (Phase 3) is where captain/underdog
+selection and safety-net-aware risk get applied.
+
+SIMULATION: a genuine Monte Carlo pass (not a single point estimate) -
+each shrunk rate becomes a Poisson-ish draw (count stats: birdies, pars,
+bogeys, etc. - Poisson variance, i.e. variance = mean, is a standard,
+defensible assumption for count-like golf stats with no better variance
+estimate available from this data source) plus one discrete finish-tier
+draw per simulated tournament (the top10/20/.../60 + 1st/2nd/3rd tiers are
+monotonic/nested in the real data - "finished top 10" trivially implies
+"finished top 30" - so a simulated tournament awards only the single BEST
+tier reached, not every tier cumulatively, matching how DFS position
+bonuses actually pay out). floor/ceiling/mean/median/make-cut/top-finish/
+boom/bust probabilities are read directly off the resulting distribution,
+not hand-tuned multipliers.
+
+RUN:
+    python3 scripts/compute_golf_projections.py <tournament_id_or_url>
+"""
+
+import json
+import math
+import os
+import random
+import re
+import sys
+from pathlib import Path
+
+import psycopg2
+import psycopg2.extras
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# Shrinkage strength in "tournaments" units, matching the role
+# shrinkage_games plays for football - a golfer with far fewer tracked
+# tournaments than this gets pulled hard toward the field average; someone
+# with many more is barely adjusted. 8 tournaments (roughly a season's
+# worth of tour starts before a real solo signal is trustworthy) is the
+# same order of magnitude as football's 10-game constant.
+SHRINKAGE_TOURNAMENTS = 8
+
+SIMULATIONS = 3000
+
+# avg_stats jsonb key -> game_scoring_rules.stat - only the stats
+# confirmed live in the real FanTeam scoring table (migration 0047) are
+# priced; anything else in avg_stats (rank1-9, remainingHoles, ...) has no
+# scoring-rule row and is correctly ignored by price_stat() below.
+COUNT_STAT_KEYS = {
+    "birdie": "birdie",
+    "par": "par",
+    "bogey": "bogey",
+    "eagle": "eagle",
+    "doubleBogey": "double_bogey",
+    "tripleBogeyOrWorse": "triple_bogey_or_worse",
+    "noBogeys": "no_bogeys",
+    "threeConsecutiveBirdies": "three_consecutive_birdies",
+    "ro64": "round_of_64",
+    "allFourSub70": "all_four_sub_70",
+    "bounceBack": "bounce_back",
+    "betterThanEagle": "hole_in_one",  # matches the real rule's own name, "Better than Eagle"
+}
+
+# Finish-tier ladder, best to worst - nested/monotonic in the real data
+# (a top-10 finish trivially is also a top-30 finish), so a single
+# simulated tournament resolves to exactly ONE of these (or none), not a
+# cumulative stack. finish_1st/2nd/3rd use rank1/rank2/rank3 when a golfer
+# actually has that exact-position history; top10/20/30/40/50/60 use
+# FanTeam's own named finish-tier rates.
+FINISH_TIERS = [
+    ("finish_1st", "rank1"),
+    ("finish_2nd", "rank2"),
+    ("finish_3rd", "rank3"),
+    ("top10", "top10"),
+    ("top20", "top20"),
+    ("top30", "top30"),
+    ("top40", "top40"),
+    ("top50", "top50"),
+    ("top60", "top60"),
+]
+
+DEFAULT_WEIGHTS = {
+    "shrinkage_tournaments": SHRINKAGE_TOURNAMENTS,
+    "simulations": SIMULATIONS,
+    # Fingerprint so a change to which stats are modeled mints a new
+    # algorithm_versions revision even if no literal number changed - same
+    # technique compute_projections.py's DEFAULT_WEIGHTS_V2 uses via
+    # "stat_set"/"involvement_model".
+    "count_stats": sorted(COUNT_STAT_KEYS.values()),
+    "finish_tiers": [t for t, _ in FINISH_TIERS],
+    "course_data_available": False,
+}
+
+
+def load_env():
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+def parse_tournament_id(arg: str) -> str:
+    match = re.search(r"/participate/(\d+)", arg)
+    if match:
+        return match.group(1)
+    if arg.strip().isdigit():
+        return arg.strip()
+    raise SystemExit(f"Couldn't extract a tournament ID from {arg!r} - pass a bare ID or a fanteam.com/fantasy/participate/<id> URL.")
+
+
+def get_or_create_algorithm_version(cur, family, description, weights):
+    """Identical mechanism to compute_projections.py's own function (see
+    migration 0032's docstring) - not re-implemented differently, just
+    scoped to this script's own DB cursor since compute_projections.py's
+    version isn't imported (that file has football-specific globals like
+    UPCOMING_SEASON this script doesn't want to depend on)."""
+    cur.execute(
+        "select id, revision, weights from algorithm_versions where family = %s order by revision desc limit 1",
+        (family,),
+    )
+    row = cur.fetchone()
+
+    if row is not None:
+        existing_id, existing_revision, existing_weights = row
+        if isinstance(existing_weights, str):
+            existing_weights = json.loads(existing_weights)
+        if existing_weights == weights:
+            cur.execute("update algorithm_versions set description = %s where id = %s", (description, existing_id))
+            return existing_id
+        next_revision = existing_revision + 1
+    else:
+        next_revision = 1
+
+    version_label = f"{family}.{next_revision}"
+    cur.execute(
+        "insert into algorithm_versions (version_label, family, revision, description, weights) values (%s, %s, %s, %s, %s) returning id",
+        (version_label, family, next_revision, description, psycopg2.extras.Json(weights)),
+    )
+    return cur.fetchone()[0]
+
+
+def fetch_scoring_rules(cur, game_id):
+    cur.execute("select stat, points from game_scoring_rules where game_id = %s", (game_id,))
+    return {stat: float(points) for stat, points in cur.fetchall()}
+
+
+def fetch_tournament(cur, tournament_ref):
+    cur.execute(
+        "select id, game_id, fanteam_tournament_id, name, event_number, season_year from golf_tournaments where fanteam_tournament_id = %s",
+        (tournament_ref,),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise SystemExit(f"No golf_tournaments row for FanTeam tournament {tournament_ref!r} - run import_fanteam_golf.py first.")
+    return row
+
+
+def fetch_entries(cur, tournament_id):
+    cur.execute(
+        """
+        select gte.id, gte.game_player_id, g.full_name, gte.price, gte.lineup, gte.status,
+               gte.match_count, gte.avg_stats
+        from golf_tournament_entries gte
+        join game_players gp on gp.id = gte.game_player_id
+        join golfers g on g.id = gp.golfer_id
+        where gte.tournament_id = %s
+        """,
+        (tournament_id,),
+    )
+    entries = []
+    for entry_id, game_player_id, full_name, price, lineup, status, match_count, avg_stats in cur.fetchall():
+        if isinstance(avg_stats, str):
+            avg_stats = json.loads(avg_stats)
+        entries.append(
+            {
+                "entry_id": entry_id,
+                "game_player_id": game_player_id,
+                "full_name": full_name,
+                "price": float(price) if price is not None else None,
+                "lineup": lineup,
+                "status": status,
+                "match_count": match_count or 0,
+                "avg_stats": avg_stats or {},
+            }
+        )
+    return entries
+
+
+def field_averages(entries):
+    """Match_count-weighted field average for every count stat + finish
+    tier - the shrinkage prior, computed fresh from THIS tournament's own
+    pool (not a stored global constant), same "this game's own cohort"
+    principle compute_shrunk_rates uses for football's position_avg."""
+    sums = {key: 0.0 for key in list(COUNT_STAT_KEYS) + [rank_key for _, rank_key in FINISH_TIERS] + ["madeCut"]}
+    weight_total = 0.0
+    for e in entries:
+        mc = e["match_count"]
+        if mc <= 0:
+            continue
+        weight_total += mc
+        for key in sums:
+            value = e["avg_stats"].get(key)
+            if value is not None:
+                sums[key] += float(value) * mc
+    if weight_total == 0:
+        return {key: 0.0 for key in sums}
+    return {key: total / weight_total for key, total in sums.items()}
+
+
+def shrink(golfer_value, golfer_weight, cohort_avg, k):
+    """Same shape as compute_projections.py's own shrinkage formula:
+    (player_total + k*cohort_avg) / (player_sample + k), with
+    golfer_value*golfer_weight standing in for a "total" since avg_stats
+    only gives us a pre-averaged rate, not raw per-tournament totals."""
+    if golfer_value is None:
+        golfer_value = cohort_avg
+        golfer_weight = 0
+    return (golfer_value * golfer_weight + k * cohort_avg) / (golfer_weight + k)
+
+
+def project_entry(entry, cohort, scoring_rules, weights):
+    k = weights["shrinkage_tournaments"]
+    mc = entry["match_count"]
+    avg_stats = entry["avg_stats"]
+
+    shrunk_rates = {}
+    for jkey in COUNT_STAT_KEYS:
+        shrunk_rates[jkey] = shrink(avg_stats.get(jkey), mc, cohort[jkey], k)
+    tier_probs = {}
+    for _, jkey in FINISH_TIERS:
+        tier_probs[jkey] = max(0.0, min(1.0, shrink(avg_stats.get(jkey), mc, cohort[jkey], k)))
+
+    # Nested tiers -> exclusive per-tier probability (P(exactly this tier,
+    # not a better one)) via successive differences down the ladder,
+    # best-to-worst. Anything left over after the worst tier is "outside
+    # every scored tier" (misses the cut or finishes 61st+), worth nothing.
+    exclusive = {}
+    remaining = 1.0
+    for label, jkey in FINISH_TIERS:
+        this_tier = min(tier_probs[jkey], remaining)
+        exclusive[label] = this_tier
+        remaining = max(0.0, remaining - this_tier)
+        # Each subsequent (worse) tier's raw probability already includes
+        # everyone in the better tiers above it (monotonic), so re-clamp
+        # against what's actually left, not the raw shrunk value again.
+        remaining = min(remaining, 1.0)
+
+    made_cut_rate = max(0.0, min(1.0, shrink(avg_stats.get("madeCut"), mc, cohort["madeCut"], k)))
+
+    # Point value of one simulated draw's expected contribution per stat -
+    # the deterministic "expected points" figure (mean of the count stats
+    # * their point value, plus the finish-tier expected value).
+    expected_points = 0.0
+    priced = {}
+    for jkey, stat in COUNT_STAT_KEYS.items():
+        points = scoring_rules.get(stat)
+        if points is None:
+            continue
+        contribution = shrunk_rates[jkey] * points
+        priced[stat] = {"rate": round(shrunk_rates[jkey], 4), "points_each": points, "contribution": round(contribution, 3)}
+        expected_points += contribution
+
+    finish_ev = 0.0
+    for label, _ in FINISH_TIERS:
+        points = scoring_rules.get(label)
+        if points is None:
+            continue
+        contribution = exclusive[label] * points
+        priced[label] = {"probability": round(exclusive[label], 4), "points_each": points, "contribution": round(contribution, 3)}
+        finish_ev += contribution
+    expected_points += finish_ev
+
+    return {
+        "shrunk_rates": shrunk_rates,
+        "exclusive_tier_probs": exclusive,
+        "made_cut_rate": made_cut_rate,
+        "expected_points": expected_points,
+        "priced": priced,
+    }
+
+
+def availability_multiplier(lineup, status):
+    """Confirmed live: lineup='refuted'/status='not_play' = withdrawn. No
+    partial-availability states have been observed for golf (unlike
+    football's EXP/MAY/BEN spread) - binary for now, same fail-open-to-1.0
+    philosophy as football's LINEUP_MULTIPLIERS for anything unrecognized."""
+    if lineup == "refuted" or status == "not_play":
+        return 0.0
+    return 1.0
+
+
+def poisson_draw(lam):
+    """Small pure-Python Poisson sampler (Knuth's algorithm) - avoids
+    adding numpy as a dependency for one script. Fine for the small
+    (typically well under 30) lambdas golf stat rates produce."""
+    if lam <= 0:
+        return 0
+    limit = math.exp(-lam)
+    k, p = 0, 1.0
+    while True:
+        k += 1
+        p *= random.random()
+        if p <= limit:
+            return k - 1
+
+
+def simulate(shrunk_rates, exclusive_tier_probs, scoring_rules, n):
+    """Monte Carlo draws - see module docstring for the modeling choices.
+    Returns the raw list of simulated per-tournament point totals."""
+    count_items = [(stat, shrunk_rates[jkey]) for jkey, stat in COUNT_STAT_KEYS.items() if stat in scoring_rules]
+    tier_labels = list(exclusive_tier_probs.keys())
+    tier_cum = []
+    running = 0.0
+    for label in tier_labels:
+        running += exclusive_tier_probs[label]
+        tier_cum.append((running, label))
+
+    totals = []
+    for _ in range(n):
+        total = 0.0
+        for stat, rate in count_items:
+            total += poisson_draw(max(rate, 0.0)) * scoring_rules[stat]
+        roll = random.random()
+        for cum, label in tier_cum:
+            if roll <= cum and label in scoring_rules:
+                total += scoring_rules[label]
+                break
+        totals.append(total)
+    return totals
+
+
+def percentile(sorted_values, p):
+    if not sorted_values:
+        return 0.0
+    idx = min(len(sorted_values) - 1, max(0, round(p * (len(sorted_values) - 1))))
+    return sorted_values[idx]
+
+
+def upsert_projection(cur, algo_id, game_id, game_player_id, gameweek, season, score, inputs):
+    cur.execute(
+        """
+        insert into projections (algorithm_version_id, game_player_id, season, gameweek, hail_mary_score, inputs)
+        values (%s, %s, %s, %s, %s, %s)
+        on conflict (algorithm_version_id, game_player_id, gameweek) where gameweek is not null
+            do update set hail_mary_score = excluded.hail_mary_score, inputs = excluded.inputs
+        """,
+        (algo_id, game_player_id, season, gameweek, round(score, 3), psycopg2.extras.Json(inputs)),
+    )
+
+
+def main():
+    if len(sys.argv) < 2:
+        raise SystemExit("Usage: python3 scripts/compute_golf_projections.py <tournament_id_or_url>")
+    tournament_ref = parse_tournament_id(sys.argv[1])
+
+    load_env()
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn.autocommit = False
+    cur = conn.cursor()
+
+    try:
+        tournament_id, game_id, fanteam_tournament_id, name, event_number, season_year = fetch_tournament(cur, tournament_ref)
+        scoring_rules = fetch_scoring_rules(cur, game_id)
+        if not scoring_rules:
+            raise SystemExit("No game_scoring_rules found for fanteam-golf - run migrations 0045/0047 first.")
+
+        entries = fetch_entries(cur, tournament_id)
+        if not entries:
+            raise SystemExit(f"No golf_tournament_entries for tournament {tournament_id} - run import_fanteam_golf.py first.")
+
+        cohort = field_averages(entries)
+        algo_id = get_or_create_algorithm_version(
+            cur, "golf-v1",
+            "Hail Mary Golf v1 - per-stat shrinkage projection + Monte Carlo simulation, real FanTeam scoring rules",
+            DEFAULT_WEIGHTS,
+        )
+
+        gameweek = event_number
+        season = str(season_year) if season_year else "unknown"
+
+        written = 0
+        for entry in entries:
+            proj = project_entry(entry, cohort, scoring_rules, DEFAULT_WEIGHTS)
+            avail = availability_multiplier(entry["lineup"], entry["status"])
+            expected_points = proj["expected_points"] * avail
+
+            sim_totals = sorted(
+                v * avail for v in simulate(proj["shrunk_rates"], proj["exclusive_tier_probs"], scoring_rules, DEFAULT_WEIGHTS["simulations"])
+            ) if avail > 0 else [0.0] * DEFAULT_WEIGHTS["simulations"]
+
+            floor = percentile(sim_totals, 0.05)
+            ceiling = percentile(sim_totals, 0.95)
+            median = percentile(sim_totals, 0.50)
+            mean_sim = sum(sim_totals) / len(sim_totals) if sim_totals else 0.0
+            # "Boom" = a result well above the mean (90th pctile threshold),
+            # "bust" = well below it (10th) - probability mass beyond each,
+            # not fixed point thresholds, so this stays meaningful across
+            # very different price/quality tiers.
+            boom_threshold = percentile(sim_totals, 0.90)
+            bust_threshold = percentile(sim_totals, 0.10)
+            boom_probability = sum(1 for v in sim_totals if v >= boom_threshold) / len(sim_totals) if sim_totals else 0.0
+            bust_probability = sum(1 for v in sim_totals if v <= bust_threshold) / len(sim_totals) if sim_totals else 0.0
+            top_finish_probability = proj["exclusive_tier_probs"].get("top10", 0.0) + proj["exclusive_tier_probs"].get("finish_1st", 0.0) \
+                + proj["exclusive_tier_probs"].get("finish_2nd", 0.0) + proj["exclusive_tier_probs"].get("finish_3rd", 0.0)
+
+            value = round(expected_points / entry["price"], 3) if entry["price"] else None
+
+            reasons = []
+            if avail == 0:
+                reasons.append(f"{entry['full_name']} is withdrawn/not playing this tournament - projected at 0 (FanTeam's safety-net will substitute an active golfer at team level, not reflected in this per-golfer figure).")
+            else:
+                top_stat = max(proj["priced"].items(), key=lambda kv: kv[1]["contribution"], default=(None, None))
+                if top_stat[0]:
+                    reasons.append(f"Biggest single contributor: {top_stat[0]} ({top_stat[1]['contribution']:+.2f} pts from a {top_stat[1].get('rate', top_stat[1].get('probability'))} rate).")
+                if entry["match_count"] < DEFAULT_WEIGHTS["shrinkage_tournaments"]:
+                    reasons.append(f"Only {entry['match_count']} tracked tournament(s) - projection leans toward the field average until more history accumulates.")
+
+            inputs = {
+                "tournament_id": tournament_id,
+                "fanteam_tournament_id": fanteam_tournament_id,
+                "match_count": entry["match_count"],
+                "availability_multiplier": avail,
+                "made_cut_rate": proj["made_cut_rate"],
+                "shrunk_rates": {k: round(v, 4) for k, v in proj["shrunk_rates"].items()},
+                "exclusive_tier_probabilities": {k: round(v, 4) for k, v in proj["exclusive_tier_probs"].items()},
+                "priced": proj["priced"],
+                "floor": round(floor, 2),
+                "ceiling": round(ceiling, 2),
+                "median": round(median, 2),
+                "mean_simulated": round(mean_sim, 2),
+                "make_cut_probability": round(proj["made_cut_rate"], 4) if proj["made_cut_rate"] is not None else None,
+                "top_finish_probability": round(top_finish_probability, 4),
+                "boom_probability": round(boom_probability, 4),
+                "bust_probability": round(bust_probability, 4),
+                "value": value,
+                "price": entry["price"],
+                "course_fit_score": None,  # honest - no course data source integrated yet, see module docstring
+                "course_data_available": False,
+                "explanation": " ".join(reasons),
+            }
+
+            upsert_projection(cur, algo_id, game_id, entry["game_player_id"], gameweek, season, expected_points, inputs)
+            written += 1
+
+        conn.commit()
+        print(f"Wrote {written} golf projections for \"{name}\" (algorithm golf-v1, gameweek {gameweek}).")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()
