@@ -435,7 +435,7 @@ export async function saveLineup({ squadId, formationCode, startingGamePlayerIds
     if (benchError) return { error: benchError.message };
   }
 
-  redirect("/squads");
+  redirect(`/squads/${squadId}`);
 }
 
 type MakeTransferArgs = {
@@ -662,7 +662,7 @@ export async function makeTransfer({ squadId, outGamePlayerId, inGamePlayerId, u
   const result = await executeTransfer(supabase, squad, outGamePlayerId, inGamePlayerId, useWildcard);
   if (result.error) return result;
 
-  redirect(`/squads/${squadId}/transfers`);
+  redirect(`/squads/${squadId}`);
 }
 
 type ApplyRecommendationArgs = {
@@ -801,7 +801,7 @@ export async function applyRecommendation({ squadId, transfers, useWildcard }: A
     workingSquad = refreshed;
   }
 
-  redirect(`/squads/${squadId}/transfers`);
+  redirect(`/squads/${squadId}`);
 }
 
 /**
@@ -886,7 +886,7 @@ export async function reverseTransfer({ squadId, transferId }: ReverseTransferAr
 
   await supabase.from("squad_transfers").delete().eq("id", transferId);
 
-  redirect(`/squads/${squadId}/transfers`);
+  redirect(`/squads/${squadId}`);
 }
 
 type SetCaptainArgs = {
@@ -940,5 +940,5 @@ export async function setCaptain({ squadId, captainGamePlayerId, viceCaptainGame
     vice_captain_game_player_id: viceCaptainGamePlayerId,
   });
 
-  redirect(`/squads/${squadId}/captain`);
+  redirect(`/squads/${squadId}`);
 }

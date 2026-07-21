@@ -2,24 +2,9 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSquadStatuses } from "@/lib/squadStatus";
+import GameSecondaryNav from "@/app/GameSecondaryNav";
 
 export const dynamic = "force-dynamic";
-
-// Which of the app's game-scoped tools actually work for each game today -
-// deliberately explicit rather than assuming every game has every
-// feature. Dream Team has no live scrape source (a longstanding,
-// documented gap elsewhere in this app) so Ask Mary/Performance Lab/
-// Watchlist/Activity would just be empty or misleading there. NFL FanTeam
-// has real 2025 historical stats and squad-building now (Stage 1-3), but
-// no live tournament/fixture schedule yet (the next one opens close to
-// the 2026-27 season, ~Sept 2026) - so fixtures/watchlist/activity/Ask
-// Mary/Performance Lab, which all assume an in-season data source, stay
-// off until that exists.
-const GAME_FEATURES: Record<string, { rankings: boolean; fixtures: boolean; watchlist: boolean; activity: boolean; askMary: boolean; performanceLab: boolean }> = {
-  fanteam: { rankings: true, fixtures: true, watchlist: true, activity: true, askMary: true, performanceLab: true },
-  dreamteam: { rankings: true, fixtures: true, watchlist: false, activity: false, askMary: false, performanceLab: false },
-  "nfl-fanteam": { rankings: true, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false },
-};
 
 export default async function GameHubPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
@@ -60,7 +45,6 @@ export default async function GameHubPage({ params }: { params: Promise<{ slug: 
     );
   }
 
-  const features = GAME_FEATURES[game.slug] ?? { rankings: false, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false };
   const allStatuses = await getSquadStatuses(supabase, user.id);
   const statuses = allStatuses.filter((s) => s.gameSlug === game.slug);
 
@@ -69,37 +53,8 @@ export default async function GameHubPage({ params }: { params: Promise<{ slug: 
       <main className="mx-auto max-w-2xl">
         {header}
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          {features.rankings && (
-            <Link href={`/rankings?game=${game.slug}`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800">
-              Rankings
-            </Link>
-          )}
-          {features.fixtures && (
-            <Link href={`/fixtures?game=${game.slug}`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800">
-              Fixtures
-            </Link>
-          )}
-          {features.watchlist && (
-            <Link href="/watchlist" className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800">
-              Watchlist
-            </Link>
-          )}
-          {features.activity && (
-            <Link href="/activity" className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800">
-              Activity
-            </Link>
-          )}
-          {features.askMary && (
-            <Link href="/ask-mary" className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800">
-              Ask Mary
-            </Link>
-          )}
-          {features.performanceLab && (
-            <Link href="/performance-lab" className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800">
-              Performance Lab
-            </Link>
-          )}
+        <div className="mt-4">
+          <GameSecondaryNav gameSlug={game.slug} gameDisplayName={game.display_name} />
         </div>
 
         <div className="mt-6 flex items-center justify-between">
@@ -119,7 +74,9 @@ export default async function GameHubPage({ params }: { params: Promise<{ slug: 
             {statuses.map((s) => (
               <div key={s.id} className="rounded-xl border border-navy-700 bg-navy-900 p-4">
                 <div className="flex items-center justify-between">
-                  <p className="font-medium text-white">{s.name}</p>
+                  <Link href={`/squads/${s.id}`} className="font-medium text-white hover:text-sky-300">
+                    {s.name}
+                  </Link>
                   {s.needsAttention && (
                     <span className="rounded-full bg-amber-950 px-2 py-0.5 text-xs font-medium text-amber-400">
                       Starting XI not set
@@ -135,17 +92,9 @@ export default async function GameHubPage({ params }: { params: Promise<{ slug: 
                   )}
                 </div>
 
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {s.hasBench && (
-                    <Link href={`/squads/${s.id}/lineup`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800">
-                      Set starting XI
-                    </Link>
-                  )}
-                  <Link href={`/squads/${s.id}/transfers`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800">
-                    Transfers
-                  </Link>
-                  <Link href={`/squads/${s.id}/captain`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800">
-                    Captain
+                <div className="mt-3">
+                  <Link href={`/squads/${s.id}`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800">
+                    Manage squad
                   </Link>
                 </div>
               </div>

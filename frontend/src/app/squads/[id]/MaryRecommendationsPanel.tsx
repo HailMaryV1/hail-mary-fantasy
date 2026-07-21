@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { runAskMaryAnalysis, ASK_MARY_HORIZONS } from "@/lib/askMaryEngine";
-import BundleCard from "@/app/ask-mary/BundleCard";
+import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
+import GameweekPlanRow from "@/app/ask-mary/GameweekPlanRow";
 
 /**
  * Compact "Mary's Recommendations" summary at the top of the Transfers
@@ -41,9 +41,9 @@ export default async function MaryRecommendationsPanel({
           View Full Analysis →
         </Link>
       </div>
-      <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {ASK_MARY_HORIZONS.map((h) => (
-          <BundleCard key={h.key} label={h.label} bundle={analysis.bundles.get(h.gameweeks)!} squadId={squad.id} gameId={fanteamGameRow.id} />
+      <div className="mt-2 flex flex-col gap-2">
+        {analysis.gameweekPlan.map((step) => (
+          <GameweekPlanRow key={step.offset} step={step} squadId={squad.id} gameId={fanteamGameRow.id} />
         ))}
         <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
           <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain</h3>

@@ -51,7 +51,9 @@ export default async function SquadsPage() {
             >
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="font-medium text-white">{s.name}</p>
+                  <Link href={`/squads/${s.id}`} className="font-medium text-white hover:text-sky-300">
+                    {s.name}
+                  </Link>
                   <p className="text-xs text-navy-400">{s.gameDisplayName}</p>
                 </div>
                 {s.needsAttention && (
@@ -70,25 +72,11 @@ export default async function SquadsPage() {
               </div>
 
               <div className="mt-3 flex flex-wrap gap-2">
-                {s.hasBench && (
-                  <Link
-                    href={`/squads/${s.id}/lineup`}
-                    className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800"
-                  >
-                    Set starting XI
-                  </Link>
-                )}
                 <Link
-                  href={`/squads/${s.id}/transfers`}
+                  href={`/squads/${s.id}`}
                   className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800"
                 >
-                  Transfers
-                </Link>
-                <Link
-                  href={`/squads/${s.id}/captain`}
-                  className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800"
-                >
-                  Captain
+                  Manage squad
                 </Link>
                 <Link
                   href={`/squads/${s.id}/analysis`}

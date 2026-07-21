@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { setCaptain } from "../../actions";
+import { setCaptain } from "../actions";
 
 type Starter = {
   game_player_id: number;

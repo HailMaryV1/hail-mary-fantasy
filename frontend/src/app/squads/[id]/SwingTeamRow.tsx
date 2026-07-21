@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import Badge from "../../Badge";
+import Badge from "../Badge";
 import AddToWatchlistButton from "./AddToWatchlistButton";
 import { getTeamColors } from "@/lib/teamColors";
 

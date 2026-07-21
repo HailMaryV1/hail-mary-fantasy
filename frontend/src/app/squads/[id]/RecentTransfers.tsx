@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { reverseTransfer } from "../../actions";
+import { reverseTransfer } from "../actions";
 
 type RecentTransfer = { id: number; outName: string; inName: string };
 

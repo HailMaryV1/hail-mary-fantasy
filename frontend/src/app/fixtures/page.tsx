@@ -2,6 +2,7 @@ import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import { detectFixtureRuns, type FixtureDifficultyRow, type FixtureRun } from "@/lib/fixtureRuns";
 import Badge from "../squads/Badge";
+import GameSecondaryNav from "../GameSecondaryNav";
 
 const GAMES = [
   { slug: "dreamteam", label: "Dream Team" },
@@ -113,6 +114,10 @@ export default async function FixturesPage({
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-4xl">
+        <div className="mb-4">
+          <GameSecondaryNav gameSlug={activeGame.slug} gameDisplayName={activeGame.label} />
+        </div>
+
         <h1 className="text-2xl font-semibold text-white">Fixture ticker</h1>
         <p className="mt-1 text-sm text-navy-300">
           Runs of 3+ consecutive gameweeks that look favourable or tough for a club - use it to plan transfers ahead of the run, not just react to your own squad&apos;s next fixture.

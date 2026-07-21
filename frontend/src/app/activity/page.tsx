@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabase";
+import GameSecondaryNav from "../GameSecondaryNav";
 
 // Reads searchParams and wants every visit to reflect whatever the
 // twice-daily pipeline just wrote - same reasoning as every other page
@@ -57,6 +58,9 @@ export default async function ActivityPage({ searchParams }: { searchParams: Pro
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-3xl">
+        <div className="mb-4">
+          <GameSecondaryNav gameSlug="fanteam" gameDisplayName="FanTeam" />
+        </div>
         <h1 className="text-2xl font-semibold text-white">Activity</h1>
         <p className="mt-1 text-sm text-navy-300">
           New players, Hail Mary Score swings, club transfers, and fixture changes - everything the twice-daily

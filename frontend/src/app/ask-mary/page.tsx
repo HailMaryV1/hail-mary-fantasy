@@ -2,10 +2,11 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { STRATEGIES, type Strategy } from "@/lib/recommendationScoring";
-import { runAskMaryAnalysis, ASK_MARY_HORIZONS } from "@/lib/askMaryEngine";
-import BundleCard from "./BundleCard";
+import { runAskMaryAnalysis, CAPTAIN_HORIZONS } from "@/lib/askMaryEngine";
+import GameweekPlanRow from "./GameweekPlanRow";
 import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
 import { recordPredictions } from "./actions";
+import GameSecondaryNav from "../GameSecondaryNav";
 
 // RPC results depend on the chosen horizon/strategy/squad but Supabase's
 // .rpc() POSTs to a fixed URL, so Next's fetch Data Cache could otherwise
@@ -28,12 +29,10 @@ export default async function AskMaryPage({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  // Drives the Captain & Vice-Captain pick only - the 3 "Best Transfer"
-  // recommendations always show all of Next GW / Next 3 GW / Next 5 GW
-  // simultaneously (per the simplified 4-recommendation design), so this
-  // control's job narrowed from "which horizon's transfers to show" to
-  // "which horizon to captain by."
-  const captainHorizon = ASK_MARY_HORIZONS.find((h) => h.key === horizonParam) ?? ASK_MARY_HORIZONS[2];
+  // Drives the Captain & Vice-Captain pick only - Mary's Recommendations
+  // is always the sequential GW1/GW2/GW3 plan regardless of this setting,
+  // so this control's job is just "which horizon to captain by."
+  const captainHorizon = CAPTAIN_HORIZONS.find((h) => h.key === horizonParam) ?? CAPTAIN_HORIZONS[2];
   const activeStrategy = (STRATEGIES.find((s) => s.key === strategyParam)?.key ?? "balanced") as Strategy;
 
   const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name").eq("slug", "fanteam").single();
@@ -59,6 +58,9 @@ export default async function AskMaryPage({
 
   const header = (
     <div>
+      <div className="mb-4">
+        <GameSecondaryNav gameSlug="fanteam" gameDisplayName={fanteamGame.display_name} />
+      </div>
       <h1 className="text-2xl font-semibold text-white">Ask Mary</h1>
       <p className="mt-1 text-sm text-navy-300">Your personalised Hail Mary squad adviser</p>
     </div>
@@ -154,7 +156,7 @@ export default async function AskMaryPage({
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-navy-500">Captain planning horizon</p>
           <div className="mt-1 flex flex-wrap gap-1 rounded-lg bg-navy-950 p-1">
-            {ASK_MARY_HORIZONS.map((h) => (
+            {CAPTAIN_HORIZONS.map((h) => (
               <Link
                 key={h.key}
                 href={askMaryUrl({ horizon: h.key })}
@@ -198,11 +200,8 @@ export default async function AskMaryPage({
           {freeTransfers} free transfer{freeTransfers === 1 ? "" : "s"}
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
-          <Link href={`/squads/${selectedSquad.id}/transfers`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
-            Edit squad
-          </Link>
-          <Link href={`/squads/${selectedSquad.id}/lineup`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
-            Starting XI
+          <Link href={`/squads/${selectedSquad.id}`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
+            Manage squad
           </Link>
         </div>
       </div>
@@ -242,7 +241,7 @@ export default async function AskMaryPage({
     );
   }
 
-  const { bestCaptain, viceCaptain, health, roadmap, monitorList, hasCalendar, bundles } = analysis;
+  const { bestCaptain, viceCaptain, health, gameweekPlan, monitorList, hasCalendar, seasonStarted } = analysis;
 
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
@@ -308,11 +307,17 @@ export default async function AskMaryPage({
             </div>
 
             <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Recommendations</h2>
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">
+                {seasonStarted ? "Mary's Gameweek Plan" : "Pre-Season Recommendations (Unlimited Transfers)"}
+              </h2>
               <div className="mt-2 flex flex-col gap-3">
-                {ASK_MARY_HORIZONS.map((h) => (
-                  <BundleCard key={h.key} label={`Best Transfer - ${h.label}`} bundle={bundles.get(h.gameweeks)!} squadId={selectedSquad.id} gameId={fanteamGame.id} />
-                ))}
+                {gameweekPlan.length === 0 ? (
+                  <p className="text-sm text-navy-400">No gameweek calendar published yet to build a plan from.</p>
+                ) : (
+                  gameweekPlan.map((step) => (
+                    <GameweekPlanRow key={step.offset} step={step} squadId={selectedSquad.id} gameId={fanteamGame.id} />
+                  ))
+                )}
 
                 <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
                   <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain - {captainHorizon.label}</h3>
@@ -326,22 +331,6 @@ export default async function AskMaryPage({
                   )}
                 </div>
               </div>
-            </div>
-
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Gameweek Plan</h2>
-              {roadmap.length === 0 ? (
-                <p className="mt-2 text-sm text-navy-400">No gameweek calendar published yet to build a roadmap from.</p>
-              ) : (
-                <div className="mt-2 flex flex-col gap-2">
-                  {roadmap.map((r) => (
-                    <div key={r.label} className="rounded-lg border border-navy-800 bg-navy-950 p-3">
-                      <p className="text-xs font-medium uppercase tracking-wide text-sky-400">{r.label}</p>
-                      <p className="mt-1 text-sm text-navy-200">{r.text}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
         </div>

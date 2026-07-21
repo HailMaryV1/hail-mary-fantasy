@@ -1,11 +1,11 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { makeTransfer } from "../../actions";
-import PitchView from "../../PitchView";
-import NflRosterView from "../../NflRosterView";
-import Badge from "../../Badge";
-import StatusPill from "../../../StatusPill";
+import { makeTransfer } from "../actions";
+import PitchView from "../PitchView";
+import NflRosterView from "../NflRosterView";
+import Badge from "../Badge";
+import StatusPill from "../../StatusPill";
 import { shortenPlayerName } from "@/lib/playerName";
 
 type SortKey = "score" | "price";

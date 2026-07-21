@@ -20,7 +20,7 @@ export default function TransferInConfirm({
     startTransition(async () => {
       const result = await makeTransfer({ squadId, outGamePlayerId, inGamePlayerId });
       if (result?.error) setError(result.error);
-      // On success makeTransfer redirects to /squads/{squadId}/transfers.
+      // On success makeTransfer redirects to /squads/{squadId}.
     });
   }
 

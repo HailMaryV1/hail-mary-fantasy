@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import PlayerTable, { type ProjectionRow } from "../PlayerTable";
+import GameSecondaryNav from "../GameSecondaryNav";
 
 // Supabase's .rpc() always POSTs to the same URL regardless of parameters
 // (they're in the body, not the URL) - Next's fetch Data Cache can key
@@ -117,6 +118,10 @@ export default async function RankingsPage({
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-4xl">
+        <div className="mb-4">
+          <GameSecondaryNav gameSlug={activeGame.slug} gameDisplayName={activeGame.label} />
+        </div>
+
         <h1 className="text-2xl font-semibold text-white">
           Hail Mary Score
         </h1>

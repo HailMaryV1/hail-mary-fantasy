@@ -9,6 +9,15 @@
 
 export const TRANSFER_HIT_COST = -4;
 
+// The real banking cap - was only documented in the comment above until
+// the Ask Mary gameweek plan needed to actually simulate accrual forward
+// across several gameweeks.
+export const MAX_BANKED_FREE_TRANSFERS = 37;
+
+export function accrueFreeTransfers(current: number): number {
+  return Math.min(current + 1, MAX_BANKED_FREE_TRANSFERS);
+}
+
 export function wildcardWindowFor(gameweek: number): "wc1" | "wc2" | null {
   if (gameweek >= 2 && gameweek <= 19) return "wc1";
   if (gameweek >= 20 && gameweek <= 38) return "wc2";

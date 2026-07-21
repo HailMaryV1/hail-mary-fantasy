@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { addToWatchlist } from "../../../watchlist/actions";
+import { addToWatchlist } from "../../watchlist/actions";
 
 export default function AddToWatchlistButton({
   gameId,

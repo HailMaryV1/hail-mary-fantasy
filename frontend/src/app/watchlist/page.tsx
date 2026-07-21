@@ -10,6 +10,7 @@ import StatusPill from "../StatusPill";
 import WatchlistAlerts from "./WatchlistAlerts";
 import WatchlistRowActions from "./WatchlistRowActions";
 import WatchlistNotesInput from "./WatchlistNotesInput";
+import GameSecondaryNav from "../GameSecondaryNav";
 
 // Same reasoning as rankings/page.tsx and fixtures/page.tsx - this page
 // calls .rpc() and reads searchParams, both of which need fresh data per
@@ -83,6 +84,12 @@ export default async function WatchlistPage({ searchParams }: { searchParams: Pr
     data: { user },
   } = await supabase.auth.getUser();
 
+  const secondaryNav = (
+    <div className="mb-4">
+      <GameSecondaryNav gameSlug={activeGame.slug} gameDisplayName={activeGame.label} />
+    </div>
+  );
+
   const gameToggle = (
     <nav className="mt-6 flex gap-2">
       {GAMES.map((g) => (
@@ -141,6 +148,7 @@ export default async function WatchlistPage({ searchParams }: { searchParams: Pr
     return (
       <div className="min-h-screen bg-navy-950 px-6 py-10">
         <main className="mx-auto max-w-6xl">
+          {secondaryNav}
           <h1 className="text-2xl font-semibold text-white">Watchlist</h1>
           <p className="mt-1 text-sm text-navy-300">Players you&apos;re monitoring, with fixture-swing timing and status.</p>
           {gameToggle}
@@ -287,6 +295,7 @@ export default async function WatchlistPage({ searchParams }: { searchParams: Pr
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-6xl">
+        {secondaryNav}
         <h1 className="text-2xl font-semibold text-white">Watchlist</h1>
         <p className="mt-1 text-sm text-navy-300">Players you&apos;re monitoring, with fixture-swing timing and status.</p>
         {gameToggle}
