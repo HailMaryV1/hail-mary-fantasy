@@ -57,10 +57,10 @@ export default function NflRosterView({
         }`}
       >
         <Kit teamName={player.team_name} size="lg" />
-        <span className="flex w-full min-w-0 items-center justify-center gap-0.5">
-          <span className="min-w-0 truncate text-[10px] font-medium text-white sm:text-xs" title={player.full_name}>
-            {shortenPlayerName(player.full_name)}
-          </span>
+        <span className="w-full min-w-0 truncate text-[10px] font-medium text-white sm:text-xs" title={player.full_name}>
+          {shortenPlayerName(player.full_name)}
+        </span>
+        <span className="flex items-center justify-center">
           <StatusPill lineup={player.lineup} status={player.status} />
         </span>
         {player.score != null && <span className="text-[10px] text-sky-400">{player.score.toFixed(1)} pts</span>}

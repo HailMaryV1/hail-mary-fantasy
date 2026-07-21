@@ -154,24 +154,7 @@ export default async function RankingsPage({
           Player rankings, algorithm v1
         </p>
 
-        <nav className="mt-6 flex gap-2">
-          {GAMES.map((g) => (
-            <Link
-              key={g.slug}
-              href={`/rankings?game=${g.slug}&horizon=${activeHorizon.key}`}
-              prefetch={false}
-              className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
-                g.slug === activeGame.slug
-                  ? "bg-sky-500 text-navy-950"
-                  : "bg-navy-900 text-navy-300 hover:bg-navy-800 hover:text-white"
-              }`}
-            >
-              {g.label}
-            </Link>
-          ))}
-        </nav>
-
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-6 flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium uppercase tracking-wide text-navy-400">
             Planning horizon
           </span>

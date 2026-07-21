@@ -88,10 +88,10 @@ export default function PitchView({
           }`}
         >
           <Kit teamName={player.team_name} size="lg" />
-          <span className="flex w-full min-w-0 items-center justify-center gap-0.5">
-            <span className="min-w-0 truncate text-[10px] font-medium text-white sm:text-xs" title={player.full_name}>
-              {shortenPlayerName(player.full_name)}
-            </span>
+          <span className="w-full min-w-0 truncate text-[10px] font-medium text-white sm:text-xs" title={player.full_name}>
+            {shortenPlayerName(player.full_name)}
+          </span>
+          <span className="flex items-center justify-center gap-0.5">
             <StatusPill lineup={player.lineup} status={player.status} />
             <FormPill status={player.formStatus} />
           </span>

@@ -101,20 +101,6 @@ export default async function FormPage({
           Who&apos;s beating or missing Mary&apos;s own predictions - not generic fantasy form.
         </p>
 
-        <nav className="mt-6 flex gap-2">
-          {GAMES.map((g) => (
-            <a
-              key={g.slug}
-              href={`/form?game=${g.slug}`}
-              className={`rounded-full px-4 py-1.5 text-sm font-medium transition-colors ${
-                g.slug === activeGame.slug ? "bg-sky-500 text-navy-950" : "bg-navy-900 text-navy-300 hover:bg-navy-800 hover:text-white"
-              }`}
-            >
-              {g.label}
-            </a>
-          ))}
-        </nav>
-
         {!game && (
           <p className="mt-8 text-sm text-navy-300">No data for {activeGame.label} yet.</p>
         )}
