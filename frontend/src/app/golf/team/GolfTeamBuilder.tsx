@@ -77,8 +77,12 @@ export default function GolfTeamBuilder({
     () => computeTeamTotal(team, captainOverrideId),
     [team, captainOverrideId]
   );
-  const totalPrice = team.reduce((s, p) => s + p.price, 0);
-  const remainingBudget = budget - totalPrice;
+  // Rounded to £0.1m granularity - summing several decimal prices in JS
+  // float arithmetic can land a fraction of a penny off zero (order-
+  // dependent), which would otherwise flip "£0.0m left" to "over budget"
+  // for a team that's actually exactly at budget.
+  const totalPrice = Math.round(team.reduce((s, p) => s + p.price, 0) * 100) / 100;
+  const remainingBudget = Math.round((budget - totalPrice) * 100) / 100;
 
   const searchResults = useMemo(() => {
     const q = search.trim().toLowerCase();

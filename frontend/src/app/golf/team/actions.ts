@@ -47,7 +47,12 @@ export async function saveGolfTeam({
   if (!entries || entries.length !== gamePlayerIds.length) {
     return { error: "One or more selected golfers aren't in this tournament's pool." };
   }
-  const totalPrice = entries.reduce((sum, e) => sum + Number(e.price), 0);
+  // Rounded to the real £0.1m price granularity before comparing - plain
+  // floating-point summation of decimals like 14.6 + 15.8 + ... can land
+  // on 100.00000000000001 instead of exactly 100 (IEEE 754 can't represent
+  // most decimal fractions exactly), which made a team costing precisely
+  // the full budget get rejected as "over budget" by a fraction of a penny.
+  const totalPrice = Math.round(entries.reduce((sum, e) => sum + Number(e.price), 0) * 100) / 100;
   if (totalPrice > Number(rules.budget)) {
     return { error: `Team costs £${totalPrice.toFixed(1)}m, over the £${Number(rules.budget).toFixed(1)}m budget.` };
   }
