@@ -58,14 +58,24 @@ export default function GolfTeamBuilder({
   // regenerates (changes variant/locks/excludes), at which point this
   // resets so the fresh optimizer output takes over again.
   const [manualIds, setManualIds] = useState<number[] | null>(null);
+  // Captain is a real pre-tournament choice, not automatic like underdog -
+  // null means "no manual pick yet, default to highest scorer." Reset
+  // alongside manualIds on a full regenerate; a swap that knocks the
+  // picked captain out is already handled inside computeTeamTotal itself
+  // (falls back to auto-pick rather than erroring).
+  const [captainOverrideId, setCaptainOverrideId] = useState<number | null>(null);
   useEffect(() => {
     setManualIds(null);
     setSelectedOutId(null);
+    setCaptainOverrideId(null);
   }, [optimizerIds]);
 
   const teamIds = manualIds ?? optimizerIds;
   const team = useMemo(() => (teamIds ?? []).map((id) => byId.get(id)!).filter(Boolean), [teamIds, byId]);
-  const { total, captainId, underdogId } = useMemo(() => computeTeamTotal(team), [team]);
+  const { total, captainId, underdogId } = useMemo(
+    () => computeTeamTotal(team, captainOverrideId),
+    [team, captainOverrideId]
+  );
   const totalPrice = team.reduce((s, p) => s + p.price, 0);
   const remainingBudget = budget - totalPrice;
 
@@ -301,9 +311,18 @@ export default function GolfTeamBuilder({
                     >
                       <td className="px-4 py-3 font-medium text-white">
                         {p.fullName}
-                        {isCaptain && (
-                          <span title="Captain - scores x1.25" className="ml-1.5 rounded bg-sky-950 px-1 py-0.5 text-[9px] font-bold text-sky-400">C</span>
-                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCaptainOverrideId(p.gamePlayerId);
+                          }}
+                          title={isCaptain ? "Captain - scores x1.25" : "Make captain (scores x1.25)"}
+                          className={`ml-1.5 rounded px-1 py-0.5 text-[9px] font-bold ${
+                            isCaptain ? "bg-sky-950 text-sky-400" : "bg-navy-800 text-navy-500 hover:text-sky-300"
+                          }`}
+                        >
+                          C
+                        </button>
                         {isUnderdog && (
                           <span title="Underdog (cheapest pick) - scores x1.25, automatic" className="ml-1.5 rounded bg-emerald-950 px-1 py-0.5 text-[9px] font-bold text-emerald-400">UD</span>
                         )}

@@ -124,9 +124,18 @@ export function buildGolfTeam(
  * NOT stacked here (whichever bonus is larger wins) rather than guessing
  * a compounding rule with no confirmation either way.
  */
-export function computeTeamTotal(team: GolfOptimizerPlayer[]): { total: number; captainId: number | null; underdogId: number | null } {
+export function computeTeamTotal(
+  team: GolfOptimizerPlayer[],
+  captainOverrideId?: number | null
+): { total: number; captainId: number | null; underdogId: number | null } {
   if (team.length === 0) return { total: 0, captainId: null, underdogId: null };
-  const captain = team.reduce((best, p) => (p.expectedPoints > best.expectedPoints ? p : best), team[0]);
+  // Captain is a real pre-tournament choice in FanTeam, not an automatic
+  // mechanic like underdog (always the cheapest pick) - default to the
+  // highest scorer only when the user hasn't picked one themselves, and
+  // only honor the override if that golfer is actually still on the team
+  // (a swap can knock the previously-picked captain out).
+  const overridden = captainOverrideId != null ? team.find((p) => p.gamePlayerId === captainOverrideId) : undefined;
+  const captain = overridden ?? team.reduce((best, p) => (p.expectedPoints > best.expectedPoints ? p : best), team[0]);
   const underdog = team.reduce((cheapest, p) => (p.price < cheapest.price ? p : cheapest), team[0]);
 
   let total = 0;
