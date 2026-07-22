@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useMemo, useState, useTransition } from "react";
+import { addToWatchlist, removeFromWatchlist } from "@/app/watchlist/actions";
 
 export type GolfRankingRow = {
   gamePlayerId: number;
@@ -39,11 +40,52 @@ const COLUMNS: { key: SortKey; label: string; align: "left" | "right"; hideOnMob
   { key: "expectedPoints", label: "Expected", align: "right" },
 ];
 
-export default function GolfRankingsTable({ data }: { data: GolfRankingRow[] }) {
+export default function GolfRankingsTable({
+  data,
+  gameId,
+  watched,
+  isLoggedIn,
+}: {
+  data: GolfRankingRow[];
+  gameId: number;
+  watched: { gamePlayerId: number; entryId: number }[];
+  isLoggedIn: boolean;
+}) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("expectedPoints");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  // gamePlayerId -> watchlist_entries.id (or null while an add is in
+  // flight, so the button can't be double-clicked into two rows).
+  const [watchMap, setWatchMap] = useState<Map<number, number>>(
+    () => new Map(watched.map((w) => [w.gamePlayerId, w.entryId]))
+  );
+  const [pendingWatchId, setPendingWatchId] = useState<number | null>(null);
+  const [, startWatchTransition] = useTransition();
+
+  function toggleWatch(gamePlayerId: number) {
+    if (!isLoggedIn || pendingWatchId === gamePlayerId) return;
+    setPendingWatchId(gamePlayerId);
+    const entryId = watchMap.get(gamePlayerId);
+    startWatchTransition(async () => {
+      if (entryId) {
+        const result = await removeFromWatchlist({ id: entryId });
+        if (!result?.error) {
+          setWatchMap((prev) => {
+            const next = new Map(prev);
+            next.delete(gamePlayerId);
+            return next;
+          });
+        }
+      } else {
+        const result = await addToWatchlist({ gameId, gamePlayerId, reasons: [] });
+        if (!result?.error && result?.id) {
+          setWatchMap((prev) => new Map(prev).set(gamePlayerId, result.id!));
+        }
+      }
+      setPendingWatchId(null);
+    });
+  }
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -125,6 +167,7 @@ export default function GolfRankingsTable({ data }: { data: GolfRankingRow[] }) 
           <tbody>
             {filtered.map((row) => {
               const withdrawn = row.lineup === "refuted" || row.status === "not_play";
+              const isWatched = watchMap.has(row.gamePlayerId);
               return (
                 <Fragment key={row.gamePlayerId}>
                   <tr
@@ -132,6 +175,21 @@ export default function GolfRankingsTable({ data }: { data: GolfRankingRow[] }) 
                     className="cursor-pointer border-b border-navy-800 last:border-0 hover:bg-navy-800"
                   >
                     <td className="px-4 py-3 font-medium text-white">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleWatch(row.gamePlayerId);
+                        }}
+                        disabled={!isLoggedIn || pendingWatchId === row.gamePlayerId}
+                        title={
+                          !isLoggedIn ? "Sign in to use the watchlist" : isWatched ? "Remove from watchlist" : "Add to watchlist"
+                        }
+                        className={`mr-1.5 disabled:cursor-not-allowed disabled:opacity-40 ${
+                          isWatched ? "text-amber-400" : "text-navy-600 hover:text-amber-400"
+                        }`}
+                      >
+                        {isWatched ? "★" : "☆"}
+                      </button>
                       {row.fullName}
                       {withdrawn && (
                         <span

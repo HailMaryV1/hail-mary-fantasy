@@ -34,20 +34,27 @@ export async function addToWatchlist({ gameId, gamePlayerId, reasons, notes }: A
 
   const mergedReasons = Array.from(new Set([...(existing?.watch_reasons ?? []), ...reasons]));
 
-  const { error } = await supabase.from("watchlist_entries").upsert(
-    {
-      user_id: user.id,
-      game_id: gameId,
-      game_player_id: gamePlayerId,
-      watch_reasons: mergedReasons,
-      notes: notes ?? existing?.notes ?? null,
-    },
-    { onConflict: "user_id,game_id,game_player_id" }
-  );
+  const { data: upserted, error } = await supabase
+    .from("watchlist_entries")
+    .upsert(
+      {
+        user_id: user.id,
+        game_id: gameId,
+        game_player_id: gamePlayerId,
+        watch_reasons: mergedReasons,
+        notes: notes ?? existing?.notes ?? null,
+      },
+      { onConflict: "user_id,game_id,game_player_id" }
+    )
+    .select("id")
+    .single();
   if (error) return { error: error.message };
 
   revalidatePath("/watchlist");
-  return { success: true };
+  // id included so callers that need to immediately un-star in the same
+  // session (no reasons/notes UI of their own, e.g. a plain star toggle)
+  // don't have to wait on a full page reload to learn their own new row's id.
+  return { success: true, id: upserted?.id as number | undefined };
 }
 
 export async function removeFromWatchlist({ id }: { id: number }) {
