@@ -307,6 +307,29 @@ def fetch_course_history(cur, course_id):
     return result
 
 
+def fetch_market_odds(cur, tournament_id):
+    """golfer_id -> {market: {decimal_odds, implied_probability}}, from
+    whatever's been manually pasted in at /golf/odds (migration 0051) -
+    no golf odds API covers regular Tour events at a sane price, so this
+    is bookmaker data the user copies in by hand. Purely informational
+    here (see module docstring) - reported alongside the model's own
+    probabilities for comparison, never blended into expected_points,
+    since there's no principled way to weight "our simulation" against
+    "the market" without inventing another conversion the same way
+    course history's strokes-to-points one already had to be."""
+    cur.execute(
+        "select golfer_id, market, decimal_odds, implied_probability from golf_tournament_odds where tournament_id = %s and golfer_id is not null",
+        (tournament_id,),
+    )
+    result = {}
+    for golfer_id, market, decimal_odds, implied_probability in cur.fetchall():
+        result.setdefault(golfer_id, {})[market] = {
+            "decimal_odds": float(decimal_odds) if decimal_odds is not None else None,
+            "implied_probability": float(implied_probability) if implied_probability is not None else None,
+        }
+    return result
+
+
 def course_history_adjustment(ch_row):
     """Real course-history signal -> a shrunk FanTeam points adjustment.
     See module docstring for why the strokes-to-points conversion is a
@@ -519,6 +542,9 @@ def main():
         else:
             print(f"Course history: {len(course_history)} golfer(s) matched for this tournament's linked course.")
 
+        market_odds = fetch_market_odds(cur, tournament_id)
+        print(f"Market odds: {len(market_odds)} golfer(s) with at least one pasted-in bookmaker market.")
+
         cohort = field_averages(entries)
         algo_id = get_or_create_algorithm_version(
             cur, "golf-v1",
@@ -579,6 +605,21 @@ def main():
                         f"{sign} the projection by {ch_points:+.2f} pts."
                     )
 
+            golfer_odds = market_odds.get(entry["golfer_id"])
+            model_win_probability = proj["exclusive_tier_probs"].get("finish_1st", 0.0)
+            if golfer_odds and "win" in golfer_odds and golfer_odds["win"]["implied_probability"] is not None:
+                market_win_probability = golfer_odds["win"]["implied_probability"]
+                # Purely a comparison note, not a correction - the market
+                # figure includes bookmaker overround (implied probabilities
+                # across a full field sum to >100%) so isn't a clean "true"
+                # probability either; it's a second opinion, not an answer.
+                diff = model_win_probability - market_win_probability
+                if abs(diff) >= 0.02:
+                    verdict = "our model is higher on" if diff > 0 else "the market is higher on"
+                    reasons.append(
+                        f"Win probability: model {model_win_probability:.1%} vs market {market_win_probability:.1%} - {verdict} this golfer."
+                    )
+
             inputs = {
                 "tournament_id": tournament_id,
                 "fanteam_tournament_id": fanteam_tournament_id,
@@ -602,6 +643,8 @@ def main():
                 "course_fit_available": False,
                 "course_history_points_adjustment": round(ch_points, 3),
                 "course_history": ch_detail,  # null when no course linked, or golfer has no history there
+                "model_win_probability": round(model_win_probability, 4),
+                "market_odds": golfer_odds,  # null when nobody's pasted in odds for this golfer/tournament yet
                 "explanation": " ".join(reasons),
             }
 
