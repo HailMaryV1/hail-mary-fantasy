@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   buildGolfTeam,
   computeTeamTotal,
@@ -10,6 +10,8 @@ import {
   type GolfTeamVariant,
 } from "@/lib/golfTeamOptimizer";
 import { saveGolfTeam, deleteGolfTeam } from "./actions";
+
+type PoolSortKey = "expectedPoints" | "price";
 
 export default function GolfTeamBuilder({
   tournamentId,
@@ -34,21 +36,81 @@ export default function GolfTeamBuilder({
   const [isPending, startTransition] = useTransition();
   const [teams, setTeams] = useState(savedTeams);
 
+  // Swap UI state - select a golfer already in the team as OUT, then pick
+  // an affordable pool golfer as IN.
+  const [selectedOutId, setSelectedOutId] = useState<number | null>(null);
+  const [poolSearch, setPoolSearch] = useState("");
+  const [poolSortKey, setPoolSortKey] = useState<PoolSortKey>("expectedPoints");
+  const [poolSortDir, setPoolSortDir] = useState<"asc" | "desc">("desc");
+
   const byId = useMemo(() => new Map(pool.map((p) => [p.gamePlayerId, p])), [pool]);
 
-  const teamIds = useMemo(
+  const optimizerIds = useMemo(
     () => buildGolfTeam(pool, variant, budget, lockedIds, excludedIds),
     [pool, variant, budget, lockedIds, excludedIds]
   );
+
+  // Manual swaps override the optimizer's suggestion until the user
+  // regenerates (changes variant/locks/excludes), at which point this
+  // resets so the fresh optimizer output takes over again.
+  const [manualIds, setManualIds] = useState<number[] | null>(null);
+  useEffect(() => {
+    setManualIds(null);
+    setSelectedOutId(null);
+  }, [optimizerIds]);
+
+  const teamIds = manualIds ?? optimizerIds;
   const team = useMemo(() => (teamIds ?? []).map((id) => byId.get(id)!).filter(Boolean), [teamIds, byId]);
   const { total, captainId, underdogId } = useMemo(() => computeTeamTotal(team), [team]);
   const totalPrice = team.reduce((s, p) => s + p.price, 0);
+  const remainingBudget = budget - totalPrice;
 
   const searchResults = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return [];
     return pool.filter((p) => p.fullName.toLowerCase().includes(q) && !lockedIds.includes(p.gamePlayerId)).slice(0, 8);
   }, [pool, search, lockedIds]);
+
+  const selectedOut = team.find((p) => p.gamePlayerId === selectedOutId) ?? null;
+
+  function canBringIn(candidate: GolfOptimizerPlayer) {
+    if (!selectedOut) return false;
+    if (team.some((p) => p.gamePlayerId === candidate.gamePlayerId)) return false;
+    const affordableBudget = remainingBudget + selectedOut.price;
+    return candidate.price <= affordableBudget;
+  }
+
+  function handleSquadSelect(gamePlayerId: number) {
+    setSelectedOutId((prev) => (prev === gamePlayerId ? null : gamePlayerId));
+  }
+
+  function handleSwap(inPlayer: GolfOptimizerPlayer) {
+    if (!selectedOut || !canBringIn(inPlayer) || !teamIds) return;
+    setManualIds(teamIds.map((id) => (id === selectedOutId ? inPlayer.gamePlayerId : id)));
+    setSelectedOutId(null);
+  }
+
+  function togglePoolSort(key: PoolSortKey) {
+    if (key === poolSortKey) {
+      setPoolSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setPoolSortKey(key);
+      setPoolSortDir("desc");
+    }
+  }
+
+  const filteredPool = useMemo(() => {
+    const q = poolSearch.trim().toLowerCase();
+    return pool
+      .filter((p) => !team.some((t) => t.gamePlayerId === p.gamePlayerId))
+      .filter((p) => !q || p.fullName.toLowerCase().includes(q))
+      .slice()
+      .sort((a, b) => {
+        const av = poolSortKey === "expectedPoints" ? a.expectedPoints : a.price;
+        const bv = poolSortKey === "expectedPoints" ? b.expectedPoints : b.price;
+        return poolSortDir === "desc" ? bv - av : av - bv;
+      });
+  }, [pool, team, poolSearch, poolSortKey, poolSortDir]);
 
   function toggleLock(id: number) {
     setLockedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -134,58 +196,132 @@ export default function GolfTeamBuilder({
         </p>
       )}
 
+      {selectedOut && (
+        <p className="mt-4 text-sm text-navy-300">
+          Swapping out <span className="font-medium text-white">{selectedOut.fullName}</span> - pick a replacement
+          from the pool on the left (only affordable golfers are clickable).
+        </p>
+      )}
+
       {team.length > 0 && (
-        <div className="mt-4 overflow-x-auto rounded-xl border border-navy-700 bg-navy-900">
-          <table className="w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-navy-700 text-xs uppercase tracking-wide text-navy-400">
-                <th className="px-4 py-3 font-medium">Golfer</th>
-                <th className="px-4 py-3 text-right font-medium">Price</th>
-                <th className="px-4 py-3 text-right font-medium">Expected</th>
-                <th className="px-4 py-3 text-right font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {team.map((p) => {
-                const isCaptain = p.gamePlayerId === captainId;
-                const isUnderdog = p.gamePlayerId === underdogId;
-                const isLocked = lockedIds.includes(p.gamePlayerId);
+        <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,320px)_1fr]">
+          <div className="min-w-0 rounded-xl border border-navy-700 bg-navy-900 p-3">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-navy-400">
+              Player pool {selectedOut ? "- pick a replacement" : "- select a golfer in your team to swap"}
+            </p>
+            <input
+              type="text"
+              value={poolSearch}
+              onChange={(e) => setPoolSearch(e.target.value)}
+              placeholder="Search player..."
+              className="mb-2 w-full rounded-lg border border-navy-700 bg-navy-950 px-3 py-1.5 text-sm text-white"
+            />
+            <div className="mb-2 flex items-center gap-1 text-xs text-navy-400">
+              <span>Sort:</span>
+              <button
+                onClick={() => togglePoolSort("expectedPoints")}
+                className={`rounded-md px-2 py-1 font-medium ${poolSortKey === "expectedPoints" ? "bg-navy-800 text-white" : "hover:text-white"}`}
+              >
+                Expected{poolSortKey === "expectedPoints" ? (poolSortDir === "desc" ? " ↓" : " ↑") : ""}
+              </button>
+              <button
+                onClick={() => togglePoolSort("price")}
+                className={`rounded-md px-2 py-1 font-medium ${poolSortKey === "price" ? "bg-navy-800 text-white" : "hover:text-white"}`}
+              >
+                Price{poolSortKey === "price" ? (poolSortDir === "desc" ? " ↓" : " ↑") : ""}
+              </button>
+            </div>
+            <div className="flex max-h-[28rem] flex-col gap-1 overflow-y-auto">
+              {filteredPool.slice(0, 100).map((p) => {
+                const clickable = canBringIn(p);
                 return (
-                  <tr key={p.gamePlayerId} className="border-b border-navy-800 last:border-0">
-                    <td className="px-4 py-3 font-medium text-white">
-                      {p.fullName}
-                      {isCaptain && (
-                        <span title="Captain - scores x1.25" className="ml-1.5 rounded bg-sky-950 px-1 py-0.5 text-[9px] font-bold text-sky-400">C</span>
-                      )}
-                      {isUnderdog && (
-                        <span title="Underdog (cheapest pick) - scores x1.25, automatic" className="ml-1.5 rounded bg-emerald-950 px-1 py-0.5 text-[9px] font-bold text-emerald-400">UD</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right text-navy-300">£{p.price.toFixed(1)}m</td>
-                    <td className="px-4 py-3 text-right text-sky-400">{p.expectedPoints.toFixed(1)}</td>
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => toggleLock(p.gamePlayerId)}
-                        className={`mr-1 rounded px-2 py-1 text-xs font-medium ${isLocked ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:text-white"}`}
-                      >
-                        {isLocked ? "Locked" : "Lock"}
-                      </button>
-                      <button
-                        onClick={() => toggleExclude(p.gamePlayerId)}
-                        className="rounded bg-navy-800 px-2 py-1 text-xs font-medium text-navy-300 hover:text-red-300"
-                      >
-                        Exclude
-                      </button>
-                    </td>
-                  </tr>
+                  <button
+                    key={p.gamePlayerId}
+                    onClick={() => handleSwap(p)}
+                    disabled={!clickable}
+                    className={`flex items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm ${
+                      clickable ? "bg-navy-950 hover:bg-navy-800" : "cursor-not-allowed bg-navy-950/40 opacity-40"
+                    }`}
+                  >
+                    <span className="min-w-0 text-white">
+                      <span className="block truncate" title={p.fullName}>
+                        {p.fullName}
+                      </span>
+                      <span className="block text-xs text-navy-400">£{p.price.toFixed(1)}m</span>
+                    </span>
+                    <span className="ml-2 shrink-0 text-sky-400">{p.expectedPoints.toFixed(1)}</span>
+                  </button>
                 );
               })}
-            </tbody>
-          </table>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-navy-700 px-4 py-3">
-            <div className="text-sm text-navy-300">
-              £{totalPrice.toFixed(1)}m / £{budget.toFixed(1)}m ·{" "}
-              <span className="font-semibold text-sky-400">{total.toFixed(1)} pts</span> with captain/underdog applied
+              {filteredPool.length === 0 && <p className="px-2 py-4 text-center text-xs text-navy-400">No golfers match.</p>}
+            </div>
+          </div>
+
+          <div className="min-w-0 overflow-x-auto rounded-xl border border-navy-700 bg-navy-900">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-navy-700 text-xs uppercase tracking-wide text-navy-400">
+                  <th className="px-4 py-3 font-medium">Golfer</th>
+                  <th className="px-4 py-3 text-right font-medium">Price</th>
+                  <th className="px-4 py-3 text-right font-medium">Expected</th>
+                  <th className="px-4 py-3 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {team.map((p) => {
+                  const isCaptain = p.gamePlayerId === captainId;
+                  const isUnderdog = p.gamePlayerId === underdogId;
+                  const isLocked = lockedIds.includes(p.gamePlayerId);
+                  const isSelectedOut = p.gamePlayerId === selectedOutId;
+                  return (
+                    <tr
+                      key={p.gamePlayerId}
+                      onClick={() => handleSquadSelect(p.gamePlayerId)}
+                      className={`cursor-pointer border-b border-navy-800 last:border-0 hover:bg-navy-800 ${
+                        isSelectedOut ? "bg-sky-950/40" : ""
+                      }`}
+                    >
+                      <td className="px-4 py-3 font-medium text-white">
+                        {p.fullName}
+                        {isCaptain && (
+                          <span title="Captain - scores x1.25" className="ml-1.5 rounded bg-sky-950 px-1 py-0.5 text-[9px] font-bold text-sky-400">C</span>
+                        )}
+                        {isUnderdog && (
+                          <span title="Underdog (cheapest pick) - scores x1.25, automatic" className="ml-1.5 rounded bg-emerald-950 px-1 py-0.5 text-[9px] font-bold text-emerald-400">UD</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right text-navy-300">£{p.price.toFixed(1)}m</td>
+                      <td className="px-4 py-3 text-right text-sky-400">{p.expectedPoints.toFixed(1)}</td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleLock(p.gamePlayerId);
+                          }}
+                          className={`mr-1 rounded px-2 py-1 text-xs font-medium ${isLocked ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:text-white"}`}
+                        >
+                          {isLocked ? "Locked" : "Lock"}
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleExclude(p.gamePlayerId);
+                          }}
+                          className="rounded bg-navy-800 px-2 py-1 text-xs font-medium text-navy-300 hover:text-red-300"
+                        >
+                          Exclude
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-navy-700 px-4 py-3">
+              <div className="text-sm text-navy-300">
+                £{totalPrice.toFixed(1)}m / £{budget.toFixed(1)}m ({remainingBudget >= 0 ? "£" + remainingBudget.toFixed(1) + "m left" : "over budget"}) ·{" "}
+                <span className="font-semibold text-sky-400">{total.toFixed(1)} pts</span> with captain/underdog applied
+              </div>
             </div>
           </div>
         </div>
