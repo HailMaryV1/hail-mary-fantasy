@@ -23,20 +23,56 @@ const PERSPECTIVES = [
   { key: "ceiling", label: "Highest Ceiling" },
 ] as const;
 
-type PerspectiveKey = (typeof PERSPECTIVES)[number]["key"];
+type SortKey = "fullName" | "price" | "floor" | "ceiling" | "makeCutProbability" | "value" | "expectedPoints";
+
+// Columns sort highest-first by default (rankings convention) except
+// the name column, where Z-A on first click would be surprising.
+const ASCENDING_FIRST: Partial<Record<SortKey, boolean>> = { fullName: true };
+
+const COLUMNS: { key: SortKey; label: string; align: "left" | "right"; hideOnMobile?: boolean }[] = [
+  { key: "fullName", label: "Golfer", align: "left" },
+  { key: "price", label: "Price", align: "right", hideOnMobile: true },
+  { key: "floor", label: "Floor", align: "right", hideOnMobile: true },
+  { key: "ceiling", label: "Ceiling", align: "right", hideOnMobile: true },
+  { key: "makeCutProbability", label: "Cut %", align: "right", hideOnMobile: true },
+  { key: "value", label: "Value", align: "right", hideOnMobile: true },
+  { key: "expectedPoints", label: "Expected", align: "right" },
+];
 
 export default function GolfRankingsTable({ data }: { data: GolfRankingRow[] }) {
   const [search, setSearch] = useState("");
-  const [perspective, setPerspective] = useState<PerspectiveKey>("expectedPoints");
+  const [sortKey, setSortKey] = useState<SortKey>("expectedPoints");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSortKey(key);
+      setSortDir(ASCENDING_FIRST[key] ? "asc" : "desc");
+    }
+  }
+
+  const activePerspective = sortDir === "desc" ? PERSPECTIVES.find((p) => p.key === sortKey)?.key : undefined;
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const dir = sortDir === "desc" ? -1 : 1;
     return data
       .filter((r) => !q || r.fullName.toLowerCase().includes(q))
       .slice()
-      .sort((a, b) => (b[perspective] ?? -Infinity) - (a[perspective] ?? -Infinity));
-  }, [data, search, perspective]);
+      .sort((a, b) => {
+        const av = a[sortKey];
+        const bv = b[sortKey];
+        if (typeof av === "string" || typeof bv === "string") {
+          return dir * String(av ?? "").localeCompare(String(bv ?? ""));
+        }
+        const aNum = av ?? -Infinity;
+        const bNum = bv ?? -Infinity;
+        return dir * ((aNum as number) - (bNum as number));
+      });
+  }, [data, search, sortKey, sortDir]);
 
   return (
     <div>
@@ -52,9 +88,12 @@ export default function GolfRankingsTable({ data }: { data: GolfRankingRow[] }) 
           {PERSPECTIVES.map((p) => (
             <button
               key={p.key}
-              onClick={() => setPerspective(p.key)}
+              onClick={() => {
+                setSortKey(p.key);
+                setSortDir("desc");
+              }}
               className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                perspective === p.key ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
+                activePerspective === p.key ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
               }`}
             >
               {p.label}
@@ -69,12 +108,18 @@ export default function GolfRankingsTable({ data }: { data: GolfRankingRow[] }) 
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-navy-700 text-xs uppercase tracking-wide text-navy-400">
-              <th className="px-4 py-3 font-medium">Golfer</th>
-              <th className="hidden px-4 py-3 text-right font-medium sm:table-cell">Price</th>
-              <th className="hidden px-4 py-3 text-right font-medium sm:table-cell">Floor</th>
-              <th className="hidden px-4 py-3 text-right font-medium sm:table-cell">Ceiling</th>
-              <th className="hidden px-4 py-3 text-right font-medium sm:table-cell">Cut %</th>
-              <th className="px-4 py-3 text-right font-medium">Expected</th>
+              {COLUMNS.map((col) => (
+                <th
+                  key={col.key}
+                  onClick={() => toggleSort(col.key)}
+                  className={`cursor-pointer select-none px-4 py-3 font-medium hover:text-white ${
+                    col.align === "right" ? "text-right" : "text-left"
+                  } ${col.hideOnMobile ? "hidden sm:table-cell" : ""}`}
+                >
+                  {col.label}
+                  {sortKey === col.key && <span className="ml-1 text-sky-400">{sortDir === "desc" ? "↓" : "↑"}</span>}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -108,13 +153,16 @@ export default function GolfRankingsTable({ data }: { data: GolfRankingRow[] }) 
                     <td className="hidden px-4 py-3 text-right text-navy-300 sm:table-cell">
                       {row.makeCutProbability != null ? `${(row.makeCutProbability * 100).toFixed(0)}%` : "—"}
                     </td>
+                    <td className="hidden px-4 py-3 text-right text-navy-300 sm:table-cell">
+                      {row.value != null ? row.value.toFixed(2) : "—"}
+                    </td>
                     <td className="px-4 py-3 text-right font-semibold text-sky-400">
                       {row.expectedPoints != null ? row.expectedPoints.toFixed(1) : "—"}
                     </td>
                   </tr>
                   {expandedId === row.gamePlayerId && row.explanation && (
                     <tr className="border-b border-navy-800 bg-navy-950/60 last:border-0">
-                      <td colSpan={6} className="px-4 py-2 text-xs text-navy-400">
+                      <td colSpan={COLUMNS.length} className="px-4 py-2 text-xs text-navy-400">
                         {row.explanation}
                         {row.value != null && <span className="ml-3 text-navy-500">Value: {row.value.toFixed(2)} pts/£</span>}
                       </td>
@@ -125,7 +173,7 @@ export default function GolfRankingsTable({ data }: { data: GolfRankingRow[] }) 
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-navy-400">
+                <td colSpan={COLUMNS.length} className="px-4 py-8 text-center text-navy-400">
                   No golfers match your search.
                 </td>
               </tr>
