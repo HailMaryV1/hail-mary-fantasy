@@ -47,6 +47,11 @@ export default async function GolfAlgorithmPerformancePage() {
   const bias = n > 0 ? results.reduce((s, r) => s + r.points_difference, 0) / n : null;
   const overrated = results.filter((r) => r.points_difference < -5).length;
   const underrated = results.filter((r) => r.points_difference > 5).length;
+  // "Got it right" = within 5pts either way - same ±5pt threshold the
+  // over/under-rated split already uses, just framed as a single
+  // headline accuracy number rather than two separate miss counts.
+  const withinFive = n - overrated - underrated;
+  const accuracyPct = n > 0 ? (withinFive / n) * 100 : null;
 
   const sorted = results.slice().sort((a, b) => Math.abs(b.points_difference) - Math.abs(a.points_difference));
 
@@ -74,10 +79,17 @@ export default async function GolfAlgorithmPerformancePage() {
 
         {n > 0 && (
           <>
-            <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
               <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
                 <p className="text-xs uppercase tracking-wide text-navy-400">Graded predictions</p>
                 <p className="mt-1 text-xl font-semibold text-white">{n}</p>
+              </div>
+              <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
+                <p className="text-xs uppercase tracking-wide text-navy-400">Got it right</p>
+                <p className="mt-1 text-xl font-semibold text-emerald-400">
+                  {withinFive}/{n} <span className="text-sm text-navy-400">({accuracyPct?.toFixed(0)}%)</span>
+                </p>
+                <p className="mt-0.5 text-[11px] text-navy-500">within ±5pts of actual</p>
               </div>
               <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
                 <p className="text-xs uppercase tracking-wide text-navy-400">Mean absolute error</p>
