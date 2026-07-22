@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabase";
+import { createAuthServerClient } from "@/lib/supabaseServerClient";
+import { computeTeamTotal, type GolfOptimizerPlayer } from "@/lib/golfTeamOptimizer";
 
 export const dynamic = "force-dynamic";
 
@@ -12,8 +14,122 @@ type ResultRow = {
   points_difference: number;
 };
 
+type SquadRow = {
+  id: number;
+  name: string;
+  golf_tournament_id: number;
+  golf_captain_game_player_id: number | null;
+  golf_tournaments: { name: string; event_number: number | null } | null;
+  squad_players: { game_player_id: number; game_players: { golfers: { full_name: string } } | null }[];
+};
+
+type PredictionGradeRow = {
+  game_player_id: number;
+  price: number | null;
+  expected_points: number | null;
+  actual_points: number | null;
+};
+
+type TeamGrade = {
+  squadId: number;
+  squadName: string;
+  tournamentLabel: string;
+  captainName: string | null;
+  expectedTotal: number;
+  actualTotal: number | null;
+  diff: number | null;
+  pending: boolean;
+};
+
+async function fetchTeamGrades(): Promise<TeamGrade[]> {
+  const authSupabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await authSupabase.auth.getUser();
+  if (!user) return [];
+
+  const { data: squads } = await authSupabase
+    .from("squads")
+    .select(
+      "id, name, golf_tournament_id, golf_captain_game_player_id, golf_tournaments(name, event_number), squad_players(game_player_id, game_players(golfers(full_name)))"
+    )
+    .eq("user_id", user.id)
+    .not("golf_tournament_id", "is", null)
+    .returns<SquadRow[]>();
+
+  const grades: TeamGrade[] = [];
+
+  for (const squad of squads ?? []) {
+    const gamePlayerIds = squad.squad_players.map((sp) => sp.game_player_id);
+    if (gamePlayerIds.length === 0) continue;
+
+    const { data: preds } = await authSupabase
+      .from("golf_tournament_predictions")
+      .select("game_player_id, price, expected_points, actual_points")
+      .eq("tournament_id", squad.golf_tournament_id)
+      .in("game_player_id", gamePlayerIds)
+      .returns<PredictionGradeRow[]>();
+
+    // No frozen prediction yet for every golfer on this team (registration
+    // for that tournament hasn't closed) - nothing to grade yet, skip.
+    if (!preds || preds.length !== gamePlayerIds.length) continue;
+
+    const nameByPlayer = new Map(
+      squad.squad_players.map((sp) => [sp.game_player_id, sp.game_players?.golfers?.full_name ?? "Unknown"])
+    );
+
+    const asPlayers = (points: (p: PredictionGradeRow) => number): GolfOptimizerPlayer[] =>
+      preds.map((p) => ({
+        gamePlayerId: p.game_player_id,
+        fullName: nameByPlayer.get(p.game_player_id) ?? "Unknown",
+        price: p.price != null ? Number(p.price) : 0,
+        expectedPoints: points(p),
+        floor: 0,
+        ceiling: 0,
+        makeCutProbability: null,
+      }));
+
+    const expectedResult = computeTeamTotal(
+      asPlayers((p) => (p.expected_points != null ? Number(p.expected_points) : 0)),
+      squad.golf_captain_game_player_id
+    );
+
+    const pending = preds.some((p) => p.actual_points == null);
+    let actualTotal: number | null = null;
+    let diff: number | null = null;
+    if (!pending) {
+      // Same captain the expected-side total used (whether stored or
+      // auto-detected) - grades the team on the captain choice actually
+      // in play, rather than letting "highest scorer" silently shift to a
+      // different golfer once real results are in.
+      const actualResult = computeTeamTotal(
+        asPlayers((p) => (p.actual_points != null ? Number(p.actual_points) : 0)),
+        expectedResult.captainId
+      );
+      actualTotal = actualResult.total;
+      diff = Math.round((actualResult.total - expectedResult.total) * 100) / 100;
+    }
+
+    const tournament = squad.golf_tournaments;
+    grades.push({
+      squadId: squad.id,
+      squadName: squad.name,
+      tournamentLabel: tournament ? `${tournament.name}${tournament.event_number ? ` · GW${tournament.event_number}` : ""}` : "Unknown",
+      captainName: nameByPlayer.get(expectedResult.captainId ?? -1) ?? null,
+      expectedTotal: expectedResult.total,
+      actualTotal,
+      diff,
+      pending,
+    });
+  }
+
+  grades.sort((a, b) => (b.actualTotal ?? b.expectedTotal) - (a.actualTotal ?? a.expectedTotal));
+  return grades;
+}
+
 export default async function GolfAlgorithmPerformancePage() {
   const supabase = createServerSupabaseClient();
+  const teamGrades = await fetchTeamGrades();
 
   const { data: rows } = await supabase
     .from("golf_tournament_predictions")
@@ -67,6 +183,42 @@ export default async function GolfAlgorithmPerformancePage() {
           How Hail Mary Golf&apos;s pre-tournament calls have graded out against what actually happened - frozen
           predictions (never overwritten once a tournament starts), compared to real FanTeam points.
         </p>
+
+        {teamGrades.length > 0 && (
+          <div className="mt-6">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Your teams</h2>
+            <p className="mt-1 text-xs text-navy-500">
+              Which of your saved teams actually delivered, captain and underdog bonuses included.
+            </p>
+            <div className="mt-2 flex flex-col gap-2">
+              {teamGrades.map((g) => (
+                <div key={g.squadId} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-navy-700 bg-navy-900 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-white">{g.squadName}</p>
+                    <p className="text-xs text-navy-400">
+                      {g.tournamentLabel}
+                      {g.captainName && <span> · Captain: {g.captainName}</span>}
+                    </p>
+                  </div>
+                  <div className="text-right text-sm">
+                    <span className="text-navy-400">Expected {g.expectedTotal.toFixed(1)}</span>
+                    {g.pending ? (
+                      <span className="ml-3 text-navy-500">Pending results</span>
+                    ) : (
+                      <>
+                        <span className="ml-3 font-semibold text-white">Actual {g.actualTotal!.toFixed(1)}</span>
+                        <span className={`ml-3 font-semibold ${g.diff! >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                          {g.diff! >= 0 ? "+" : ""}
+                          {g.diff!.toFixed(1)}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {n === 0 && (
           <p className="mt-8 text-sm text-navy-300">

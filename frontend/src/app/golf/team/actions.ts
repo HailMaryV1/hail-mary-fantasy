@@ -18,10 +18,12 @@ export async function saveGolfTeam({
   golfTournamentId,
   name,
   gamePlayerIds,
+  captainGamePlayerId,
 }: {
   golfTournamentId: number;
   name: string;
   gamePlayerIds: number[];
+  captainGamePlayerId: number;
 }) {
   const supabase = await createAuthServerClient();
   const {
@@ -31,6 +33,9 @@ export async function saveGolfTeam({
 
   if (gamePlayerIds.length !== GOLF_SQUAD_SIZE) {
     return { error: `A team needs exactly ${GOLF_SQUAD_SIZE} golfers.` };
+  }
+  if (!gamePlayerIds.includes(captainGamePlayerId)) {
+    return { error: "Captain must be one of the selected golfers." };
   }
 
   const { data: game } = await supabase.from("fantasy_games").select("id").eq("slug", "fanteam-golf").single();
@@ -59,7 +64,13 @@ export async function saveGolfTeam({
 
   const { data: squad, error: squadError } = await supabase
     .from("squads")
-    .insert({ user_id: user.id, game_id: game.id, golf_tournament_id: golfTournamentId, name: name.trim() || "My Team" })
+    .insert({
+      user_id: user.id,
+      game_id: game.id,
+      golf_tournament_id: golfTournamentId,
+      golf_captain_game_player_id: captainGamePlayerId,
+      name: name.trim() || "My Team",
+    })
     .select("id")
     .single();
   if (squadError || !squad) return { error: squadError?.message ?? "Failed to create team." };

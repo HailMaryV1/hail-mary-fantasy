@@ -144,12 +144,17 @@ export default function GolfTeamBuilder({
   function handleSave() {
     setSaveError(null);
     setSaveMessage(null);
-    if (!teamIds || teamIds.length !== GOLF_SQUAD_SIZE) {
+    if (!teamIds || teamIds.length !== GOLF_SQUAD_SIZE || captainId == null) {
       setSaveError("No valid team to save.");
       return;
     }
     startTransition(async () => {
-      const result = await saveGolfTeam({ golfTournamentId: tournamentId, name: teamName, gamePlayerIds: teamIds });
+      const result = await saveGolfTeam({
+        golfTournamentId: tournamentId,
+        name: teamName,
+        gamePlayerIds: teamIds,
+        captainGamePlayerId: captainId,
+      });
       if ("error" in result && result.error) setSaveError(result.error);
       else {
         setSaveMessage("Team saved.");

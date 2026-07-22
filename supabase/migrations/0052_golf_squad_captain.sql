@@ -1,0 +1,14 @@
+-- FanTeam Golf - records which golfer was captain when a team was saved.
+-- Golf squads are single-shot DFS entries (see migration 0045's docstring),
+-- not persistent season-long teams, so unlike football/NFL's
+-- squad_captain_history (a gameweek-by-gameweek log for a squad that lives
+-- across a season), golf only ever needs ONE captain per squad, fixed at
+-- save time - a single nullable column is the right shape here, not a
+-- history table.
+--
+-- Nullable because it's golf-only (mirrors golf_tournament_id's own
+-- nullability on this same table) and because squads saved before this
+-- migration have no captain on record - team-performance grading falls
+-- back to "whoever the frozen expected-points data says was the highest
+-- scorer" for those older rows.
+alter table squads add column golf_captain_game_player_id bigint references game_players(id);
