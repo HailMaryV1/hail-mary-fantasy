@@ -19,3 +19,5 @@ golf_tournament_raw.json
 
 # Local tool config, not project source
 .claude/
+
+.vercel

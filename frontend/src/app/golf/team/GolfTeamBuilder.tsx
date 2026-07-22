@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { Fragment, useEffect, useMemo, useState, useTransition } from "react";
 import {
   buildGolfTeam,
   computeTeamTotal,
@@ -45,6 +45,7 @@ export default function GolfTeamBuilder({
   const [poolSortKey, setPoolSortKey] = useState<PoolSortKey>("expectedPoints");
   const [poolSortDir, setPoolSortDir] = useState<"asc" | "desc">("desc");
   const [watchlistOnly, setWatchlistOnly] = useState(false);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
   const watchedSet = useMemo(() => new Set(watchedIds), [watchedIds]);
 
   const byId = useMemo(() => new Map(pool.map((p) => [p.gamePlayerId, p])), [pool]);
@@ -301,55 +302,81 @@ export default function GolfTeamBuilder({
                   const isUnderdog = p.gamePlayerId === underdogId;
                   const isLocked = lockedIds.includes(p.gamePlayerId);
                   const isSelectedOut = p.gamePlayerId === selectedOutId;
+                  const isExpanded = expandedId === p.gamePlayerId;
                   return (
-                    <tr
-                      key={p.gamePlayerId}
-                      onClick={() => handleSquadSelect(p.gamePlayerId)}
-                      className={`cursor-pointer border-b border-navy-800 last:border-0 hover:bg-navy-800 ${
-                        isSelectedOut ? "bg-sky-950/40" : ""
-                      }`}
-                    >
-                      <td className="px-4 py-3 font-medium text-white">
-                        {p.fullName}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setCaptainOverrideId(p.gamePlayerId);
-                          }}
-                          title={isCaptain ? "Captain - scores x1.25" : "Make captain (scores x1.25)"}
-                          className={`ml-1.5 rounded px-1 py-0.5 text-[9px] font-bold ${
-                            isCaptain ? "bg-sky-950 text-sky-400" : "bg-navy-800 text-navy-500 hover:text-sky-300"
-                          }`}
-                        >
-                          C
-                        </button>
-                        {isUnderdog && (
-                          <span title="Underdog (cheapest pick) - scores x1.25, automatic" className="ml-1.5 rounded bg-emerald-950 px-1 py-0.5 text-[9px] font-bold text-emerald-400">UD</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right text-navy-300">£{p.price.toFixed(1)}m</td>
-                      <td className="px-4 py-3 text-right text-sky-400">{p.expectedPoints.toFixed(1)}</td>
-                      <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleLock(p.gamePlayerId);
-                          }}
-                          className={`mr-1 rounded px-2 py-1 text-xs font-medium ${isLocked ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:text-white"}`}
-                        >
-                          {isLocked ? "Locked" : "Lock"}
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleExclude(p.gamePlayerId);
-                          }}
-                          className="rounded bg-navy-800 px-2 py-1 text-xs font-medium text-navy-300 hover:text-red-300"
-                        >
-                          Exclude
-                        </button>
-                      </td>
-                    </tr>
+                    <Fragment key={p.gamePlayerId}>
+                      <tr
+                        onClick={() => handleSquadSelect(p.gamePlayerId)}
+                        className={`cursor-pointer border-b border-navy-800 last:border-0 hover:bg-navy-800 ${
+                          isSelectedOut ? "bg-sky-950/40" : ""
+                        }`}
+                      >
+                        <td className="px-4 py-3 font-medium text-white">
+                          {p.fullName}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCaptainOverrideId(p.gamePlayerId);
+                            }}
+                            title={isCaptain ? "Captain - scores x1.25" : "Make captain (scores x1.25)"}
+                            className={`ml-1.5 rounded px-1 py-0.5 text-[9px] font-bold ${
+                              isCaptain ? "bg-sky-950 text-sky-400" : "bg-navy-800 text-navy-500 hover:text-sky-300"
+                            }`}
+                          >
+                            C
+                          </button>
+                          {isUnderdog && (
+                            <span title="Underdog (cheapest pick) - scores x1.25, automatic" className="ml-1.5 rounded bg-emerald-950 px-1 py-0.5 text-[9px] font-bold text-emerald-400">UD</span>
+                          )}
+                          {p.explanation && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedId(isExpanded ? null : p.gamePlayerId);
+                              }}
+                              title="Why is Mary picking this golfer?"
+                              className={`ml-1.5 rounded px-1 py-0.5 text-[9px] font-bold ${
+                                isExpanded ? "bg-emerald-900 text-emerald-300" : "bg-navy-800 text-navy-500 hover:text-emerald-300"
+                              }`}
+                            >
+                              Why?
+                            </button>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right text-navy-300">£{p.price.toFixed(1)}m</td>
+                        <td className="px-4 py-3 text-right text-sky-400">{p.expectedPoints.toFixed(1)}</td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleLock(p.gamePlayerId);
+                            }}
+                            className={`mr-1 rounded px-2 py-1 text-xs font-medium ${isLocked ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:text-white"}`}
+                          >
+                            {isLocked ? "Locked" : "Lock"}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleExclude(p.gamePlayerId);
+                            }}
+                            className="rounded bg-navy-800 px-2 py-1 text-xs font-medium text-navy-300 hover:text-red-300"
+                          >
+                            Exclude
+                          </button>
+                        </td>
+                      </tr>
+                      {isExpanded && p.explanation && (
+                        <tr className="border-b border-navy-800 bg-navy-950/60 last:border-0">
+                          <td colSpan={4} className="px-4 py-2 text-xs text-navy-400">
+                            {p.explanation}
+                            {p.makeCutProbability != null && (
+                              <span className="ml-3 text-navy-500">Make cut: {(p.makeCutProbability * 100).toFixed(0)}%</span>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>
