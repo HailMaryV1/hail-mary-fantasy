@@ -216,6 +216,15 @@ export default async function GolfLivePage() {
                   {team.players.map((p) => {
                     const isCaptain = p.gamePlayerId === team.captainId;
                     const isUnderdog = p.gamePlayerId === team.underdogId;
+                    // Same rule computeTeamTotal already applies to the
+                    // team total (captain OR underdog x1.25, not stacked
+                    // if one golfer is both) - mirrored here per-row so
+                    // the displayed number matches what this golfer
+                    // actually contributed, the same convention FanTeam's
+                    // own live pitch view uses (confirmed live: their
+                    // displayed captain/underdog scores are already
+                    // multiplied, not raw).
+                    const multiplier = isCaptain || isUnderdog ? 1.25 : 1;
                     return (
                       <tr key={p.gamePlayerId} className="border-b border-navy-800 last:border-0">
                         <td className="px-4 py-2 font-medium text-white">
@@ -226,15 +235,20 @@ export default async function GolfLivePage() {
                           {isUnderdog && (
                             <span className="ml-1.5 rounded bg-emerald-950 px-1 py-0.5 text-[9px] font-bold text-emerald-400">UD</span>
                           )}
+                          {multiplier > 1 && <span className="ml-1.5 text-[10px] text-navy-500">×1.25</span>}
                         </td>
-                        <td className="px-4 py-2 text-right text-white">{p.expectedPoints.toFixed(1)}</td>
-                        <td className="px-4 py-2 text-right text-navy-400">{p.change ? p.change.oldPoints.toFixed(1) : "—"}</td>
+                        <td className="px-4 py-2 text-right text-white">{(p.expectedPoints * multiplier).toFixed(1)}</td>
+                        <td className="px-4 py-2 text-right text-navy-400">
+                          {p.change ? (p.change.oldPoints * multiplier).toFixed(1) : "—"}
+                        </td>
                         <td
                           className={`px-4 py-2 text-right font-semibold ${
                             !p.change ? "text-navy-500" : p.change.delta >= 0 ? "text-emerald-400" : "text-red-400"
                           }`}
                         >
-                          {p.change ? `${p.change.delta >= 0 ? "+" : ""}${p.change.delta.toFixed(1)}` : "No change yet"}
+                          {p.change
+                            ? `${p.change.delta >= 0 ? "+" : ""}${(p.change.delta * multiplier).toFixed(1)}`
+                            : "No change yet"}
                         </td>
                       </tr>
                     );
