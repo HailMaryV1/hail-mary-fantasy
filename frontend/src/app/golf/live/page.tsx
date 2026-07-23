@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { computeTeamTotal, type GolfOptimizerPlayer } from "@/lib/golfTeamOptimizer";
+import LiveRefreshBar from "./LiveRefreshBar";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,12 @@ type ChangeEventRow = {
 type LiveChange = { oldPoints: number; delta: number; at: string };
 
 export default async function GolfLivePage() {
+  // Captured once, right as this request starts rendering - not the
+  // moment scripts/poll_golf_live_scores.py last ran (we don't track
+  // that separately), but "as of" this page load, which is what the
+  // auto-refresh loop needs to show a moving clock.
+  const fetchedAt = new Date().toISOString();
+
   const supabase = await createAuthServerClient();
   const {
     data: { user },
@@ -132,6 +139,7 @@ export default async function GolfLivePage() {
           players: players.map((p) => ({ ...p, change: latestChangeByPlayer.get(p.gamePlayerId) ?? null })),
         };
       });
+      teamRows.sort((a, b) => b.total - a.total);
     }
   }
 
@@ -148,6 +156,7 @@ export default async function GolfLivePage() {
             ? `${tournament.name}${tournament.event_number ? ` · Gameweek ${tournament.event_number}` : ""} · updates every ~5 minutes while the tournament is live`
             : "No tournament is live right now."}
         </p>
+        {tournament && <LiveRefreshBar fetchedAt={fetchedAt} />}
 
         {!user && (
           <p className="mt-8 text-sm text-navy-300">

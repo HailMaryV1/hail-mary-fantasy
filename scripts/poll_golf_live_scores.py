@@ -211,59 +211,75 @@ def main():
                     details={"tournament_id": tournament["id"], "old_points": old_points, "new_points": new_points, "delta": delta},
                 )
 
+        # Commit the score updates + activity_log entries now, before any
+        # notification work - a live score change is real, valuable data
+        # the moment it's detected, independent of whether notifying
+        # about it succeeds. Confirmed live: an uncaught exception in the
+        # notify path (a missing VAPID secret, a network hiccup) used to
+        # roll back this entire transaction, silently discarding real
+        # score updates run after run - this is what actually happened
+        # while the VAPID secrets hadn't been added to GitHub yet.
+        conn.commit()
+
         if not changed:
             print("No score changes this poll.")
-            conn.commit()
             return
 
         print(f"{len(changed)} golfer score change(s) detected - checking who rostered them ...")
 
-        # For each changed golfer, which users have them in a saved squad
-        # for THIS live tournament - collapsed so a golfer shared across
-        # several of one user's saved team variants only notifies once.
-        changed_game_player_ids = [c[0] for c in changed]
-        cur.execute(
-            """
-            select distinct s.user_id, sp.game_player_id
-            from squads s
-            join squad_players sp on sp.squad_id = s.id
-            where s.golf_tournament_id = %s and sp.game_player_id = any(%s)
-            """,
-            (tournament["id"], changed_game_player_ids),
-        )
-        rostered_by_user = {}
-        for row in cur.fetchall():
-            rostered_by_user.setdefault(row["user_id"], set()).add(row["game_player_id"])
+        # Notifications are best-effort from here - any failure in this
+        # section is caught and logged, never allowed to undo the score
+        # data already committed above.
+        try:
+            # For each changed golfer, which users have them in a saved
+            # squad for THIS live tournament - collapsed so a golfer
+            # shared across several of one user's saved team variants
+            # only notifies once.
+            changed_game_player_ids = [c[0] for c in changed]
+            cur.execute(
+                """
+                select distinct s.user_id, sp.game_player_id
+                from squads s
+                join squad_players sp on sp.squad_id = s.id
+                where s.golf_tournament_id = %s and sp.game_player_id = any(%s)
+                """,
+                (tournament["id"], changed_game_player_ids),
+            )
+            rostered_by_user = {}
+            for row in cur.fetchall():
+                rostered_by_user.setdefault(row["user_id"], set()).add(row["game_player_id"])
 
-        if not rostered_by_user:
-            print("None of the changed golfers are in any saved team - no notifications to send.")
-            conn.commit()
-            return
+            if not rostered_by_user:
+                print("None of the changed golfers are in any saved team - no notifications to send.")
+                return
 
-        changes_by_game_player_id = {c[0]: c for c in changed}
-        cur.execute("select id, user_id, endpoint, p256dh, auth from push_subscriptions where is_active")
-        subscriptions_by_user = {}
-        for row in cur.fetchall():
-            subscriptions_by_user.setdefault(row["user_id"], []).append(row)
+            changes_by_game_player_id = {c[0]: c for c in changed}
+            cur.execute("select id, user_id, endpoint, p256dh, auth from push_subscriptions where is_active")
+            subscriptions_by_user = {}
+            for row in cur.fetchall():
+                subscriptions_by_user.setdefault(row["user_id"], []).append(row)
 
-        sent = 0
-        for user_id, game_player_ids in rostered_by_user.items():
-            for subscription in subscriptions_by_user.get(user_id, []):
-                for game_player_id in game_player_ids:
-                    _, golfer_name, old_points, new_points = changes_by_game_player_id[game_player_id]
-                    delta = new_points - old_points
-                    ok = send_push(
-                        cur,
-                        subscription,
-                        title=f"{golfer_name} {delta:+.1f} pts",
-                        body=f"{old_points:.1f} -> {new_points:.1f} - {tournament['name']}",
-                        tag=f"golf-{tournament['id']}-{game_player_id}",
-                    )
-                    if ok:
-                        sent += 1
+            sent = 0
+            for user_id, game_player_ids in rostered_by_user.items():
+                for subscription in subscriptions_by_user.get(user_id, []):
+                    for game_player_id in game_player_ids:
+                        _, golfer_name, old_points, new_points = changes_by_game_player_id[game_player_id]
+                        delta = new_points - old_points
+                        ok = send_push(
+                            cur,
+                            subscription,
+                            title=f"{golfer_name} {delta:+.1f} pts",
+                            body=f"{old_points:.1f} -> {new_points:.1f} - {tournament['name']}",
+                            tag=f"golf-{tournament['id']}-{game_player_id}",
+                        )
+                        if ok:
+                            sent += 1
 
-        print(f"Sent {sent} push notification(s).")
-        conn.commit()
+            print(f"Sent {sent} push notification(s).")
+            conn.commit()  # subscription deactivations from send_push, if any
+        except Exception as e:
+            conn.rollback()
+            print(f"Notification step failed (score data above is already saved): {e}")
     except Exception:
         conn.rollback()
         raise
