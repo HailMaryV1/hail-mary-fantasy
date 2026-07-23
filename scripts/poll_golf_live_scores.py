@@ -129,6 +129,25 @@ def fetch_live_tournament(cur):
     return cur.fetchone()
 
 
+def fetch_leaderboard_leader(fanteam_tournament_id, event_number):
+    """FanTeam's own /fantasy_teams/current endpoint, called anonymously
+    with no team-identifying info at all, reliably returns whichever real
+    entry currently holds totalRank=1 for this tournament - confirmed
+    live (a real entry, "Gingers", totalRank 1, totalScore 168). Returns
+    (name, score) or (None, None) if the request fails or the shape isn't
+    what's expected (fails soft - the leaderboard comparison is a nice-to
+    -have, never worth failing the whole poll over)."""
+    status, data = fetch_json(f"{BASE}/fantasy_teams/current?round={event_number}&tournament_id={fanteam_tournament_id}")
+    if status != 200:
+        print(f"  Leaderboard leader request failed: HTTP {status} - skipping.")
+        return None, None
+    leader = data.get("fantasyTeam") or {}
+    if leader.get("totalRank") != 1 or leader.get("totalScore") is None:
+        print(f"  Leaderboard leader response didn't look like rank 1 ({leader.get('totalRank')!r}) - skipping.")
+        return None, None
+    return leader.get("name"), float(leader["totalScore"])
+
+
 def send_push(cur, subscription, title, body, tag):
     try:
         webpush(
@@ -210,6 +229,14 @@ def main():
                     game_player_id=entry["game_player_id"],
                     details={"tournament_id": tournament["id"], "old_points": old_points, "new_points": new_points, "delta": delta},
                 )
+
+        leader_name, leader_score = fetch_leaderboard_leader(tournament["fanteam_tournament_id"], tournament["event_number"])
+        if leader_name is not None:
+            cur.execute(
+                "update golf_tournaments set leaderboard_leader_name = %s, leaderboard_leader_score = %s where id = %s",
+                (leader_name, leader_score, tournament["id"]),
+            )
+            print(f"  Leaderboard leader: {leader_name} ({leader_score} pts)")
 
         # Commit the score updates + activity_log entries now, before any
         # notification work - a live score change is real, valuable data

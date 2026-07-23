@@ -11,6 +11,8 @@ type TournamentRow = {
   event_number: number | null;
   registration_time: string;
   end_time: string;
+  leaderboard_leader_name: string | null;
+  leaderboard_leader_score: number | null;
 };
 
 type SquadRow = {
@@ -48,7 +50,7 @@ export default async function GolfLivePage() {
   const nowIso = new Date().toISOString();
   const { data: tournaments } = await supabase
     .from("golf_tournaments")
-    .select("id, name, event_number, registration_time, end_time")
+    .select("id, name, event_number, registration_time, end_time, leaderboard_leader_name, leaderboard_leader_score")
     .lte("registration_time", nowIso)
     .gte("end_time", nowIso)
     .order("start_time", { ascending: false })
@@ -158,6 +160,16 @@ export default async function GolfLivePage() {
         </p>
         {tournament && <LiveRefreshBar fetchedAt={fetchedAt} />}
 
+        {tournament?.leaderboard_leader_name && tournament.leaderboard_leader_score != null && (
+          <div className="mt-4 flex items-center justify-between rounded-lg border border-amber-800 bg-amber-950/40 px-4 py-3">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-amber-500">Contest leaderboard leader</p>
+              <p className="text-sm font-semibold text-white">{tournament.leaderboard_leader_name}</p>
+            </div>
+            <p className="text-lg font-semibold text-amber-400">{tournament.leaderboard_leader_score.toFixed(1)} pts</p>
+          </div>
+        )}
+
         {!user && (
           <p className="mt-8 text-sm text-navy-300">
             <Link href="/login" className="text-sky-400 hover:text-sky-300">Sign in</Link> to see your saved teams' live scores.
@@ -175,7 +187,21 @@ export default async function GolfLivePage() {
             <div key={team.id} className="overflow-x-auto rounded-xl border border-navy-700 bg-navy-900">
               <div className="flex items-center justify-between border-b border-navy-700 px-4 py-3">
                 <p className="text-sm font-semibold text-white">{team.name}</p>
-                <p className="text-sm font-semibold text-sky-400">{team.total.toFixed(1)} pts live</p>
+                <div className="text-right">
+                  <p className="text-sm font-semibold text-sky-400">{team.total.toFixed(1)} pts live</p>
+                  {tournament?.leaderboard_leader_score != null && (
+                    <p className="text-xs text-navy-400">
+                      {(() => {
+                        const gap = team.total - tournament.leaderboard_leader_score!;
+                        return gap >= 0 ? (
+                          <span className="text-emerald-400">+{gap.toFixed(1)} ahead of the leader</span>
+                        ) : (
+                          `${Math.abs(gap).toFixed(1)} off the lead`
+                        );
+                      })()}
+                    </p>
+                  )}
+                </div>
               </div>
               <table className="w-full text-left text-sm">
                 <thead>
