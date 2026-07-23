@@ -11,6 +11,7 @@ const SINGLE_GAMEWEEK_LINKS: { label: string; href: string; description: string 
   { label: "Tournament Odds", href: "/golf/odds", description: "Paste bookmaker win/top-10/top-20 odds for the week's field" },
   { label: "Player Rankings", href: "/golf/rankings", description: "Hail Mary Golf's per-golfer projections" },
   { label: "Team Builder", href: "/golf/team", description: "Optimised teams, player picker, saved teams" },
+  { label: "Live Scores", href: "/golf/live", description: "Your saved teams' live points, updating every ~5 minutes during play" },
   {
     label: "Algorithm Performance",
     href: "/golf/algorithm-performance",

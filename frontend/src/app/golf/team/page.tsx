@@ -5,7 +5,14 @@ import type { GolfOptimizerPlayer } from "@/lib/golfTeamOptimizer";
 
 export const dynamic = "force-dynamic";
 
-type TournamentRow = { id: number; fanteam_tournament_id: string; name: string; event_number: number | null };
+type TournamentRow = {
+  id: number;
+  fanteam_tournament_id: string;
+  name: string;
+  event_number: number | null;
+  registration_time: string;
+  end_time: string;
+};
 
 export default async function GolfTeamPage({
   searchParams,
@@ -22,11 +29,15 @@ export default async function GolfTeamPage({
 
   let tournament: TournamentRow | null = null;
   if (game) {
-    let query = supabase.from("golf_tournaments").select("id, fanteam_tournament_id, name, event_number").eq("game_id", game.id);
+    let query = supabase
+      .from("golf_tournaments")
+      .select("id, fanteam_tournament_id, name, event_number, registration_time, end_time")
+      .eq("game_id", game.id);
     query = tournamentParam ? query.eq("fanteam_tournament_id", tournamentParam) : query.order("start_time", { ascending: false }).limit(1);
     const { data } = await query.returns<TournamentRow[]>();
     tournament = data?.[0] ?? null;
   }
+  const isLive = tournament ? new Date(tournament.registration_time) <= new Date() && new Date() <= new Date(tournament.end_time) : false;
 
   const { data: rules } = tournament
     ? await supabase.from("game_squad_rules").select("budget").eq("game_id", game!.id).maybeSingle<{ budget: number }>()
@@ -114,6 +125,15 @@ export default async function GolfTeamPage({
         <p className="mt-1 text-sm text-navy-300">
           {tournament ? `${tournament.name}${tournament.event_number ? ` · Gameweek ${tournament.event_number}` : ""}` : "No tournament imported yet."}
         </p>
+
+        {isLive && (
+          <Link
+            href="/golf/live"
+            className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-800 bg-emerald-950/60 px-3 py-2 text-sm text-emerald-400 hover:border-emerald-600"
+          >
+            <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" /> This tournament is live - view your teams&apos; live scores →
+          </Link>
+        )}
 
         {!tournament && (
           <p className="mt-8 text-sm text-navy-300">
