@@ -139,6 +139,13 @@ STAT_COLUMNS = {
     "shot_on_target": "shots_on_target",
     "own_goal": "own_goals",
     "penalty_save": "penalty_saves",
+    # Dream Team-only stats (migration 0053) - raw-only, no typed column,
+    # same pattern as shot_on_target/own_goal/penalty_save above. Harmless
+    # no-ops for FanTeam: no matching game_scoring_rules row for fanteam
+    # means these always contribute 0 there (see price_projected_stats).
+    "big_chance_created": "big_chance_created",
+    "tackle": "tackle",
+    "penalty_miss": "penalty_miss",
 }
 # How each stat's per-90 rate gets fixture-adjusted.
 #   "attack": scaled by attack_score / neutral_attack
@@ -165,10 +172,165 @@ STAT_FIXTURE_MODE = {
     # saves) more penalties. Meaningful magnitude here (GK avg 0.275/
     # season, ~1 in 4 keepers), worth getting right.
     "penalty_save": "pressure",
+    "big_chance_created": "attack",  # same driver as goal/assist/shot_on_target
+    "tackle": "pressure",  # more defensive workload against stronger attacks, same bucket as save
+    "penalty_miss": "flat",  # rare event, no fixture signal predicts it - same treatment as cards
 }
 # goals_conceded_per_2's point value in the matrix is "per 2 conceded" -
 # our projected rate is per single goal, so halve it before pricing.
+# tackle/save don't need this: Dream Team's own "1 point per 2" rule for
+# those is entered directly as the per-unit-equivalent point value (0.5)
+# in migration 0053, matching FanTeam's own existing 'save' convention.
 STAT_RATE_SCALE = {"goals_conceded_per_2": 0.5}
+
+# Dream Team's CSV uses different raw_stats key names than FanTeam's for
+# some of the same stats (shotsOnTarget vs SOT), plus a whole set of stats
+# FanTeam's export doesn't have at all - the 12 Bonus Points PPM
+# components (Section 3.2.4.4 of Dream Team's rules) and the extra Player
+# Points stats (big chance created, tackles, penalty misses). Resolved
+# here in Python, keyed by game slug, rather than more hardcoded SQL ->>
+# extracts - keeps the existing FanTeam SQL columns in main() untouched
+# (zero regression risk to FanTeam), while making Dream Team's differently
+# -named keys resolvable. A game slug with no entry here (FanTeam) simply
+# gets an empty alias set, so every key below defaults to 0 for it - safe,
+# since FanTeam's own game_scoring_rules has no rows for any of these
+# stats and compute_bonus_points is only meaningful where PPM data exists.
+RAW_STAT_ALIASES = {
+    "dreamteam": {
+        "shots_on_target": "shotsOnTarget",
+        "big_chance_created": "chancesCreated",
+        "tackle": "tackles",
+        "penalty_miss": "penaltyMisses",
+        # Bonus Points PPM components - not priced through
+        # game_scoring_rules at all, see compute_bonus_points().
+        "ppm_dribble": "dribbles",
+        "ppm_cross": "crosses",
+        "ppm_offside": "offsides",
+        "ppm_pass_completion_rate": "passCompletionRate",
+        "ppm_interception": "interceptions",
+        "ppm_block": "blocks",
+        "ppm_goal_outside_area": "goalsOutsideArea",
+        "ppm_foul_won": "foulsWon",
+        "ppm_foul_conceded": "foulsMade",
+        "ppm_error_leading_to_goal": "errorsLeadingToGoal",
+        "ppm_claim": "claims",
+        "ppm_punch": "punches",
+        "ppm_keeper_sweep": "keeperSweeps",
+    },
+}
+
+# Bonus Points (Dream Team Section 3.2.4.3/3.2.4.4) - NOT a per-stat
+# game_scoring_rules row like everything else in this file, because it's a
+# two-stage DERIVED value: 12 raw per-match event rates get weighted-summed
+# into a single "PPM" (Player Performance Marks) score, which then passes
+# through a tiered step function to become bonus points. No flat "rate x
+# points" shape can represent a step function - see compute_bonus_points().
+PPM_WEIGHTS = {
+    "ppm_dribble": 1,
+    "ppm_cross": 1,
+    "ppm_offside": -1,
+    "ppm_interception": 1,
+    "ppm_block": 1,
+    "ppm_goal_outside_area": 1,
+    "ppm_foul_won": 1,
+    "ppm_foul_conceded": -1,
+    "ppm_error_leading_to_goal": -2,
+}
+PPM_GK_WEIGHTS = {
+    "ppm_claim": 1,
+    "ppm_punch": 1,
+    "ppm_keeper_sweep": 1,
+}
+# All count-based PPM components, shrunk toward the position average the
+# same per-90-rate way as every other STAT_COLUMNS stat (see
+# compute_shrunk_rates, which folds this list in). Pass completion rate is
+# handled separately below - it's a season-average PERCENTAGE, not a
+# per-match count, so summing/dividing by games90 the same way would not
+# reproduce a sensible average.
+PPM_COMPONENT_COLUMNS = list(PPM_WEIGHTS) + list(PPM_GK_WEIGHTS)
+
+
+def pass_completion_ppm(rate_pct):
+    """Section 3.2.4.4's pass-completion PPM tier, applied to a player's
+    season-average pass completion rate every match - the real rule's
+    "minimum 25 passes attempted" per-match qualifier can't be verified
+    from a season aggregate (we only have the average, not per-match pass
+    counts), a documented simplification."""
+    if rate_pct >= 90:
+        return 3
+    if rate_pct >= 80:
+        return 2
+    if rate_pct >= 70:
+        return 1
+    return 0
+
+
+def bonus_tier(ppm):
+    """Section 3.2.4.3's Bonus Points tier - a step function over expected
+    PPM for one match."""
+    if ppm >= 12:
+        return 5
+    if ppm >= 8:
+        return 3
+    if ppm >= 5:
+        return 1
+    return 0
+
+
+def compute_pass_completion_position_avg(players, historical_rows):
+    """Minutes-weighted average pass-completion percentage per position -
+    the shrinkage prior for compute_bonus_points' pass-completion PPM
+    component. Not a per-90 rate like compute_shrunk_rates' other stats (a
+    percentage isn't additive across appearances the way a raw count is,
+    so it's weighted by minutes instead of summed and divided by games90)."""
+    totals = {pos: [0.0, 0.0] for pos in POSITIONS}  # [minutes-weighted sum, minutes]
+    for _, position, player_id in players:
+        row = historical_rows.get(player_id)
+        if not row or row["minutes_played"] <= 0:
+            continue
+        totals[position][0] += row.get("ppm_pass_completion_rate", 0.0) * row["minutes_played"]
+        totals[position][1] += row["minutes_played"]
+    return {pos: (totals[pos][0] / totals[pos][1] if totals[pos][1] > 0 else 0.0) for pos in POSITIONS}
+
+
+def compute_bonus_points(position, historical_row, position_avg, pass_completion_position_avg, weights, expected_minutes_fraction):
+    """Expected Dream Team bonus points for one fixture.
+
+    All 12 PPM components are treated as fixture-flat here (no attack/
+    pressure adjustment) - a deliberate v1 simplification, the same
+    treatment cards already get elsewhere in this file (STAT_FIXTURE_MODE
+    "flat"). Fixture-adjusting 12 granular micro-stats individually would
+    add real guesswork with nothing yet to validate it against.
+
+    Averaging each component's rate and THEN applying bonus_tier's step
+    function is a slight underestimate of true expected bonus for a
+    player who straddles a tier boundary (Jensen's-inequality gap on a
+    concave step function) - a known, documented v1 limitation. Refinable
+    later via a distributional/Monte Carlo approach (already proven for
+    golf's scoring simulation) once real Dream Team gameweek results exist
+    to check this deterministic version against, via the same
+    algorithm-performance grading pattern already built for golf/FanTeam.
+    """
+    k = weights["shrinkage_games"]
+    games90 = historical_row["minutes_played"] / 90.0
+    pos_avg = position_avg[position]
+
+    def shrunk_rate(col):
+        return (historical_row.get(col, 0.0) + k * pos_avg.get(col, 0.0)) / (games90 + k)
+
+    ppm = 0.0
+    for stat, point_weight in PPM_WEIGHTS.items():
+        ppm += shrunk_rate(stat) * point_weight
+    if position == "GK":
+        for stat, point_weight in PPM_GK_WEIGHTS.items():
+            ppm += shrunk_rate(stat) * point_weight
+
+    raw_pass_rate = historical_row.get("ppm_pass_completion_rate", 0.0)
+    shrunk_pass_rate = (raw_pass_rate * games90 + k * pass_completion_position_avg[position]) / (games90 + k)
+    ppm += pass_completion_ppm(shrunk_pass_rate)
+
+    ppm *= expected_minutes_fraction
+    return bonus_tier(ppm)
 
 # v2-decomposed reuses neutral_clean_sheet/shrinkage_games from the same
 # DEFAULT_WEIGHTS shape (no position_weights needed - the matrix itself
@@ -198,6 +360,12 @@ DEFAULT_WEIGHTS_V2 = {
     # Python code (not a literal weight) changes.
     "stat_set": sorted(STAT_COLUMNS.keys()),
     "involvement_model": "pt1_pt60_pt90_v1",
+    # Same "force a new revision on any code-shape change" purpose as the
+    # two keys above - bonus points (Dream Team only) and the minutes-based
+    # involvement fallback (games with no real PT1/PT60/PT90 data) are both
+    # new mechanisms, not literal tunable numbers.
+    "bonus_model": "ppm_tier_v1",
+    "involvement_fallback": "minutes_proxy_v1",
 }
 
 # Guessed raw-string -> multiplier mapping for FanTeam's pre-match status
@@ -391,8 +559,13 @@ def compute_shrunk_rates(players, historical_rows):
     Returns (per_player_rates, position_avg_rates) - both per-90, shrunk
     toward the position average using the same shrinkage_games technique
     v1 used for points_per_90, applied per-stat instead of just to the total.
+
+    Also folds in PPM_COMPONENT_COLUMNS (Dream Team's Bonus Points inputs -
+    dribbles, tackles, interceptions, etc.) so compute_bonus_points() gets
+    the same per-90 shrinkage-prior treatment as every other stat here,
+    via one shared function rather than a duplicate averaging pass.
     """
-    stat_cols = list(STAT_COLUMNS.values())
+    stat_cols = list(STAT_COLUMNS.values()) + PPM_COMPONENT_COLUMNS
     position_totals = {pos: {col: 0.0 for col in stat_cols + ["games90"]} for pos in POSITIONS}
     for _, position, player_id in players:
         row = historical_rows.get(player_id)
@@ -463,6 +636,33 @@ def compute_involvement_rates(players, historical_rows, season_games):
         }
         for pos in POSITIONS
     }
+
+
+# Rough Premier League-wide norms, used only as a last resort when a game
+# has no real PT1/PT60/PT90 export at all (Dream Team's CSV doesn't carry
+# these fields - see the fallback's call site in main()). Not derived from
+# this project's own data, since none exists yet to derive them from -
+# same "guessed but clearly labeled, fails safe" spirit as
+# LINEUP_MULTIPLIERS above.
+ASSUMED_MINUTES_PER_APPEARANCE = 75.0
+ASSUMED_COND60_RATE = 0.82
+ASSUMED_COND90_RATE = 0.55
+
+
+def _implied_involvement(raw_pt1, raw_pt60, raw_pt90, minutes_played):
+    """pt1/pt60/pt90 for one player, falling back to a minutes_played-only
+    proxy when the real values are all zero but the player clearly did
+    play (minutes_played > 0). Without this, a game with no PT1/60/90 data
+    at all would collapse appearance_rate - and with it expected_minutes_
+    fraction, which every other per-fixture stat is multiplied through -
+    toward 0 for its entire player pool, not just the appearance stat
+    itself."""
+    pt1, pt60, pt90 = float(raw_pt1), float(raw_pt60), float(raw_pt90)
+    if pt1 <= 0 and minutes_played > 0:
+        pt1 = minutes_played / ASSUMED_MINUTES_PER_APPEARANCE
+        pt60 = pt1 * ASSUMED_COND60_RATE
+        pt90 = pt1 * ASSUMED_COND90_RATE
+    return {"pt1": pt1, "pt60": pt60, "pt90": pt90}
 
 
 def project_player_stats(position, historical_row, fixture, weights, position_avg, position_involvement):
@@ -539,6 +739,40 @@ def price_projected_stats(position, projected_stats, scoring_rules):
         priced[stat] = {"projected": round(value, 4), "points_each": points, "contribution": round(contribution, 3)}
         total += contribution
     return total, priced
+
+
+# Human-readable names for build_explanation() - falls back to the raw
+# stat key for anything not listed (safe, just less polished wording).
+STAT_DISPLAY_NAMES = {
+    "goal": "goals", "assist": "assists", "shot_on_target": "shots on target",
+    "big_chance_created": "big chances created", "tackle": "tackles",
+    "clean_sheet_60min": "clean sheet chance", "save": "saves",
+    "penalty_save": "penalty saves", "goals_conceded_per_2": "goals conceded",
+    "own_goal": "own goals", "yellow_card": "yellow cards", "red_card": "red cards",
+    "penalty_miss": "penalty misses", "bonus_points": "bonus points",
+}
+# Near-constant for anyone expected to start (~1 either way) - excluded
+# from the explanation because it doesn't say anything about WHY this
+# specific player is valued the way they are, unlike every other stat.
+EXPLANATION_EXCLUDE = {"appearance", "minutes_60_plus", "played_full_match"}
+
+
+def build_explanation(priced, top_n=3):
+    """Short, honest sentence built from the actual per-stat contributions
+    just priced (the neutral-fixture baseline, so it describes the
+    player, not a specific opponent) - not a canned template. Confirmed
+    nothing like this existed anywhere in this file before (only golf's
+    own separate script had one) - a real transparency gap for both games
+    this now fixes, not just Dream Team's bonus points."""
+    ranked = sorted(
+        ((stat, item) for stat, item in priced.items() if stat not in EXPLANATION_EXCLUDE),
+        key=lambda pair: abs(pair[1]["contribution"]),
+        reverse=True,
+    )
+    parts = [f"{item['projected']:.2f} {STAT_DISPLAY_NAMES.get(stat, stat)}" for stat, item in ranked[:top_n] if abs(item["contribution"]) >= 0.05]
+    if not parts:
+        return "Limited historical signal to project from."
+    return "Projects " + ", ".join(parts) + " per match."
 
 
 def upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs):
@@ -631,7 +865,8 @@ def main():
                    coalesce((gps.raw_stats->>'penaltySaves')::numeric, 0) as penalty_saves,
                    coalesce((gps.raw_stats->>'PT1')::numeric, 0) as pt1,
                    coalesce((gps.raw_stats->>'PT60')::numeric, 0) as pt60,
-                   coalesce((gps.raw_stats->>'PT90')::numeric, 0) as pt90
+                   coalesce((gps.raw_stats->>'PT90')::numeric, 0) as pt90,
+                   gps.raw_stats as raw_stats_all
             from game_players gp
             join players p on p.id = gp.player_id
             left join game_player_stats gps
@@ -644,13 +879,56 @@ def main():
         dict_cur.close()
         players = [(r["game_player_id"], r["position"], r["player_id"]) for r in raw_players]
         full_name_by_game_player_id = {r["game_player_id"]: r["full_name"] for r in raw_players}
-        historical_by_player_id = {
-            r["player_id"]: {
+
+        # Dream Team's raw_stats uses different key names than FanTeam's
+        # for the same stat, plus stats FanTeam's export doesn't have at
+        # all (see RAW_STAT_ALIASES) - resolved here rather than more
+        # hardcoded SQL ->> extracts above, so the FanTeam columns already
+        # selected stay untouched. Empty for any game_slug not listed
+        # (currently just fanteam), so every aliased key below defaults to
+        # 0.0 for it via aliased.get(...).
+        raw_stat_aliases = RAW_STAT_ALIASES.get(game_slug, {})
+
+        def resolve_aliased(raw_blob):
+            if isinstance(raw_blob, str):
+                raw_blob = json.loads(raw_blob)
+            raw_blob = raw_blob or {}
+            return {internal_key: float(raw_blob.get(csv_key) or 0) for internal_key, csv_key in raw_stat_aliases.items()}
+
+        historical_by_player_id = {}
+        for r in raw_players:
+            aliased = resolve_aliased(r["raw_stats_all"])
+            historical_by_player_id[r["player_id"]] = {
                 "total_points": float(r["total_points"]), "minutes_played": r["minutes_played"],
                 "goals": r["goals"], "assists": r["assists"], "clean_sheets": r["clean_sheets"], "saves": r["saves"],
                 "goals_conceded": r["goals_conceded"], "yellow_cards": r["yellow_cards"], "red_cards": r["red_cards"],
-                "shots_on_target": float(r["shots_on_target"]), "own_goals": float(r["own_goals"]),
-                "penalty_saves": float(r["penalty_saves"]),
+                # Prefer the game-specific alias (e.g. Dream Team's
+                # "shotsOnTarget") when this game has one; otherwise fall
+                # back to the SQL-extracted FanTeam-named column above -
+                # FanTeam's own behavior is completely unchanged.
+                "shots_on_target": aliased.get("shots_on_target", float(r["shots_on_target"])),
+                "own_goals": float(r["own_goals"]), "penalty_saves": float(r["penalty_saves"]),
+                # New Dream Team Player Points stats (migration 0053) -
+                # 0.0 for any game without a matching alias (FanTeam).
+                "big_chance_created": aliased.get("big_chance_created", 0.0),
+                "tackle": aliased.get("tackle", 0.0),
+                "penalty_miss": aliased.get("penalty_miss", 0.0),
+                # Bonus Points PPM components (Section 3.2.4.4) - see
+                # compute_bonus_points(). 0.0 for any game without a
+                # matching alias.
+                "ppm_dribble": aliased.get("ppm_dribble", 0.0),
+                "ppm_cross": aliased.get("ppm_cross", 0.0),
+                "ppm_offside": aliased.get("ppm_offside", 0.0),
+                "ppm_pass_completion_rate": aliased.get("ppm_pass_completion_rate", 0.0),
+                "ppm_interception": aliased.get("ppm_interception", 0.0),
+                "ppm_block": aliased.get("ppm_block", 0.0),
+                "ppm_goal_outside_area": aliased.get("ppm_goal_outside_area", 0.0),
+                "ppm_foul_won": aliased.get("ppm_foul_won", 0.0),
+                "ppm_foul_conceded": aliased.get("ppm_foul_conceded", 0.0),
+                "ppm_error_leading_to_goal": aliased.get("ppm_error_leading_to_goal", 0.0),
+                "ppm_claim": aliased.get("ppm_claim", 0.0),
+                "ppm_punch": aliased.get("ppm_punch", 0.0),
+                "ppm_keeper_sweep": aliased.get("ppm_keeper_sweep", 0.0),
                 # Deliberately NOT floored here (unlike the old behavior) -
                 # a genuinely-0 pt1 (no historical minutes at all, e.g. a
                 # newly-promoted team's whole squad, who FanTeam's own
@@ -660,10 +938,21 @@ def main():
                 # minutes-per-appearance instead of dividing 0/1 -> 0
                 # minutes. The safety floor still applies locally in
                 # project_player_stats for the rate formulas themselves.
-                "pt1": float(r["pt1"]), "pt60": float(r["pt60"]), "pt90": float(r["pt90"]),
+                #
+                # Games without any real PT1/PT60/PT90 export at all
+                # (Dream Team's CSV has no such fields) would otherwise
+                # collapse EVERY player's appearance_rate toward 0 - not
+                # just a missing "appearance" stat, but expected_minutes_
+                # fraction itself, which every other per-fixture stat is
+                # multiplied through. A minutes_played-only proxy avoids
+                # that collapse: assumed averages (75 min/appearance, 82%
+                # of appearances reaching 60+, 55% going the full 90) are
+                # rough, clearly-labeled Premier League norms, not derived
+                # from real Dream Team per-match data (none exists) -
+                # revisit if/when this game ever gets real per-gameweek
+                # data.
+                **_implied_involvement(r["pt1"], r["pt60"], r["pt90"], r["minutes_played"]),
             }
-            for r in raw_players
-        }
         game_player_meta = {r["game_player_id"]: (r["position"], r["player_id"]) for r in raw_players}
 
         # Position-average points-per-90 (v1) and per-stat position averages (v2),
@@ -687,6 +976,13 @@ def main():
         # v1's DEFAULT_WEIGHTS) - v1 never calls project_player_stats.
         position_involvement = (
             compute_involvement_rates(players, historical_by_player_id, weights["season_games"]) if use_v2 else None
+        )
+        # Bonus Points' pass-completion PPM component (see
+        # compute_bonus_points()) needs its own shrinkage prior, computed
+        # separately from position_avg_rates since it's a percentage, not
+        # a per-90 rate.
+        pass_completion_position_avg = (
+            compute_pass_completion_position_avg(players, historical_by_player_id) if use_v2 else None
         )
 
         # neutral_attack resolved once here (not per-player below) so this
@@ -736,10 +1032,15 @@ def main():
                     "attack_score": runtime_weights["neutral_attack"],
                     "clean_sheet_score": runtime_weights["neutral_clean_sheet"],
                 }
-                neutral_stats, _ = project_player_stats(
+                neutral_stats, neutral_minutes_fraction = project_player_stats(
                     position, historical_row, neutral_fixture, runtime_weights, position_avg_rates, position_involvement
                 )
-                points_per_90, _ = price_projected_stats(position, neutral_stats, scoring_rules)
+                points_per_90, neutral_priced = price_projected_stats(position, neutral_stats, scoring_rules)
+                neutral_bonus = compute_bonus_points(
+                    position, historical_row, position_avg_rates, pass_completion_position_avg, runtime_weights, neutral_minutes_fraction
+                )
+                points_per_90 += neutral_bonus
+                neutral_priced["bonus_points"] = {"projected": round(neutral_bonus, 4), "points_each": 1, "contribution": round(neutral_bonus, 3)}
 
                 score = 0.0
                 fixture_breakdown = []
@@ -748,6 +1049,12 @@ def main():
                         position, historical_row, fx, runtime_weights, position_avg_rates, position_involvement
                     )
                     contribution, priced = price_projected_stats(position, projected_stats, scoring_rules)
+                    bonus_points = compute_bonus_points(
+                        position, historical_row, position_avg_rates, pass_completion_position_avg, runtime_weights, expected_minutes_fraction
+                    )
+                    if bonus_points:
+                        contribution += bonus_points
+                        priced["bonus_points"] = {"projected": round(bonus_points, 4), "points_each": 1, "contribution": round(bonus_points, 3)}
                     score += contribution
                     fixture_factor_equiv = contribution / points_per_90 if points_per_90 > 0 else 0.0
                     fixture_breakdown.append({
@@ -770,6 +1077,7 @@ def main():
                     # shrunk rates are actually based on.
                     "games90": round(historical_row["minutes_played"] / 90.0, 2),
                     "fixtures": fixture_breakdown,
+                    "explanation": build_explanation(neutral_priced),
                 }
             else:
                 games_played = historical_row["minutes_played"] / 90.0
