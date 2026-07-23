@@ -1,0 +1,39 @@
+name: Golf live scores
+
+# Separate from refresh_data.yml's twice-a-day cadence - this needs to
+# run every 5 minutes, but ONLY during a plausible tournament-playing
+# window (Wed-Sun, 11:00-23:00 UTC covers morning/evening tee times
+# across US/Europe events), not 24/7 - GitHub Actions cron has no
+# day/hour-scoped syntax of its own, so a wide-but-not-full-day window is
+# how this stays cheap outside real play. scripts/poll_golf_live_scores.py
+# is itself defensive on top of this - it checks the real golf_tournaments
+# row and exits immediately if nothing is actually live right now, so a
+# tournament running slightly outside this window still doesn't spam
+# notifications, it just polls a few minutes later than ideal.
+on:
+  schedule:
+    # Standard cron ranges don't wrap (Wed-Sun can't be written "3-0"),
+    # so Wed-Sat and Sun are two schedules on the same time-of-day window.
+    - cron: "*/5 11-23 * * 3-6"
+    - cron: "*/5 11-23 * * 0"
+  workflow_dispatch: {}
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary pywebpush
+
+      - name: Poll live golf scores
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+        run: python scripts/poll_golf_live_scores.py

@@ -11,6 +11,7 @@ import {
   type GolfTeamVariant,
 } from "@/lib/golfTeamOptimizer";
 import { saveGolfTeam, deleteGolfTeam } from "./actions";
+import PushNotificationToggle from "./PushNotificationToggle";
 
 type PoolSortKey = "expectedPoints" | "price";
 
@@ -432,7 +433,10 @@ export default function GolfTeamBuilder({
 
       {teams.length > 0 && (
         <div className="mt-8">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Saved teams</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Saved teams</h2>
+            {isLoggedIn && <PushNotificationToggle />}
+          </div>
           <div className="mt-2 flex flex-col gap-2">
             {teams.map((t) => (
               <div key={t.id} className="flex items-center justify-between rounded-lg border border-navy-700 bg-navy-900 px-4 py-3">
