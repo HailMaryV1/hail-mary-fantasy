@@ -92,7 +92,21 @@ def compact(name: str) -> str:
 def surname_key(full_name: str) -> str:
     if ". " in full_name:
         return compact(full_name.split(". ", 1)[1])
-    return compact(full_name.split(" ")[-1])
+    # Everything after the first word, not just the last one - a naive
+    # last-word-only key breaks for compound/multi-word surnames (e.g.
+    # "Jocelin Ta Bi"'s real surname is "Ta Bi", not just "Bi") and
+    # produces a dangerously short, generic suffix that spuriously matches
+    # unrelated players whose names just happen to end the same way.
+    # Confirmed live: "Ta Bi" truncated to "bi" matched "Johan Manzambi"
+    # ("...manzam-bi") every import, flip-flopping the wrong player's team
+    # back and forth (their real position also matched, so the existing
+    # first-initial safety check - added for the earlier Kamara case -
+    # didn't catch it either: "Jocelin" and "Johan" both start with "J").
+    # Matching more of the real surname only makes the match MORE
+    # specific, never less - identical result to the old behavior for the
+    # common single-word-surname case, strictly safer for compound ones.
+    parts = full_name.split(" ")
+    return compact(" ".join(parts[1:])) if len(parts) > 1 else compact(full_name)
 
 
 def resolve_team_id(cur, live_name: str) -> int:
