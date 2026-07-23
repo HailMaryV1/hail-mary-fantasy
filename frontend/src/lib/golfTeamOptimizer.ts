@@ -35,7 +35,14 @@ export type GolfOptimizerPlayer = {
 
 export const GOLF_SQUAD_SIZE = 6;
 
-export type GolfTeamVariant = "highest_projected" | "safest" | "highest_ceiling" | "best_value" | "balanced" | "differential";
+export type GolfTeamVariant =
+  | "highest_projected"
+  | "safest"
+  | "highest_ceiling"
+  | "best_value"
+  | "balanced"
+  | "differential"
+  | "fade_favourite";
 
 export const GOLF_TEAM_VARIANTS: { key: GolfTeamVariant; label: string; description: string }[] = [
   { key: "highest_projected", label: "Highest Projected", description: "Maximises total expected FanTeam points" },
@@ -52,7 +59,31 @@ export const GOLF_TEAM_VARIANTS: { key: GolfTeamVariant; label: string; descript
     label: "Differential",
     description: "Best total ceiling from golfers who offer it cheaply - avoids the obvious, already-expensive favourites",
   },
+  {
+    key: "fade_favourite",
+    label: "Fade the Favourite",
+    description:
+      "Highest projected total WITHOUT your single most expensive golfer - a hedge against every other variant leaning on the same one",
+  },
 ];
+
+/**
+ * The pool's single most expensive golfer, excluding anyone already
+ * locked or excluded by the user (a lock is a stronger, explicit choice
+ * than this variant's own auto-exclude, and an already-excluded golfer
+ * has nothing left to fade). Exported so the UI can show WHO is being
+ * faded, not just apply it silently - matches this project's standing
+ * "always explain what Mary is doing" principle.
+ */
+export function determineFavouriteId(
+  pool: GolfOptimizerPlayer[],
+  lockedIds: number[] = [],
+  excludedIds: number[] = []
+): number | null {
+  const eligible = pool.filter((p) => !lockedIds.includes(p.gamePlayerId) && !excludedIds.includes(p.gamePlayerId));
+  if (eligible.length === 0) return null;
+  return eligible.reduce((max, p) => (p.price > max.price ? p : max), eligible[0]).gamePlayerId;
+}
 
 // How strongly best_value/differential tilt toward points-per-£ before
 // spending pressure (see below) kicks in. A golfer priced at exactly the
@@ -79,6 +110,7 @@ const VALUE_WEIGHT = 0.3;
 function baseMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio: number): number {
   switch (variant) {
     case "highest_projected":
+    case "fade_favourite":
       return p.expectedPoints;
     case "safest":
       return p.floor;
@@ -216,7 +248,14 @@ export function buildGolfTeam(
   lockedIds: number[] = [],
   excludedIds: number[] = []
 ): number[] | null {
-  const excluded = new Set(excludedIds);
+  // Fade the Favourite is Highest Projected re-run on a pool with its own
+  // priciest golfer removed - the exclusion is computed here (not passed
+  // in by the caller) so it always tracks whichever tournament/pool is
+  // live, rather than a name hardcoded for one week.
+  const favouriteId = variant === "fade_favourite" ? determineFavouriteId(pool, lockedIds, excludedIds) : null;
+  const effectiveExcludedIds = favouriteId != null ? [...excludedIds, favouriteId] : excludedIds;
+
+  const excluded = new Set(effectiveExcludedIds);
   const candidates = pool.filter((p) => !excluded.has(p.gamePlayerId));
   const locked = candidates.filter((p) => lockedIds.includes(p.gamePlayerId));
   if (locked.length > GOLF_SQUAD_SIZE) return null;

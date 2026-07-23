@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState, useTransition } from "react";
 import {
   buildGolfTeam,
   computeTeamTotal,
+  determineFavouriteId,
   GOLF_SQUAD_SIZE,
   GOLF_TEAM_VARIANTS,
   type GolfOptimizerPlayer,
@@ -53,6 +54,10 @@ export default function GolfTeamBuilder({
   const optimizerIds = useMemo(
     () => buildGolfTeam(pool, variant, budget, lockedIds, excludedIds),
     [pool, variant, budget, lockedIds, excludedIds]
+  );
+  const favourite = useMemo(
+    () => (variant === "fade_favourite" ? byId.get(determineFavouriteId(pool, lockedIds, excludedIds) ?? -1) ?? null : null),
+    [variant, pool, lockedIds, excludedIds, byId]
   );
 
   // Manual swaps override the optimizer's suggestion until the user
@@ -187,6 +192,11 @@ export default function GolfTeamBuilder({
         ))}
       </div>
       <p className="mt-2 text-xs text-navy-400">{GOLF_TEAM_VARIANTS.find((v) => v.key === variant)?.description}</p>
+      {favourite && (
+        <p className="mt-1 text-xs text-amber-400">
+          Fading: {favourite.fullName} (£{favourite.price.toFixed(1)}m)
+        </p>
+      )}
 
       <div className="relative mt-4">
         <input
