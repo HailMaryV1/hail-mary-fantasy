@@ -13,6 +13,7 @@ type TournamentRow = {
   end_time: string;
   leaderboard_leader_name: string | null;
   leaderboard_leader_score: number | null;
+  leaderboard_leader_remaining_holes: number | null;
 };
 
 type SquadRow = {
@@ -22,7 +23,7 @@ type SquadRow = {
   squad_players: { game_player_id: number; game_players: { golfers: { full_name: string } } | null }[];
 };
 
-type EntryRow = { game_player_id: number; price: number; raw: Record<string, unknown> };
+type EntryRow = { game_player_id: number; price: number; raw: Record<string, unknown>; remaining_holes: number | null };
 
 type ChangeEventRow = {
   game_player_id: number;
@@ -50,7 +51,9 @@ export default async function GolfLivePage() {
   const nowIso = new Date().toISOString();
   const { data: tournaments } = await supabase
     .from("golf_tournaments")
-    .select("id, name, event_number, registration_time, end_time, leaderboard_leader_name, leaderboard_leader_score")
+    .select(
+      "id, name, event_number, registration_time, end_time, leaderboard_leader_name, leaderboard_leader_score, leaderboard_leader_remaining_holes"
+    )
     .lte("registration_time", nowIso)
     .gte("end_time", nowIso)
     .order("start_time", { ascending: false })
@@ -64,6 +67,7 @@ export default async function GolfLivePage() {
     total: number;
     captainId: number | null;
     underdogId: number | null;
+    remainingHoles: number | null;
     players: (GolfOptimizerPlayer & { change: LiveChange | null })[];
   }[] = [];
 
@@ -81,7 +85,7 @@ export default async function GolfLivePage() {
     if (allGamePlayerIds.length > 0) {
       const { data: entries } = await supabase
         .from("golf_tournament_entries")
-        .select("game_player_id, price, raw")
+        .select("game_player_id, price, raw, remaining_holes")
         .eq("tournament_id", tournament.id)
         .in("game_player_id", allGamePlayerIds)
         .returns<EntryRow[]>();
@@ -132,12 +136,21 @@ export default async function GolfLivePage() {
           };
         });
         const { total, captainId, underdogId } = computeTeamTotal(players, s.golf_captain_game_player_id);
+        // Sum of each golfer's own remaining-holes figure - null (not 0)
+        // if ANY golfer's is still unknown, so a team never displays a
+        // misleadingly-low RH just because one entry hasn't been polled
+        // for this figure yet.
+        const remainingHolesValues = s.squad_players.map((sp) => entryByPlayer.get(sp.game_player_id)?.remaining_holes ?? null);
+        const remainingHoles = remainingHolesValues.every((v) => v != null)
+          ? remainingHolesValues.reduce((sum: number, v) => sum + (v as number), 0)
+          : null;
         return {
           id: s.id,
           name: s.name,
           total,
           captainId,
           underdogId,
+          remainingHoles,
           players: players.map((p) => ({ ...p, change: latestChangeByPlayer.get(p.gamePlayerId) ?? null })),
         };
       });
@@ -166,7 +179,12 @@ export default async function GolfLivePage() {
               <p className="text-xs uppercase tracking-wide text-amber-500">Contest leaderboard leader</p>
               <p className="text-sm font-semibold text-white">{tournament.leaderboard_leader_name}</p>
             </div>
-            <p className="text-lg font-semibold text-amber-400">{tournament.leaderboard_leader_score.toFixed(1)} pts</p>
+            <div className="text-right">
+              <p className="text-lg font-semibold text-amber-400">{tournament.leaderboard_leader_score.toFixed(1)} pts</p>
+              {tournament.leaderboard_leader_remaining_holes != null && (
+                <p className="text-xs text-amber-500/70">{tournament.leaderboard_leader_remaining_holes} holes remaining</p>
+              )}
+            </div>
           </div>
         )}
 
@@ -201,6 +219,7 @@ export default async function GolfLivePage() {
                       })()}
                     </p>
                   )}
+                  {team.remainingHoles != null && <p className="text-xs text-navy-500">{team.remainingHoles} holes remaining</p>}
                 </div>
               </div>
               <table className="w-full text-left text-sm">

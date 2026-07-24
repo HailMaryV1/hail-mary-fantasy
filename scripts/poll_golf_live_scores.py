@@ -133,19 +133,45 @@ def fetch_leaderboard_leader(fanteam_tournament_id, event_number):
     """FanTeam's own /fantasy_teams/current endpoint, called anonymously
     with no team-identifying info at all, reliably returns whichever real
     entry currently holds totalRank=1 for this tournament - confirmed
-    live (a real entry, "Gingers", totalRank 1, totalScore 168). Returns
-    (name, score) or (None, None) if the request fails or the shape isn't
-    what's expected (fails soft - the leaderboard comparison is a nice-to
-    -have, never worth failing the whole poll over)."""
+    live (a real entry, "Gingers", totalRank 1, totalScore 168). The same
+    response also carries that team's own 6 golfers' realPlayerMatchStats
+    (remaining holes included) - summed here rather than making a second
+    request, since it's already the leader's own roster. Returns
+    (name, score, remaining_holes_sum) - remaining_holes_sum is None if
+    that part of the response is missing, even if name/score resolved
+    fine. Returns (None, None, None) if the request fails or the shape
+    isn't what's expected (fails soft - the leaderboard comparison is a
+    nice-to-have, never worth failing the whole poll over)."""
     status, data = fetch_json(f"{BASE}/fantasy_teams/current?round={event_number}&tournament_id={fanteam_tournament_id}")
     if status != 200:
         print(f"  Leaderboard leader request failed: HTTP {status} - skipping.")
-        return None, None
+        return None, None, None
     leader = data.get("fantasyTeam") or {}
     if leader.get("totalRank") != 1 or leader.get("totalScore") is None:
         print(f"  Leaderboard leader response didn't look like rank 1 ({leader.get('totalRank')!r}) - skipping.")
-        return None, None
-    return leader.get("name"), float(leader["totalScore"])
+        return None, None, None
+    stats = data.get("realPlayerMatchStats") or []
+    remaining_holes_sum = sum(s["stats"]["remainingHoles"] for s in stats if s.get("stats", {}).get("remainingHoles") is not None)
+    return leader.get("name"), float(leader["totalScore"]), (remaining_holes_sum if stats else None)
+
+
+def fetch_remaining_holes(real_match_id):
+    """Whole-field remaining-holes, keyed by realPlayerId (as strings, to
+    match external_player_id's own text type) - confirmed live only
+    available via this unscoped-by-team endpoint (the main players/pool
+    response and the single-team /fantasy_teams/current response don't
+    carry it for golfers outside that one team). Fails soft (empty dict)
+    - a missing "RH" figure is never worth failing the whole poll over."""
+    status, data = fetch_json(f"{BASE}/real_matches/{real_match_id}")
+    if status != 200:
+        print(f"  Remaining-holes request failed: HTTP {status} - skipping.")
+        return {}
+    stats = data.get("realPlayerMatchStats") or []
+    return {
+        str(s["realPlayerId"]): s["stats"]["remainingHoles"]
+        for s in stats
+        if s.get("realPlayerId") is not None and s.get("stats", {}).get("remainingHoles") is not None
+    }
 
 
 def send_push(cur, subscription, title, body, tag):
@@ -190,6 +216,14 @@ def main():
         if status != 200:
             raise SystemExit(f"Live players request failed: HTTP {status}")
 
+        # The whole tournament is one "match" in FanTeam's generic
+        # scoring engine (confirmed throughout this pipeline) - every
+        # golfer's playerChoice carries the same realMatchId, so any one
+        # entry's value is enough to fetch the whole field's remaining
+        # holes in a single extra request.
+        real_match_id = next((pc["realMatchId"] for pc in data.get("playerChoices", []) if pc.get("realMatchId")), None)
+        remaining_holes_by_external_id = fetch_remaining_holes(real_match_id) if real_match_id else {}
+
         changed = []  # (game_player_id, golfer_name, old_points, new_points)
         for pc in data.get("playerChoices", []):
             external_player_id = str(pc["realPlayerId"])
@@ -216,7 +250,10 @@ def main():
                 old_raw = json.loads(old_raw)
             old_points = old_raw.get("points")
 
-            cur.execute("update golf_tournament_entries set raw = %s, updated_at = now() where id = %s", (json.dumps(pc), entry["id"]))
+            cur.execute(
+                "update golf_tournament_entries set raw = %s, remaining_holes = %s, updated_at = now() where id = %s",
+                (json.dumps(pc), remaining_holes_by_external_id.get(external_player_id), entry["id"]),
+            )
 
             if old_points is not None and float(old_points) != float(new_points):
                 delta = float(new_points) - float(old_points)
@@ -230,13 +267,16 @@ def main():
                     details={"tournament_id": tournament["id"], "old_points": old_points, "new_points": new_points, "delta": delta},
                 )
 
-        leader_name, leader_score = fetch_leaderboard_leader(tournament["fanteam_tournament_id"], tournament["event_number"])
+        leader_name, leader_score, leader_remaining_holes = fetch_leaderboard_leader(
+            tournament["fanteam_tournament_id"], tournament["event_number"]
+        )
         if leader_name is not None:
             cur.execute(
-                "update golf_tournaments set leaderboard_leader_name = %s, leaderboard_leader_score = %s where id = %s",
-                (leader_name, leader_score, tournament["id"]),
+                "update golf_tournaments set leaderboard_leader_name = %s, leaderboard_leader_score = %s, "
+                "leaderboard_leader_remaining_holes = %s where id = %s",
+                (leader_name, leader_score, leader_remaining_holes, tournament["id"]),
             )
-            print(f"  Leaderboard leader: {leader_name} ({leader_score} pts)")
+            print(f"  Leaderboard leader: {leader_name} ({leader_score} pts, {leader_remaining_holes} holes remaining)")
 
         # Commit the score updates + activity_log entries now, before any
         # notification work - a live score change is real, valuable data

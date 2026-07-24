@@ -1,0 +1,21 @@
+-- Live golf, "RH" (Remaining Holes) - the same column FanTeam's own
+-- leaderboard table shows per team. Confirmed live: per-golfer data
+-- lives in a separate `realPlayerMatchStats` array, NOT in the main
+-- players/pool response - the whole-field version is only available via
+-- `GET /real_matches/{realMatchId}` (unscoped by team, same static
+-- "Bearer fanteam" token as everything else here), where each entry's
+-- `stats.remainingHoles` is keyed by realPlayerId. See
+-- scripts/poll_golf_live_scores.py.
+--
+-- golf_tournament_entries.remaining_holes - per golfer, whole field,
+-- lets any of the user's saved teams sum their own 6 golfers' figure
+-- (mirrors how live points already work - no team-level column needed
+-- there either, just summed at render time).
+--
+-- golf_tournaments.leaderboard_leader_remaining_holes - the current
+-- leaderboard leader's own team total, summed directly from the
+-- /fantasy_teams/current response already being fetched for their name/
+-- score (that response happens to include their own 6 golfers'
+-- realPlayerMatchStats too) - no extra API call needed for this one.
+alter table golf_tournament_entries add column remaining_holes int;
+alter table golf_tournaments add column leaderboard_leader_remaining_holes int;
