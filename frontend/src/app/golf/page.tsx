@@ -3,7 +3,13 @@ import { createServerSupabaseClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
-type TournamentRow = { fanteam_tournament_id: string; name: string; event_number: number | null; status: string };
+type TournamentRow = {
+  fanteam_tournament_id: string;
+  name: string;
+  event_number: number | null;
+  status: string;
+  start_time: string;
+};
 
 const SINGLE_GAMEWEEK_LINKS: { label: string; href: string; description: string }[] = [
   { label: "Import Tournament", href: "/golf/import", description: "Paste this week's FanTeam contest URL" },
@@ -26,15 +32,23 @@ export default async function GolfLandingPage() {
   const { data: game } = await supabase.from("fantasy_games").select("id").eq("slug", "fanteam-golf").maybeSingle<{ id: number }>();
 
   let tournament: TournamentRow | null = null;
+  let pastTournaments: TournamentRow[] = [];
   if (game) {
+    // Every tournament this game has ever imported, most recent first -
+    // the first row is "current" (same definition every other golf page
+    // uses: whichever tournament started most recently), the rest are
+    // past weeks. Nothing here is ever deleted when a new tournament
+    // comes in (golf_tournament_entries/squads are tournament-scoped, see
+    // migration 0045) - this list is what makes them reachable again,
+    // since no other golf page links back to a past tournament_id.
     const { data } = await supabase
       .from("golf_tournaments")
-      .select("fanteam_tournament_id, name, event_number, status")
+      .select("fanteam_tournament_id, name, event_number, status, start_time")
       .eq("game_id", game.id)
       .order("start_time", { ascending: false })
-      .limit(1)
       .returns<TournamentRow[]>();
     tournament = data?.[0] ?? null;
+    pastTournaments = (data ?? []).slice(1);
   }
 
   return (
@@ -93,6 +107,33 @@ export default async function GolfLandingPage() {
             ))}
           </div>
         </section>
+
+        {pastTournaments.length > 0 && (
+          <section className="mt-10">
+            <h2 className="text-lg font-semibold text-white">Past Tournaments</h2>
+            <p className="mt-1 text-sm text-navy-400">
+              Nothing gets deleted when a new tournament comes in - your old teams, prices, and predictions all stay put.
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              {pastTournaments.map((t) => (
+                <Link
+                  key={t.fanteam_tournament_id}
+                  href={`/golf/team?tournament=${t.fanteam_tournament_id}`}
+                  className="flex items-center justify-between rounded-lg border border-navy-700 bg-navy-900 px-4 py-3 transition-colors hover:border-sky-500 hover:bg-navy-800"
+                >
+                  <div>
+                    <p className="text-sm font-medium text-white">{t.name}</p>
+                    <p className="text-xs text-navy-400">
+                      {t.event_number ? `Gameweek ${t.event_number} · ` : ""}
+                      {new Date(t.start_time).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
+                    </p>
+                  </div>
+                  <span className="text-xs font-medium text-sky-400">View teams →</span>
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className="mt-10">
           <div className="flex items-center justify-between">
