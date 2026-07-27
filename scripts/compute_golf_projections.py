@@ -73,18 +73,33 @@ concerns, not per-golfer ones - this script projects each golfer on their
 own 1x merits; the team optimiser (Phase 3) is where captain/underdog
 selection and safety-net-aware risk get applied.
 
-SIMULATION: a genuine Monte Carlo pass (not a single point estimate) -
-each shrunk rate becomes a Poisson-ish draw (count stats: birdies, pars,
-bogeys, etc. - Poisson variance, i.e. variance = mean, is a standard,
-defensible assumption for count-like golf stats with no better variance
-estimate available from this data source) plus one discrete finish-tier
-draw per simulated tournament (the top10/20/.../60 + 1st/2nd/3rd tiers are
+SIMULATION: a genuine Monte Carlo pass (not a single point estimate),
+BRANCHED on made_cut_rate (see branch_rates()/simulate() - this is the
+made_cut_branching_v1 fix; the original v1 sim fed the SAME blended
+per-tournament rate into every one of 3000 draws regardless of outcome,
+which can only ever produce one narrow, unimodal bell curve - confirmed
+against real 3M Open results: simulated stdev was under a quarter of
+actual stdev, and 75%/83% of made-cut/missed-cut golfers finished outside
+their own model's ceiling/floor). Each draw first rolls against
+made_cut_rate to pick a made-cut or missed-cut branch, then draws that
+branch's own count-stat rates (birdies, pars, bogeys, etc. - Poisson
+variance, i.e. variance = mean, is a standard, defensible assumption for
+count-like golf stats with no better variance estimate available from
+this data source) plus, only in the made-cut branch, one discrete
+finish-tier draw (the top10/20/.../60 + 1st/2nd/3rd tiers are
 monotonic/nested in the real data - "finished top 10" trivially implies
 "finished top 30" - so a simulated tournament awards only the single BEST
 tier reached, not every tier cumulatively, matching how DFS position
-bonuses actually pay out). floor/ceiling/mean/median/make-cut/top-finish/
-boom/bust probabilities are read directly off the resulting distribution,
-not hand-tuned multipliers.
+bonuses actually pay out; tier probabilities are conditioned on making
+the cut first, since finishing any numbered place structurally requires
+it). floor/ceiling/mean/median/make-cut/top-finish/boom/bust
+probabilities are read directly off the resulting distribution, not
+hand-tuned multipliers. The deterministic expected_points figure
+(headline hail_mary_score) is unaffected by this fix - it was already a
+valid unbiased mean estimator (confirmed: +2.9 aggregate bias on real
+graded data) since averaging over the branches individually gives the
+same overall mean as the blended rate by construction; only the
+distribution's SHAPE (floor/ceiling/spread) was wrong.
 
 RUN:
     python3 scripts/compute_golf_projections.py <tournament_id_or_url>
@@ -171,6 +186,12 @@ DEFAULT_WEIGHTS = {
     "count_stats": sorted(COUNT_STAT_KEYS.values()),
     "finish_tiers": [t for t, _ in FINISH_TIERS],
     "course_fit_available": False,
+    # Bumped when simulate()'s distribution SHAPE changes (not just a
+    # weight tweak) - see branch_rates()'s docstring. "made_cut_rate"
+    # picks a branch first, "allFourSub70" is one particular stat forced
+    # to 0 in the missed-cut branch since it's structurally impossible on
+    # 2 rounds.
+    "simulation_model": "made_cut_branching_v1",
     "course_history_mechanism": {
         "shrinkage_course_rounds": SHRINKAGE_COURSE_ROUNDS,
         "points_per_stroke_gained_per_round": POINTS_PER_STROKE_GAINED_PER_ROUND,
@@ -386,6 +407,71 @@ def shrink(golfer_value, golfer_weight, cohort_avg, k):
     return (golfer_value * golfer_weight + k * cohort_avg) / (golfer_weight + k)
 
 
+# Confirmed live against the 3M Open's first graded results: 75% of
+# golfers who made the cut scored ABOVE the model's own simulated
+# ceiling, 83% who missed it scored BELOW the model's own floor (mean
+# actual 92.8 vs mean ceiling 79.1 for made-cut golfers; mean actual 27.8
+# vs mean floor 34.5 for missed-cut ones) - the simulated spread (stdev
+# 7.6) was less than a quarter of the real spread (stdev 35.4). Root
+# cause: avg_stats is a SEASON-BLENDED per-tournament rate (made-cut
+# weeks and missed-cut weeks mixed into one number, see module docstring
+# above), fed into simulate() as a single fixed Poisson rate for every
+# one of the 3000 draws - made_cut_rate was computed and reported but
+# never actually influenced the simulated distribution's shape, so a
+# blended rate can only ever produce one narrow, unimodal bell curve,
+# never the two genuinely distinct outcome clusters a real tournament
+# produces.
+#
+# Fixed by decomposing the blended rate into two branch-specific rates
+# and having each simulated draw pick a branch first (weighted by
+# made_cut_rate), then draw from THAT branch's rates - see
+# branch_rates() and the updated simulate() below.
+ROUNDS_IF_MADE_CUT = 4
+ROUNDS_IF_MISSED_CUT = 2
+
+# allFourSub70 requires literally completing all 4 rounds under 70 - not
+# just rare, structurally IMPOSSIBLE on 2 rounds. Every other count stat
+# scales down proportionally with rounds played for the missed-cut
+# branch (fewer holes played, proportionally fewer birdies/bogeys/etc.)
+# - this one has to be forced to 0 instead, or the missed-cut branch
+# would keep awarding it at a scaled-down-but-nonzero rate for something
+# that literally cannot happen.
+IMPOSSIBLE_IF_MISSED_CUT = {"allFourSub70"}
+
+
+def branch_rates(shrunk_rates, exclusive_tier_probs, made_cut_rate):
+    """Decomposes ONE blended per-tournament rate (mixing made-cut and
+    missed-cut weeks together, per FanTeam's own avgStats) into two
+    branch-specific rates, using only the data already available -
+    FanTeam's API doesn't separately track "this golfer's rate specifically
+    during weeks they made the cut" vs "weeks they missed", so this
+    assumes a golfer's PER-ROUND rate is roughly constant regardless of
+    outcome (same skill per hole) and the blended total just reflects how
+    many rounds they typically get to play. Preserves the same overall
+    mean by construction (implied_rounds is exactly what the blended rate
+    was implicitly averaged over) - only the SHAPE/variance changes, not
+    the central estimate.
+
+    Finish tiers (top10/20/.../60, finish_1st/2nd/3rd) are conditioned on
+    making the cut - you structurally cannot finish a numbered place
+    without playing the weekend, so exclusive_tier_probs (already an
+    unconditional per-tournament-attempt probability) is divided by
+    made_cut_rate to get P(this tier | made the cut), which is what the
+    made-cut branch of the simulation actually needs.
+    """
+    implied_rounds = made_cut_rate * ROUNDS_IF_MADE_CUT + (1 - made_cut_rate) * ROUNDS_IF_MISSED_CUT
+    made_cut_stat_rates, missed_cut_stat_rates = {}, {}
+    for jkey, rate in shrunk_rates.items():
+        per_round = rate / implied_rounds if implied_rounds > 0 else 0.0
+        made_cut_stat_rates[jkey] = per_round * ROUNDS_IF_MADE_CUT
+        missed_cut_stat_rates[jkey] = 0.0 if jkey in IMPOSSIBLE_IF_MISSED_CUT else per_round * ROUNDS_IF_MISSED_CUT
+
+    conditional_tier_probs = {
+        label: (min(1.0, prob / made_cut_rate) if made_cut_rate > 0 else 0.0) for label, prob in exclusive_tier_probs.items()
+    }
+    return made_cut_stat_rates, missed_cut_stat_rates, conditional_tier_probs
+
+
 def project_entry(entry, cohort, scoring_rules, weights):
     k = weights["shrinkage_tournaments"]
     mc = entry["match_count"]
@@ -414,6 +500,7 @@ def project_entry(entry, cohort, scoring_rules, weights):
         remaining = min(remaining, 1.0)
 
     made_cut_rate = max(0.0, min(1.0, shrink(avg_stats.get("madeCut"), mc, cohort["madeCut"], k)))
+    made_cut_stat_rates, missed_cut_stat_rates, conditional_tier_probs = branch_rates(shrunk_rates, exclusive, made_cut_rate)
 
     # Point value of one simulated draw's expected contribution per stat -
     # the deterministic "expected points" figure (mean of the count stats
@@ -442,6 +529,9 @@ def project_entry(entry, cohort, scoring_rules, weights):
         "shrunk_rates": shrunk_rates,
         "exclusive_tier_probs": exclusive,
         "made_cut_rate": made_cut_rate,
+        "made_cut_stat_rates": made_cut_stat_rates,
+        "missed_cut_stat_rates": missed_cut_stat_rates,
+        "conditional_tier_probs": conditional_tier_probs,
         "expected_points": expected_points,
         "priced": priced,
     }
@@ -472,27 +562,39 @@ def poisson_draw(lam):
             return k - 1
 
 
-def simulate(shrunk_rates, exclusive_tier_probs, scoring_rules, n):
-    """Monte Carlo draws - see module docstring for the modeling choices.
-    Returns the raw list of simulated per-tournament point totals."""
-    count_items = [(stat, shrunk_rates[jkey]) for jkey, stat in COUNT_STAT_KEYS.items() if stat in scoring_rules]
-    tier_labels = list(exclusive_tier_probs.keys())
+def simulate(made_cut_rate, made_cut_stat_rates, missed_cut_stat_rates, conditional_tier_probs, scoring_rules, n):
+    """Monte Carlo draws, branched on made-cut probability - see the
+    branch_rates() docstring and the block comment above it for why: a
+    single blended rate can only ever produce one narrow, unimodal
+    distribution, never golf's real bimodal made-cut/missed-cut spread.
+
+    Each of the n draws first rolls against made_cut_rate to pick a
+    branch, THEN draws that branch's count stats (and, only if the
+    made-cut branch was picked, a finish-tier bonus from the
+    cut-conditional probabilities - you can't finish a numbered place
+    without playing the weekend)."""
+    made_cut_items = [(stat, made_cut_stat_rates[jkey]) for jkey, stat in COUNT_STAT_KEYS.items() if stat in scoring_rules]
+    missed_cut_items = [(stat, missed_cut_stat_rates[jkey]) for jkey, stat in COUNT_STAT_KEYS.items() if stat in scoring_rules]
+    tier_labels = list(conditional_tier_probs.keys())
     tier_cum = []
     running = 0.0
     for label in tier_labels:
-        running += exclusive_tier_probs[label]
+        running += conditional_tier_probs[label]
         tier_cum.append((running, label))
 
     totals = []
     for _ in range(n):
         total = 0.0
+        made_cut = random.random() < made_cut_rate
+        count_items = made_cut_items if made_cut else missed_cut_items
         for stat, rate in count_items:
             total += poisson_draw(max(rate, 0.0)) * scoring_rules[stat]
-        roll = random.random()
-        for cum, label in tier_cum:
-            if roll <= cum and label in scoring_rules:
-                total += scoring_rules[label]
-                break
+        if made_cut:
+            roll = random.random()
+            for cum, label in tier_cum:
+                if roll <= cum and label in scoring_rules:
+                    total += scoring_rules[label]
+                    break
         totals.append(total)
     return totals
 
@@ -563,7 +665,15 @@ def main():
             expected_points = (proj["expected_points"] + ch_points) * avail
 
             sim_totals = sorted(
-                v * avail for v in simulate(proj["shrunk_rates"], proj["exclusive_tier_probs"], scoring_rules, DEFAULT_WEIGHTS["simulations"])
+                v * avail
+                for v in simulate(
+                    proj["made_cut_rate"],
+                    proj["made_cut_stat_rates"],
+                    proj["missed_cut_stat_rates"],
+                    proj["conditional_tier_probs"],
+                    scoring_rules,
+                    DEFAULT_WEIGHTS["simulations"],
+                )
             ) if avail > 0 else [0.0] * DEFAULT_WEIGHTS["simulations"]
             # Course history is a deterministic adjustment (no per-round
             # variance estimate exists for it), so it shifts the whole
