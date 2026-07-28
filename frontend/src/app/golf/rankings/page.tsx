@@ -70,6 +70,7 @@ export default async function GolfRankingsPage({
         .from("projections")
         .select("game_player_id, hail_mary_score, inputs")
         .eq("algorithm_version_id", algo.id)
+        .eq("gameweek", tournament.event_number)
         .in("game_player_id", entries.map((e) => e.game_player_id))
         .returns<{ game_player_id: number; hail_mary_score: number; inputs: Record<string, unknown> }[]>();
       for (const p of projRows ?? []) projByPlayer.set(p.game_player_id, p);
