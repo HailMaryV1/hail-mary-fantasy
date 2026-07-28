@@ -59,6 +59,28 @@ def run_step(label, relative_args):
     return ok
 
 
+def current_golf_tournament(conn):
+    """Same "current" definition every golf page already uses (most
+    recently STARTED tournament, see golf/page.tsx/golf/team/page.tsx) -
+    not "most recently imported", since import timing and start_time can
+    differ. Returns None if FanTeam Golf isn't seeded at all yet or no
+    tournament has ever been imported - either is a legitimate steady
+    state, not an error."""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        select t.fanteam_tournament_id
+        from golf_tournaments t
+        join fantasy_games fg on fg.id = t.game_id
+        where fg.slug = 'fanteam-golf'
+        order by t.start_time desc
+        limit 1
+        """
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 def upcoming_gameweeks(conn):
     cur = conn.cursor()
     cur.execute(
@@ -109,10 +131,31 @@ def main():
     results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
     results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
 
-    # FanTeam Golf - deliberately NOT the scraper/importer/projections
-    # steps above (a new tournament ID drops every week with no
-    # auto-discovery endpoint, so that stays the manual weekly workflow -
+    # FanTeam Golf - deliberately NOT the scraper/importer steps above (a
+    # new tournament ID drops every week with no auto-discovery endpoint,
+    # so IMPORTING a new tournament stays the manual weekly workflow -
     # paste a URL at /golf/import or run scraper_fanteam_golf.py by hand).
+    # Recomputing projections for the tournament that's already been
+    # imported, though, needs no new information from FanTeam at all -
+    # golf_tournament_entries.avg_stats is already sitting in the DB from
+    # that import - so it's exactly as safe to run unattended as the
+    # football score-recompute above. Without this, a freshly-imported
+    # tournament silently shows 0.0/stale-prior-week scores on Team
+    # Builder/Rankings until someone remembers to run this by hand (real
+    # incident: Rocket Classic GW28 import).
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    try:
+        golf_tournament_ref = current_golf_tournament(conn)
+    finally:
+        conn.close()
+
+    if golf_tournament_ref:
+        results.append(
+            run_step(f"Recompute Hail Mary Golf projections ({golf_tournament_ref})", ["scripts/compute_golf_projections.py", golf_tournament_ref])
+        )
+    else:
+        print("\nNo FanTeam Golf tournament imported yet - skipping golf projection recompute.")
+
     # These two scans need no tournament ID at all - they operate on
     # every already-imported golf_tournaments row, so they're exactly as
     # safe to run unattended as their football counterparts above.
