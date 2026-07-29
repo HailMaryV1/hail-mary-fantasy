@@ -91,11 +91,18 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
         .order("code")
     : { data: null };
 
-  const { data: squadPlayersRaw } = await supabase
+  const { data: squadPlayersRaw, error: squadPlayersError } = await supabase
     .from("squad_players")
-    .select("game_player_id, is_starting, bench_order, game_players(price, players(full_name, position, team_id, teams(id, name)))")
+    // players!teams needs disambiguating - migration 0057 gave `players`
+    // a second FK to `teams` (pending_team_id, for the live-import
+    // debounce), so PostgREST can no longer infer which one this embed
+    // means and silently 400s without the explicit constraint name.
+    .select(
+      "game_player_id, is_starting, bench_order, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(id, name)))"
+    )
     .eq("squad_id", squadId)
     .returns<SquadPlayerRow[]>();
+  if (squadPlayersError) console.error("squad_players fetch failed:", squadPlayersError);
 
   const { data: pool } = await supabase
     .from("game_player_pool")
@@ -375,7 +382,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
 
   const { data: starterRows } = await supabase
     .from("squad_players")
-    .select("game_player_id, game_players(price, players(full_name, position, teams(name)))")
+    .select("game_player_id, game_players(price, players(full_name, position, teams!players_team_id_fkey(name)))")
     .eq("squad_id", squadId)
     .eq("is_starting", true)
     .returns<

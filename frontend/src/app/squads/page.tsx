@@ -16,6 +16,21 @@ export default async function SquadsPage() {
 
   const statuses = await getSquadStatuses(supabase, user!.id);
 
+  // Grouped by game (was one flat created_at-desc list before - a
+  // FanTeam football squad and three FanTeam Golf squads interleaved by
+  // recency with nothing telling them apart). Groups ordered by gameId
+  // ascending - the same order NavBar.tsx's own `fantasy_games` query
+  // uses (`.order("id")`), so the grouping here matches the nav's game
+  // order rather than an arbitrary one. Squads within a group keep
+  // getSquadStatuses' own created_at-desc order.
+  const squadsByGame = new Map<string, { gameId: number; gameDisplayName: string; squads: typeof statuses }>();
+  for (const s of statuses) {
+    const group = squadsByGame.get(s.gameSlug);
+    if (group) group.squads.push(s);
+    else squadsByGame.set(s.gameSlug, { gameId: s.gameId, gameDisplayName: s.gameDisplayName, squads: [s] });
+  }
+  const groupedStatuses = Array.from(squadsByGame.values()).sort((a, b) => a.gameId - b.gameId);
+
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-2xl">
@@ -43,50 +58,54 @@ export default async function SquadsPage() {
           </p>
         )}
 
-        <div className="mt-6 flex flex-col gap-3">
-          {statuses.map((s) => (
-            <div
-              key={s.id}
-              className="rounded-xl border border-navy-700 bg-navy-900 p-4"
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <Link href={`/squads/${s.id}`} className="font-medium text-white hover:text-sky-300">
-                    {s.name}
-                  </Link>
-                  <p className="text-xs text-navy-400">{s.gameDisplayName}</p>
-                </div>
-                {s.needsAttention && (
-                  <span className="rounded-full bg-amber-950 px-2 py-0.5 text-xs font-medium text-amber-400">
-                    Starting XI not set
-                  </span>
-                )}
-              </div>
+        <div className="mt-6 flex flex-col gap-8">
+          {groupedStatuses.map((group) => (
+            <div key={group.gameId}>
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">{group.gameDisplayName}</h2>
+              <div className="mt-3 flex flex-col gap-3">
+                {group.squads.map((s) => (
+                  <div
+                    key={s.id}
+                    className="rounded-xl border border-navy-700 bg-navy-900 p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <Link href={`/squads/${s.id}`} className="font-medium text-white hover:text-sky-300">
+                        {s.name}
+                      </Link>
+                      {s.needsAttention && (
+                        <span className="rounded-full bg-amber-950 px-2 py-0.5 text-xs font-medium text-amber-400">
+                          Starting XI not set
+                        </span>
+                      )}
+                    </div>
 
-              <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-navy-300">
-                <span>£{s.budgetRemaining.toFixed(1)}m in the bank</span>
-                {s.hasBench && <span>{s.freeTransfers} free transfer{s.freeTransfers === 1 ? "" : "s"}</span>}
-                {s.nextGameweekScore != null && (
-                  <span className="text-sky-400">Projected GW{s.currentGameweek}: {s.nextGameweekScore.toFixed(1)} pts</span>
-                )}
-              </div>
+                    <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-navy-300">
+                      <span>£{s.budgetRemaining.toFixed(1)}m in the bank</span>
+                      {s.hasBench && <span>{s.freeTransfers} free transfer{s.freeTransfers === 1 ? "" : "s"}</span>}
+                      {s.nextGameweekScore != null && (
+                        <span className="text-sky-400">Projected GW{s.currentGameweek}: {s.nextGameweekScore.toFixed(1)} pts</span>
+                      )}
+                    </div>
 
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Link
-                  href={`/squads/${s.id}`}
-                  className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800"
-                >
-                  Manage squad
-                </Link>
-                <Link
-                  href={`/squads/${s.id}/analysis`}
-                  className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800"
-                >
-                  Look ahead
-                </Link>
-              </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Link
+                        href={`/squads/${s.id}`}
+                        className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800"
+                      >
+                        Manage squad
+                      </Link>
+                      <Link
+                        href={`/squads/${s.id}/analysis`}
+                        className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800"
+                      >
+                        Look ahead
+                      </Link>
+                    </div>
 
-              <SquadCardActions squadId={s.id} squadName={s.name} gameSlug={s.gameSlug} />
+                    <SquadCardActions squadId={s.id} squadName={s.name} gameSlug={s.gameSlug} />
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
         </div>

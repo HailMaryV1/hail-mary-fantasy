@@ -3,6 +3,7 @@ import type { createAuthServerClient } from "./supabaseServerClient";
 export type SquadStatus = {
   id: number;
   name: string;
+  gameId: number;
   gameSlug: string;
   gameDisplayName: string;
   hasBench: boolean;
@@ -94,6 +95,7 @@ export async function getSquadStatuses(supabase: Supabase, userId: string): Prom
     statuses.push({
       id: squad.id,
       name: squad.name,
+      gameId: squad.game_id,
       gameSlug: game.slug,
       gameDisplayName: game.display_name,
       hasBench,

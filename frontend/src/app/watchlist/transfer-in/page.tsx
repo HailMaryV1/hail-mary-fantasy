@@ -125,7 +125,7 @@ export default async function TransferInPage({
 
   const { data: squadPlayersRaw } = await supabase
     .from("squad_players")
-    .select("game_player_id, game_players(price, players(full_name, position, team_id, teams(name)))")
+    .select("game_player_id, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
     .eq("squad_id", squadId)
     .returns<SquadPlayerRow[]>();
 

@@ -48,7 +48,7 @@ export default async function AnalysisPage({ params }: { params: Promise<{ id: s
 
   const { data: squadPlayersRaw } = await supabase
     .from("squad_players")
-    .select("game_players(players(full_name, position, team_id, teams(name)))")
+    .select("game_players(players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
     .eq("squad_id", squadId)
     .returns<SquadPlayerRow[]>();
 
