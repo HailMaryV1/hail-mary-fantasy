@@ -887,19 +887,138 @@ export async function runAskMaryAnalysis(
     return `Make ${transfers.length} transfer${transfers.length > 1 ? "s" : ""} (${hitCount} at -4 each, still worth it): ${names}.`;
   }
 
+  type StepBranch = { step: GameweekPlanStep; state: SearchState; soldIds: Set<number>; boughtIds: Set<number> };
+
   /**
-   * The sequential plan: GAMEWEEK_PLAN_LENGTH steps starting at
-   * planningGameweek, each threading the previous step's resulting squad/
-   * budget/free-transfer count forward - GW2 can't sell back what GW1 just
-   * bought, and a held GW1 genuinely banks a transfer for GW2. Once GW1
-   * actually kicks off and finishes, planningGameweek naturally advances
-   * (see lib/gameweek.ts) and this same plan shows GW2/GW3/GW4 - no
-   * separate rollover logic needed.
+   * Computes ONE gameweek step from a given incoming state, in up to two
+   * flavours: "greedy" (searchBestMoves's real best chain for this step,
+   * exactly as before) and - only when a real move was actually available
+   * and it isn't the pre-season unlimited-transfers step - "forcedHold" (the
+   * same incoming state carried forward untouched). forcedHold is what lets
+   * the plan discover "banking now sets up a bigger move later," something
+   * a purely greedy walk can never see: greedy always takes any move that
+   * clears its own cost THIS gameweek, even a marginal one, so it can never
+   * choose to withhold a transfer in order to combine it with a future
+   * gameweek's free transfer for a bigger move. Each branch gets its own
+   * copies of soldIds/boughtIds so exploring both doesn't let one branch's
+   * hypothetical sale leak into the other's.
    */
+  function computeStepBranches(
+    offset: number,
+    incomingState: SearchState,
+    incomingSoldIds: Set<number>,
+    incomingBoughtIds: Set<number>
+  ): { greedy: StepBranch; forcedHold: StepBranch | null } {
+    // Unlimited transfers only apply up to GW1's actual kickoff - not to
+    // this whole plan just because it happened to be computed pre-season.
+    // See the original single-path implementation this replaced for the
+    // full reasoning; unchanged here.
+    const isPreSeasonStep = !seasonStarted && offset === 1;
+
+    let state = incomingState;
+    if (offset > 1) {
+      if (!seasonStarted && offset === 2) {
+        state = { ...state, freeRemaining: 1 };
+      } else {
+        state = { ...state, freeRemaining: accrueFreeTransfers(state.freeRemaining) };
+      }
+    }
+    const freeBefore = state.freeRemaining;
+    const gameweek = planningGameweek! + offset - 1;
+    const wildcardActiveHere = isWildcardActive(gameweek, squad.wildcard_1_used_gameweek ?? null, squad.wildcard_2_used_gameweek ?? null);
+    const scoreMapForStep = stepScoreMaps[offset - 1] ?? new Map();
+
+    function buildStep(result: { transfers: BundleTransfer[] } & SearchState): GameweekPlanStep {
+      const resultingSquadExpectedPoints = optimalXITotal(result.workingSquad, scoreMapForStep);
+      const freeAfterPreview = isPreSeasonStep ? 1 : accrueFreeTransfers(result.freeRemaining);
+      const writeup = describeStep({ seasonStarted: !isPreSeasonStep, transfers: result.transfers, gameweek, freeAfter: freeAfterPreview });
+      return {
+        gameweek,
+        offset: offset as 1 | 2 | 3,
+        transfers: result.transfers,
+        hold: result.transfers.length === 0,
+        freeTransfersAvailable: isPreSeasonStep ? "unlimited" : freeBefore,
+        freeTransfersAfter: freeAfterPreview,
+        budgetRemainingAfter: result.workingBudget,
+        resultingSquadExpectedPoints: Math.round(resultingSquadExpectedPoints * 10) / 10,
+        writeup,
+      };
+    }
+
+    const greedySoldIds = new Set(incomingSoldIds);
+    const greedyBoughtIds = new Set(incomingBoughtIds);
+    const greedyResult = searchBestMoves(state, scoreMapForStep, wildcardActiveHere, greedySoldIds, greedyBoughtIds);
+    const greedyStep = buildStep(greedyResult);
+    const greedyState: SearchState = {
+      workingSquad: greedyResult.workingSquad,
+      workingSquadIds: greedyResult.workingSquadIds,
+      workingBudget: greedyResult.workingBudget,
+      workingClubCounts: greedyResult.workingClubCounts,
+      freeRemaining: greedyResult.freeRemaining,
+    };
+    const greedy: StepBranch = { step: greedyStep, state: greedyState, soldIds: greedySoldIds, boughtIds: greedyBoughtIds };
+
+    if (isPreSeasonStep || greedyStep.transfers.length === 0) {
+      // Nothing to withhold: pre-season transfers cost nothing to spend
+      // immediately, and if greedy itself found no move that clears cost,
+      // a forced hold would be an exact duplicate of the greedy branch.
+      return { greedy, forcedHold: null };
+    }
+
+    const holdSoldIds = new Set(incomingSoldIds);
+    const holdBoughtIds = new Set(incomingBoughtIds);
+    const holdStep = buildStep({ transfers: [], ...state });
+    const n = greedyStep.transfers.length;
+    holdStep.writeup = `Hold this gameweek instead of using ${n === 1 ? "a transfer" : `${n} transfers`} now - banking pays off more over the next couple of gameweeks than spending it here.`;
+    const forcedHold: StepBranch = { step: holdStep, state, soldIds: holdSoldIds, boughtIds: holdBoughtIds };
+
+    return { greedy, forcedHold };
+  }
+
+  /**
+   * Full-horizon path search: at every step, tries both the greedy pick
+   * AND (when one exists) the forced-hold alternative, recurses into the
+   * rest of the plan from each, and scores each COMPLETE 3-step path by
+   * its total realized points (each step's optimal-XI total plus that
+   * step's own transfer costs, using that step's own fixed score map - the
+   * same score maps regardless of path, so totals across different paths
+   * are directly comparable). This is a bounded tree search (at most 2^3=8
+   * full paths for GAMEWEEK_PLAN_LENGTH=3, collapsing to fewer whenever a
+   * step naturally holds), not literal backward induction - a full
+   * Bellman-style solve isn't tractable over a combinatorial transfer
+   * action space, so this is the standard practical stand-in: evaluate
+   * whole candidate paths and keep the best, rather than committing
+   * greedily one step at a time the way the plan used to. If
+   * GAMEWEEK_PLAN_LENGTH ever grows, this needs a beam-width cap to stay
+   * bounded - fine at 3 steps, not at, say, 10.
+   */
+  function enumeratePlanPaths(
+    offset: number,
+    state: SearchState,
+    soldIds: Set<number>,
+    boughtIds: Set<number>
+  ): { steps: GameweekPlanStep[]; totalScore: number }[] {
+    if (offset > GAMEWEEK_PLAN_LENGTH) return [{ steps: [], totalScore: 0 }];
+
+    const { greedy, forcedHold } = computeStepBranches(offset, state, soldIds, boughtIds);
+    const branches = forcedHold ? [greedy, forcedHold] : [greedy];
+
+    const paths: { steps: GameweekPlanStep[]; totalScore: number }[] = [];
+    for (const branch of branches) {
+      const stepCost = branch.step.transfers.reduce((sum, t) => sum + t.costPoints, 0);
+      const stepScore = branch.step.resultingSquadExpectedPoints + stepCost;
+      const rest = enumeratePlanPaths(offset + 1, branch.state, branch.soldIds, branch.boughtIds);
+      for (const r of rest) {
+        paths.push({ steps: [branch.step, ...r.steps], totalScore: stepScore + r.totalScore });
+      }
+    }
+    return paths;
+  }
+
   function buildGameweekPlan(): GameweekPlanStep[] {
     if (planningGameweek == null) return [];
 
-    let state: SearchState = {
+    const initialState: SearchState = {
       workingSquad: squadPlayers.map((p) => ({
         game_player_id: p.game_player_id,
         full_name: p.full_name,
@@ -913,74 +1032,14 @@ export async function runAskMaryAnalysis(
       workingClubCounts: new Map(clubCounts),
       freeRemaining: freeTransfersBanked,
     };
-    const soldIds = new Set<number>();
-    const boughtIds = new Set<number>();
 
-    const steps: GameweekPlanStep[] = [];
-    for (let offset = 1; offset <= GAMEWEEK_PLAN_LENGTH; offset++) {
-      const gameweek = planningGameweek + offset - 1;
-
-      // Unlimited transfers only apply up to GW1's actual kickoff - not
-      // to this whole 3-step plan just because the plan happened to be
-      // computed pre-season. `seasonStarted` is a snapshot for "right
-      // now", so it's only correct for offset 1 (this plan's first step,
-      // which really is GW1 when !seasonStarted - getSeasonTiming always
-      // resolves planningGameweek to GW1 itself before kickoff). Every
-      // later step is a gameweek that will have already kicked off by
-      // the time it's played, even though the analysis runs before any
-      // of them have - so it must use real free-transfer economics, not
-      // inherit "unlimited" from the pre-season snapshot.
-      const isPreSeasonStep = !seasonStarted && offset === 1;
-
-      if (offset > 1) {
-        if (!seasonStarted && offset === 2) {
-          // The season's first real gameweek - no carryover from "unlimited"
-          // pre-season since that was never a real banked count. Starts
-          // fresh at exactly the 1 free transfer FanTeam grants every
-          // gameweek.
-          state = { ...state, freeRemaining: 1 };
-        } else {
-          // Covers: analysis run mid-season (every step accrues normally),
-          // and offset 3 following a pre-season-triggered reset at offset 2.
-          state = { ...state, freeRemaining: accrueFreeTransfers(state.freeRemaining) };
-        }
-      }
-      const freeBefore = state.freeRemaining;
-      const wildcardActiveHere = isWildcardActive(gameweek, squad.wildcard_1_used_gameweek ?? null, squad.wildcard_2_used_gameweek ?? null);
-      const scoreMapForStep = stepScoreMaps[offset - 1] ?? new Map();
-
-      const result = searchBestMoves(state, scoreMapForStep, wildcardActiveHere, soldIds, boughtIds);
-      state = { workingSquad: result.workingSquad, workingSquadIds: result.workingSquadIds, workingBudget: result.workingBudget, workingClubCounts: result.workingClubCounts, freeRemaining: result.freeRemaining };
-
-      const resultingSquadExpectedPoints = optimalXITotal(state.workingSquad, scoreMapForStep);
-
-      // "freeAfter" for both the write-up and the returned field is a
-      // PREVIEW of what the *next* gameweek brings - not just this step's
-      // raw leftover. A hold at 1 banked plus the next gameweek's own +1
-      // grant means "2 available before GW+1", which is what the
-      // "bank your transfer" sentence needs to say. Only offset 1 can be
-      // the pre-season step, and its next step (offset 2) always resets to
-      // 1 regardless of what GW1 did (see the reset above) - every other
-      // case previews via normal accrual. A preview, not a mutation - the
-      // loop's own top-of-iteration logic next time round recomputes the
-      // identical value from the same input.
-      const freeAfterPreview = isPreSeasonStep ? 1 : accrueFreeTransfers(state.freeRemaining);
-      const writeup = describeStep({ seasonStarted: !isPreSeasonStep, transfers: result.transfers, gameweek, freeAfter: freeAfterPreview });
-
-      steps.push({
-        gameweek,
-        offset: offset as 1 | 2 | 3,
-        transfers: result.transfers,
-        hold: result.transfers.length === 0,
-        freeTransfersAvailable: isPreSeasonStep ? "unlimited" : freeBefore,
-        freeTransfersAfter: freeAfterPreview,
-        budgetRemainingAfter: state.workingBudget,
-        resultingSquadExpectedPoints: Math.round(resultingSquadExpectedPoints * 10) / 10,
-        writeup,
-      });
+    const paths = enumeratePlanPaths(1, initialState, new Set(), new Set());
+    if (paths.length === 0) return [];
+    let best = paths[0];
+    for (const p of paths) {
+      if (p.totalScore > best.totalScore) best = p;
     }
-
-    return steps;
+    return best.steps;
   }
 
   /**
