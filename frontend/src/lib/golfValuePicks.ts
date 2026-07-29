@@ -1,18 +1,31 @@
 /**
- * Golf "value pick" detector - flags golfers whose pasted top20-finish
- * market odds imply a meaningfully higher chance than their FanTeam
- * price alone would predict. Confirmed against the real Rocket Classic
- * field (82 golfers with both a price and top20 odds): price and
- * market-implied top20 probability correlate at 0.94 - FanTeam clearly
- * prices around market perception, so a golfer sitting well ABOVE the
- * price->probability line the rest of the field draws is a real signal
- * worth surfacing, not noise.
+ * Golf "market gap" detector - flags golfers whose pasted top20-finish
+ * market odds disagree meaningfully with what their FanTeam price alone
+ * would predict. Confirmed against the real Rocket Classic field (82
+ * golfers with both a price and top20 odds): price and market-implied
+ * top20 probability correlate at 0.94 - FanTeam clearly prices around
+ * market perception, so a golfer sitting well off the price->probability
+ * line the rest of the field draws is a real signal worth surfacing, in
+ * EITHER direction:
+ *
+ *   - VALUE: market fancies them well above what their price predicts -
+ *     a live badge (see classifyMarketGap()).
+ *   - DANGER: an expensive golfer (>= DANGER_MIN_PRICE) the market rates
+ *     well BELOW what their price predicts - a warning the price hasn't
+ *     caught up with the market's real opinion. Price-gated because a
+ *     cheap long-shot the market also dislikes isn't a mistake to avoid,
+ *     it's just correctly priced as a long-shot - this only matters once
+ *     real budget is on the line for a golfer FanTeam is charging a
+ *     premium for.
  *
  * Recomputed fresh on every page load directly from golf_tournament_entries
  * (price) + golf_tournament_odds (market='top20', already pasted at
  * /golf/odds) - deliberately NOT baked into compute_golf_projections.py's
- * Python pipeline, so a value badge reflects odds the moment they're
- * pasted rather than waiting for the next projections recompute.
+ * Python pipeline, so a badge reflects odds the moment they're pasted
+ * rather than waiting for the next projections recompute. The same gap
+ * number also feeds golfTeamOptimizer.ts's DANGER_PENALTY, so a
+ * price-gap-flagged golfer isn't just shown a warning - the team-builder
+ * itself is nudged away from picking them (see baseMetric() there).
  *
  * Only the 'top20' market is used (not 'win'/'top5'/'top10') to match
  * what's actually been pasted so far - if that changes, this can take a
@@ -23,10 +36,15 @@
 export type ValuePriceRow = { gamePlayerId: number; golferId: number; price: number };
 export type ValueOddsRow = { golferId: number; impliedProbability: number | null };
 
-// Matches the threshold the value hunt itself was framed around - a
-// golfer needs to sit at least 3 percentage points above what their
-// price alone predicts to get flagged, so a badge means something.
+// A golfer needs to sit at least 3 percentage points above what their
+// price alone predicts to get flagged VALUE, so a badge means something.
 export const VALUE_GAP_THRESHOLD = 0.03;
+
+// DANGER needs the market at least 7.5 points below the price-predicted
+// probability AND a price of at least £15m - both thresholds as
+// specified, not independently tuned.
+export const DANGER_GAP_THRESHOLD = -0.075;
+export const DANGER_MIN_PRICE = 15.0;
 
 // A regression over fewer than this many paired (price, odds) points is
 // noise, not signal - most tournaments won't have odds pasted for every
@@ -34,8 +52,8 @@ export const VALUE_GAP_THRESHOLD = 0.03;
 // arbitrarily steep/meaningless line.
 const MIN_SAMPLE_SIZE = 8;
 
-/** gamePlayerId -> how far above the price-predicted probability this golfer's market odds sit (e.g. 0.062 = +6.2pts). */
-export function computeTop20ValueGaps(priceRows: ValuePriceRow[], oddsRows: ValueOddsRow[]): Map<number, number> {
+/** gamePlayerId -> how far this golfer's market odds sit above (positive) or below (negative) what their price alone predicts, for every golfer with both a price and pasted top20 odds - unfiltered, callers classify via classifyMarketGap(). */
+export function computeTop20MarketGaps(priceRows: ValuePriceRow[], oddsRows: ValueOddsRow[]): Map<number, number> {
   const probByGolfer = new Map(oddsRows.filter((o) => o.impliedProbability != null).map((o) => [o.golferId, o.impliedProbability as number]));
 
   const paired = priceRows
@@ -57,8 +75,17 @@ export function computeTop20ValueGaps(priceRows: ValuePriceRow[], oddsRows: Valu
   const gaps = new Map<number, number>();
   for (const p of paired) {
     const predicted = intercept + slope * p.price;
-    const gap = p.prob - predicted;
-    if (gap >= VALUE_GAP_THRESHOLD) gaps.set(p.gamePlayerId, gap);
+    gaps.set(p.gamePlayerId, p.prob - predicted);
   }
   return gaps;
+}
+
+export type MarketGapFlag = "value" | "danger" | null;
+
+/** Turns a raw market gap (from computeTop20MarketGaps) + this golfer's price into the badge/penalty classification - the single source of truth both the UI badges and the team-builder's DANGER_PENALTY read from, so they can never disagree. */
+export function classifyMarketGap(price: number, gap: number | null | undefined): MarketGapFlag {
+  if (gap == null) return null;
+  if (gap >= VALUE_GAP_THRESHOLD) return "value";
+  if (price >= DANGER_MIN_PRICE && gap <= DANGER_GAP_THRESHOLD) return "danger";
+  return null;
 }

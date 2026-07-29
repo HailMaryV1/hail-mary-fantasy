@@ -2,6 +2,7 @@
 
 import { Fragment, useMemo, useState, useTransition } from "react";
 import { addToWatchlist, removeFromWatchlist } from "@/app/watchlist/actions";
+import { classifyMarketGap } from "@/lib/golfValuePicks";
 
 export type GolfRankingRow = {
   gamePlayerId: number;
@@ -15,10 +16,11 @@ export type GolfRankingRow = {
   makeCutProbability: number | null;
   value: number | null;
   explanation: string | null;
-  // How far this golfer's pasted top20 market odds sit above what their
-  // price alone predicts (see golfValuePicks.ts) - null when there's no
-  // odds for them or the gap doesn't clear VALUE_GAP_THRESHOLD.
-  valueGapPercent: number | null;
+  // How far this golfer's pasted top20 market odds sit above (positive)
+  // or below (negative) what their price alone predicts (see
+  // golfValuePicks.ts) - null when there's no odds for them. Badge
+  // classification (VALUE/DANGER/neither) happens via classifyMarketGap().
+  marketGapPercent: number | null;
 };
 
 const PERSPECTIVES = [
@@ -172,6 +174,7 @@ export default function GolfRankingsTable({
             {filtered.map((row) => {
               const withdrawn = row.lineup === "refuted" || row.status === "not_play";
               const isWatched = watchMap.has(row.gamePlayerId);
+              const marketGapFlag = classifyMarketGap(row.price, row.marketGapPercent);
               return (
                 <Fragment key={row.gamePlayerId}>
                   <tr
@@ -203,12 +206,20 @@ export default function GolfRankingsTable({
                           WD
                         </span>
                       )}
-                      {row.valueGapPercent != null && (
+                      {marketGapFlag === "value" && (
                         <span
-                          title={`Top20 market odds imply +${(row.valueGapPercent * 100).toFixed(1)}pts more chance than this golfer's price alone predicts`}
+                          title={`Top20 market odds imply +${(row.marketGapPercent! * 100).toFixed(1)}pts more chance than this golfer's price alone predicts`}
                           className="ml-1.5 inline-block shrink-0 animate-pulse rounded bg-amber-400 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-navy-950"
                         >
                           Value
+                        </span>
+                      )}
+                      {marketGapFlag === "danger" && (
+                        <span
+                          title={`£${row.price.toFixed(1)}m golfer, but top20 market odds imply ${(row.marketGapPercent! * 100).toFixed(1)}pts LESS chance than that price predicts - the market rates them well below what FanTeam is charging for them`}
+                          className="ml-1.5 inline-block shrink-0 animate-pulse rounded bg-red-600 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white"
+                        >
+                          ⚠ Overpriced
                         </span>
                       )}
                       <span className="block text-xs font-normal text-navy-400 sm:hidden">£{row.price.toFixed(1)}m</span>
@@ -235,9 +246,14 @@ export default function GolfRankingsTable({
                       <td colSpan={COLUMNS.length} className="px-4 py-2 text-xs text-navy-400">
                         {row.explanation}
                         {row.value != null && <span className="ml-3 text-navy-500">Value: {row.value.toFixed(2)} pts/£</span>}
-                        {row.valueGapPercent != null && (
+                        {marketGapFlag === "value" && (
                           <span className="ml-3 font-semibold text-amber-400">
-                            Market fancies +{(row.valueGapPercent * 100).toFixed(1)}pts top20 chance vs price
+                            Market fancies +{(row.marketGapPercent! * 100).toFixed(1)}pts top20 chance vs price
+                          </span>
+                        )}
+                        {marketGapFlag === "danger" && (
+                          <span className="ml-3 font-semibold text-red-400">
+                            Market rates {(row.marketGapPercent! * 100).toFixed(1)}pts BELOW price-predicted top20 chance
                           </span>
                         )}
                       </td>

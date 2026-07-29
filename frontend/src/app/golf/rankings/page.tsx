@@ -2,7 +2,7 @@ import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabase";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import GolfRankingsTable, { type GolfRankingRow } from "./GolfRankingsTable";
-import { computeTop20ValueGaps } from "@/lib/golfValuePicks";
+import { computeTop20MarketGaps } from "@/lib/golfValuePicks";
 
 export const dynamic = "force-dynamic";
 
@@ -65,7 +65,7 @@ export default async function GolfRankingsPage({
       .eq("tournament_id", tournament.id)
       .eq("market", "top20")
       .returns<{ golfer_id: number; implied_probability: number | null }[]>();
-    const valueGaps = computeTop20ValueGaps(
+    const marketGaps = computeTop20MarketGaps(
       (entries ?? []).map((e) => ({ gamePlayerId: e.game_player_id, golferId: e.game_players?.golfers?.id ?? -1, price: Number(e.price) })),
       (oddsRows ?? []).map((o) => ({ golferId: o.golfer_id, impliedProbability: o.implied_probability }))
     );
@@ -105,7 +105,7 @@ export default async function GolfRankingsPage({
         makeCutProbability: typeof inputs.make_cut_probability === "number" ? inputs.make_cut_probability : null,
         value: typeof inputs.value === "number" ? inputs.value : null,
         explanation: typeof inputs.explanation === "string" ? inputs.explanation : null,
-        valueGapPercent: valueGaps.get(e.game_player_id) ?? null,
+        marketGapPercent: marketGaps.get(e.game_player_id) ?? null,
       };
     });
   }

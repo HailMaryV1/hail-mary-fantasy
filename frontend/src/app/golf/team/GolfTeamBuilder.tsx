@@ -12,6 +12,7 @@ import {
 } from "@/lib/golfTeamOptimizer";
 import { saveGolfTeam, deleteGolfTeam } from "./actions";
 import PushNotificationToggle from "./PushNotificationToggle";
+import { classifyMarketGap } from "@/lib/golfValuePicks";
 
 type PoolSortKey = "expectedPoints" | "price";
 
@@ -278,6 +279,7 @@ export default function GolfTeamBuilder({
               {filteredPool.slice(0, 100).map((p) => {
                 const clickable = canBringIn(p);
                 const isWatched = watchedSet.has(p.gamePlayerId);
+                const marketGapFlag = classifyMarketGap(p.price, p.marketGapPercent);
                 return (
                   <button
                     key={p.gamePlayerId}
@@ -291,12 +293,20 @@ export default function GolfTeamBuilder({
                       <span className="block truncate" title={p.fullName}>
                         {isWatched && <span className="mr-1 text-amber-400">★</span>}
                         {p.fullName}
-                        {p.valueGapPercent != null && (
+                        {marketGapFlag === "value" && (
                           <span
-                            title={`Top20 market odds imply +${(p.valueGapPercent * 100).toFixed(1)}pts more chance than this golfer's price alone predicts`}
+                            title={`Top20 market odds imply +${(p.marketGapPercent! * 100).toFixed(1)}pts more chance than this golfer's price alone predicts`}
                             className="ml-1.5 inline-block shrink-0 animate-pulse rounded bg-amber-400 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-navy-950"
                           >
                             Value
+                          </span>
+                        )}
+                        {marketGapFlag === "danger" && (
+                          <span
+                            title={`£${p.price.toFixed(1)}m golfer, but top20 market odds imply ${(p.marketGapPercent! * 100).toFixed(1)}pts LESS chance than that price predicts`}
+                            className="ml-1.5 inline-block shrink-0 animate-pulse rounded bg-red-600 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white"
+                          >
+                            ⚠
                           </span>
                         )}
                       </span>
@@ -331,6 +341,7 @@ export default function GolfTeamBuilder({
                   const isLocked = lockedIds.includes(p.gamePlayerId);
                   const isSelectedOut = p.gamePlayerId === selectedOutId;
                   const isExpanded = expandedId === p.gamePlayerId;
+                  const marketGapFlag = classifyMarketGap(p.price, p.marketGapPercent);
                   return (
                     <Fragment key={p.gamePlayerId}>
                       <tr
@@ -356,12 +367,20 @@ export default function GolfTeamBuilder({
                           {isUnderdog && (
                             <span title="Underdog (cheapest pick) - scores x1.25, automatic" className="ml-1.5 rounded bg-emerald-950 px-1 py-0.5 text-[9px] font-bold text-emerald-400">UD</span>
                           )}
-                          {p.valueGapPercent != null && (
+                          {marketGapFlag === "value" && (
                             <span
-                              title={`Top20 market odds imply +${(p.valueGapPercent * 100).toFixed(1)}pts more chance than this golfer's price alone predicts`}
+                              title={`Top20 market odds imply +${(p.marketGapPercent! * 100).toFixed(1)}pts more chance than this golfer's price alone predicts`}
                               className="ml-1.5 inline-block shrink-0 animate-pulse rounded bg-amber-400 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-navy-950"
                             >
                               Value
+                            </span>
+                          )}
+                          {marketGapFlag === "danger" && (
+                            <span
+                              title={`£${p.price.toFixed(1)}m golfer, but top20 market odds imply ${(p.marketGapPercent! * 100).toFixed(1)}pts LESS chance than that price predicts`}
+                              className="ml-1.5 inline-block shrink-0 animate-pulse rounded bg-red-600 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white"
+                            >
+                              ⚠ Overpriced
                             </span>
                           )}
                           {p.explanation && (
@@ -409,9 +428,14 @@ export default function GolfTeamBuilder({
                             {p.makeCutProbability != null && (
                               <span className="ml-3 text-navy-500">Make cut: {(p.makeCutProbability * 100).toFixed(0)}%</span>
                             )}
-                            {p.valueGapPercent != null && (
+                            {marketGapFlag === "value" && (
                               <span className="ml-3 font-semibold text-amber-400">
-                                Market fancies +{(p.valueGapPercent * 100).toFixed(1)}pts top20 chance vs price
+                                Market fancies +{(p.marketGapPercent! * 100).toFixed(1)}pts top20 chance vs price
+                              </span>
+                            )}
+                            {marketGapFlag === "danger" && (
+                              <span className="ml-3 font-semibold text-red-400">
+                                Market rates {(p.marketGapPercent! * 100).toFixed(1)}pts BELOW price-predicted top20 chance
                               </span>
                             )}
                           </td>

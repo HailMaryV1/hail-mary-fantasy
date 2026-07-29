@@ -22,6 +22,8 @@
  * but it does change the honest total shown to the user.
  */
 
+import { classifyMarketGap } from "./golfValuePicks";
+
 export type GolfOptimizerPlayer = {
   gamePlayerId: number;
   fullName: string;
@@ -31,10 +33,12 @@ export type GolfOptimizerPlayer = {
   ceiling: number;
   makeCutProbability: number | null;
   explanation?: string | null;
-  // How far this golfer's top20 market odds sit above what their price
-  // alone predicts (see golfValuePicks.ts) - null/undefined when there's
-  // no odds for them or the gap doesn't clear VALUE_GAP_THRESHOLD.
-  valueGapPercent?: number | null;
+  // How far this golfer's top20 market odds sit above (positive) or
+  // below (negative) what their price alone predicts (see
+  // golfValuePicks.ts's computeTop20MarketGaps) - null/undefined when
+  // there's no odds for them. Unfiltered/unthresholded - VALUE/DANGER
+  // classification happens via classifyMarketGap(), not here.
+  marketGapPercent?: number | null;
 };
 
 export const GOLF_SQUAD_SIZE = 6;
@@ -111,7 +115,18 @@ const VALUE_WEIGHT = 0.3;
 // the budget on the best total" pressure as Highest Projected, just
 // biased toward efficient golfers rather than the single most expensive
 // ones when points are otherwise close.
-function baseMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio: number): number {
+// How hard the knapsack is nudged away from a DANGER-flagged golfer
+// (>= DANGER_MIN_PRICE, market rates their top20 chance
+// DANGER_GAP_THRESHOLD or more below what their price predicts) - a soft
+// penalty on the SELECTION metric only, not the golfer's real
+// expectedPoints/displayed score (that stays honest and untouched), and
+// not a hard exclude either: the optimizer can still pick a danger-
+// flagged golfer if they're genuinely the best of a bad set of options,
+// same philosophy as VALUE_WEIGHT's soft nudge below rather than a
+// price cutoff that could leave no legal team at all.
+const DANGER_PENALTY = 0.15;
+
+function rawMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio: number): number {
   switch (variant) {
     case "highest_projected":
     case "fade_favourite":
@@ -133,6 +148,11 @@ function baseMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio:
       return p.ceiling * (1 + VALUE_WEIGHT * relativeValue);
     }
   }
+}
+
+function baseMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio: number): number {
+  const raw = rawMetric(variant, p, meanRatio);
+  return classifyMarketGap(p.price, p.marketGapPercent) === "danger" ? raw * (1 - DANGER_PENALTY) : raw;
 }
 
 function meanRatioFor(variant: GolfTeamVariant, pool: GolfOptimizerPlayer[]): number {
