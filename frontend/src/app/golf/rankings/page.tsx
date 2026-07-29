@@ -105,7 +105,7 @@ export default async function GolfRankingsPage({
         makeCutProbability: typeof inputs.make_cut_probability === "number" ? inputs.make_cut_probability : null,
         value: typeof inputs.value === "number" ? inputs.value : null,
         explanation: typeof inputs.explanation === "string" ? inputs.explanation : null,
-        marketGapPercent: marketGaps.get(e.game_player_id) ?? null,
+        marketGap: marketGaps.get(e.game_player_id) ?? null,
       };
     });
   }

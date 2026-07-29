@@ -99,7 +99,7 @@ export default async function GolfTeamPage({
           ceiling: typeof inputs.ceiling === "number" ? inputs.ceiling : 0,
           makeCutProbability: typeof inputs.make_cut_probability === "number" ? inputs.make_cut_probability : null,
           explanation: typeof inputs.explanation === "string" ? inputs.explanation : null,
-          marketGapPercent: marketGaps.get(e.game_player_id) ?? null,
+          marketGap: marketGaps.get(e.game_player_id) ?? null,
         };
       });
   }

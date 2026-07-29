@@ -176,6 +176,27 @@ FINISH_TIERS = [
     ("top60", "top60"),
 ]
 
+# Plain-English names for the explanation text (build_explanation-style,
+# same principle compute_projections.py's STAT_DISPLAY_NAMES uses) - the
+# raw scoring-rule/stat keys above read fine in code but read as jargon
+# to a user ("double_bogey", "rate" with 4 decimal places).
+STAT_DISPLAY_NAMES = {
+    "birdie": "birdies", "par": "pars", "bogey": "bogeys", "eagle": "eagles",
+    "double_bogey": "double bogeys", "triple_bogey_or_worse": "triple-bogeys-or-worse",
+    "no_bogeys": "bogey-free rounds", "three_consecutive_birdies": "three-birdie streaks",
+    "round_of_64": "sub-64 rounds", "all_four_sub_70": "four rounds under 70",
+    "bounce_back": "bounce-back holes", "hole_in_one": "better-than-eagle holes",
+}
+
+# Finish tiers (FINISH_TIERS jkeys, not the scoring-rule labels) phrased
+# as something a person would actually say, for the bookies-vs-model
+# explanation line below.
+TIER_PHRASES = {
+    "rank1": "winning outright", "rank2": "finishing runner-up", "rank3": "finishing 3rd",
+    "top10": "a top 10 finish", "top20": "a top 20 finish", "top30": "a top 30 finish",
+    "top40": "a top 40 finish", "top50": "a top 50 finish", "top60": "a top 60 finish",
+}
+
 # /golf/odds only accepts 'win' | 'top5' | 'top10' | 'top20' (migration
 # 0051) - of those, only 'win' and 'top10'/'top20' line up with a real
 # FanTeam-scored finish tier above ('win' = finishing 1st). 'top5' has NO
@@ -779,29 +800,28 @@ def main():
             else:
                 top_stat = max(proj["priced"].items(), key=lambda kv: kv[1]["contribution"], default=(None, None))
                 if top_stat[0]:
-                    reasons.append(f"Biggest single contributor: {top_stat[0]} ({top_stat[1]['contribution']:+.2f} pts from a {top_stat[1].get('rate', top_stat[1].get('probability'))} rate).")
+                    stat_name = STAT_DISPLAY_NAMES.get(top_stat[0], top_stat[0].replace("_", " "))
+                    reasons.append(f"{stat_name.capitalize()} are the single biggest points contributor (+{top_stat[1]['contribution']:.1f} pts).")
                 if entry["match_count"] < DEFAULT_WEIGHTS["shrinkage_tournaments"]:
                     reasons.append(f"Only {entry['match_count']} tracked tournament(s) - projection leans toward the field average until more history accumulates.")
                 if ch_detail:
                     sign = "boosts" if ch_points >= 0 else "docks"
                     reasons.append(
-                        f"Course history at this venue ({ch_detail['rounds_played']} rounds, {ch_detail['versus_expected']:+.2f} strokes gained vs expectation) "
-                        f"{sign} the projection by {ch_points:+.2f} pts."
+                        f"He's played this course {ch_detail['rounds_played']} time(s) before, performing {ch_detail['versus_expected']:+.1f} strokes "
+                        f"{'better' if ch_detail['versus_expected'] >= 0 else 'worse'} than expected per round - {sign} the projection by {ch_points:+.1f} pts."
                     )
 
             model_win_probability = proj["model_exclusive_tier_probs"].get("finish_1st", 0.0)
-            tier_label_by_jkey = {jkey: label for label, jkey in FINISH_TIERS}
             for jkey, blend in proj["market_blend_detail"].items():
-                label = tier_label_by_jkey.get(jkey, jkey)
-                # Market odds include bookmaker overround (implied
-                # probabilities across a full field sum to >100%), so the
-                # pasted figure isn't a clean "true" probability either -
-                # blended_probability (MARKET_BLEND_WEIGHT-weighted, see
-                # that constant's docstring) is what actually prices this
-                # golfer now, model/market shown alongside for transparency.
+                phrase = TIER_PHRASES.get(jkey, jkey)
+                # Plain-language, matching how a user would actually think
+                # about this: what do the bookies say, versus what did our
+                # own history-based estimate say before we leaned on them at
+                # all (MARKET_BLEND_WEIGHT-weighted into the actual score
+                # used above - see that constant's docstring for why 50/50).
                 reasons.append(
-                    f"{label.replace('_', ' ')}: model {blend['model_probability']:.1%} vs market {blend['market_probability']:.1%} "
-                    f"-> blended to {blend['blended_probability']:.1%} (market odds pasted at /golf/odds)."
+                    f"Bookies rate his chances of {phrase} at {blend['market_probability']:.0%} - "
+                    f"Hail Mary's own estimate (before leaning on the bookies) was {blend['model_probability']:.0%}."
                 )
 
             inputs = {

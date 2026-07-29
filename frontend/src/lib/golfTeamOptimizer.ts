@@ -22,7 +22,7 @@
  * but it does change the honest total shown to the user.
  */
 
-import { classifyMarketGap } from "./golfValuePicks";
+import { classifyMarketGap, type MarketGapInfo } from "./golfValuePicks";
 
 export type GolfOptimizerPlayer = {
   gamePlayerId: number;
@@ -33,12 +33,11 @@ export type GolfOptimizerPlayer = {
   ceiling: number;
   makeCutProbability: number | null;
   explanation?: string | null;
-  // How far this golfer's top20 market odds sit above (positive) or
-  // below (negative) what their price alone predicts (see
-  // golfValuePicks.ts's computeTop20MarketGaps) - null/undefined when
-  // there's no odds for them. Unfiltered/unthresholded - VALUE/DANGER
-  // classification happens via classifyMarketGap(), not here.
-  marketGapPercent?: number | null;
+  // Bookies-vs-price-predicted top20 info (see golfValuePicks.ts's
+  // computeTop20MarketGaps) - null/undefined when there's no odds for
+  // them. VALUE/DANGER classification happens via classifyMarketGap(),
+  // not here.
+  marketGap?: MarketGapInfo | null;
 };
 
 export const GOLF_SQUAD_SIZE = 6;
@@ -152,7 +151,7 @@ function rawMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio: 
 
 function baseMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio: number): number {
   const raw = rawMetric(variant, p, meanRatio);
-  return classifyMarketGap(p.price, p.marketGapPercent) === "danger" ? raw * (1 - DANGER_PENALTY) : raw;
+  return classifyMarketGap(p.price, p.marketGap) === "danger" ? raw * (1 - DANGER_PENALTY) : raw;
 }
 
 function meanRatioFor(variant: GolfTeamVariant, pool: GolfOptimizerPlayer[]): number {

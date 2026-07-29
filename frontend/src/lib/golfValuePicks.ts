@@ -52,8 +52,15 @@ export const DANGER_MIN_PRICE = 15.0;
 // arbitrarily steep/meaningless line.
 const MIN_SAMPLE_SIZE = 8;
 
-/** gamePlayerId -> how far this golfer's market odds sit above (positive) or below (negative) what their price alone predicts, for every golfer with both a price and pasted top20 odds - unfiltered, callers classify via classifyMarketGap(). */
-export function computeTop20MarketGaps(priceRows: ValuePriceRow[], oddsRows: ValueOddsRow[]): Map<number, number> {
+// The bookies' actual top20 probability, what this golfer's PRICE ALONE
+// would predict for that probability (from the field's own price->odds
+// line), and the difference between them - kept as three separate
+// numbers (not just the gap) so the UI can say something concrete
+// ("bookies say 23%, FanTeam's price says 9%") instead of just "+14pts".
+export type MarketGapInfo = { gap: number; marketProbability: number; predictedProbability: number };
+
+/** gamePlayerId -> bookies-vs-price-predicted top20 info, for every golfer with both a price and pasted top20 odds - unfiltered/unthresholded, callers classify via classifyMarketGap(). */
+export function computeTop20MarketGaps(priceRows: ValuePriceRow[], oddsRows: ValueOddsRow[]): Map<number, MarketGapInfo> {
   const probByGolfer = new Map(oddsRows.filter((o) => o.impliedProbability != null).map((o) => [o.golferId, o.impliedProbability as number]));
 
   const paired = priceRows
@@ -72,20 +79,20 @@ export function computeTop20MarketGaps(priceRows: ValuePriceRow[], oddsRows: Val
   const slope = covariance / priceVariance;
   const intercept = meanProb - slope * meanPrice;
 
-  const gaps = new Map<number, number>();
+  const gaps = new Map<number, MarketGapInfo>();
   for (const p of paired) {
     const predicted = intercept + slope * p.price;
-    gaps.set(p.gamePlayerId, p.prob - predicted);
+    gaps.set(p.gamePlayerId, { gap: p.prob - predicted, marketProbability: p.prob, predictedProbability: predicted });
   }
   return gaps;
 }
 
 export type MarketGapFlag = "value" | "danger" | null;
 
-/** Turns a raw market gap (from computeTop20MarketGaps) + this golfer's price into the badge/penalty classification - the single source of truth both the UI badges and the team-builder's DANGER_PENALTY read from, so they can never disagree. */
-export function classifyMarketGap(price: number, gap: number | null | undefined): MarketGapFlag {
-  if (gap == null) return null;
-  if (gap >= VALUE_GAP_THRESHOLD) return "value";
-  if (price >= DANGER_MIN_PRICE && gap <= DANGER_GAP_THRESHOLD) return "danger";
+/** Turns a golfer's market-gap info (from computeTop20MarketGaps) + their price into the badge/penalty classification - the single source of truth both the UI badges and the team-builder's DANGER_PENALTY read from, so they can never disagree. */
+export function classifyMarketGap(price: number, info: MarketGapInfo | null | undefined): MarketGapFlag {
+  if (info == null) return null;
+  if (info.gap >= VALUE_GAP_THRESHOLD) return "value";
+  if (price >= DANGER_MIN_PRICE && info.gap <= DANGER_GAP_THRESHOLD) return "danger";
   return null;
 }
