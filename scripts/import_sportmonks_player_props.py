@@ -1,0 +1,340 @@
+"""
+import_sportmonks_player_props.py
+-----------------------------------
+Real player-level bookmaker markets (anytime/first/last goalscorer, and
+whatever else bookmakers actually offer once checked against live data -
+see PLAYER_PROP_MARKETS below) via SportMonks, which The Odds API's
+equivalent markets have never actually populated for us in practice (see
+import_fixture_extras.py's own docstring). SportMonks was dropped once
+before on this project for fixture/match-odds (see memory
+reference_hail_mary_infra.md) - this is a different use case, player
+props specifically, not a re-run of that.
+
+Two passes, both safe to run on a schedule:
+
+1. link_fixtures() - resolves our own `fixtures` rows to SportMonks'
+   fixture ids, for fixtures in the leagues this subscription is
+   entitled to (Premier League, Championship, FA Cup, Carabao Cup -
+   confirmed via /v3/football/leagues). Matches by (kickoff date, home
+   team, away team) using a team_aliases 'sportmonks' source, same
+   bootstrap pattern import_fixtures_odds.py already uses for
+   'oddsapi' - except this NEVER auto-creates a new team on a miss
+   (unlike that script): every team these leagues could produce already
+   exists in our `teams` table from Odds API's own fixture import, so an
+   unmatched name here means the resolution logic is wrong, not that a
+   new team needs creating - auto-creating one would risk silently
+   fragmenting a real club across two team rows.
+
+2. import_player_props() - for fixtures already linked and kicking off
+   within PROP_WINDOW_DAYS, fetches real pre-match odds and keeps rows
+   whose market is in PLAYER_PROP_MARKETS. Confirmed empirically
+   (2026-07-29): odds - including basic match-winner odds, let alone
+   player props - simply don't exist for a fixture much further out
+   than this, so a run made weeks before kickoff correctly inserts
+   nothing. Player is identified by SportMonks as a bare name string
+   (no id on the odds row itself) - resolved against `players` scoped
+   to ONLY the two teams playing in that fixture (not a global name
+   search), which is what makes exact-name matching safe here: a
+   ~40-player pool per fixture, not the whole division.
+
+Every REAL row captured also upserts player_prop_baselines (migration
+0060) with this fixture's team_fixture_difficulty.attack_score - the
+anchor frontend/src/lib/estimatedPlayerProps.ts scales from for a
+future fixture with no real props posted yet. Only written when a real
+row was actually captured and name-matched - never fabricated.
+
+RUN:
+    python3 scripts/import_sportmonks_player_props.py [--window-days N]
+"""
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import psycopg2
+
+ROOT = Path(__file__).resolve().parent.parent
+SPORTMONKS_BASE = "https://api.sportmonks.com/v3/football"
+
+# The 4 leagues this SportMonks subscription is entitled to that overlap
+# competitions Hail Mary actually tracks (confirmed via
+# /v3/football/leagues - also includes Friendly International, which we
+# don't score and skip). Champions League/Europa/Conference are NOT
+# included in this plan - The Odds API remains the only source for
+# those, unchanged.
+ENTITLED_LEAGUE_IDS = [8, 9, 24, 27]  # Premier League, Championship, FA Cup, Carabao Cup
+
+# Odds only actually populate this close to kickoff (confirmed
+# empirically against a real imminent fixture - a Premier League match
+# 3+ weeks out had zero rows, one 3 days out had 2,276). Generous
+# padding over the observed 3-day case since coverage may start earlier
+# for higher-profile fixtures.
+DEFAULT_PROP_WINDOW_DAYS = 10
+
+# Bookmaker market names confirmed to carry a real player name in `name`
+# (checked against a real live fixture's full market list - see session
+# notes). "Anytime Goalscorer" specifically hasn't been observed yet
+# (the test fixture only offered First/Last, common for lower-profile
+# games) - Premier League fixtures should offer richer markets once
+# real data exists; extend this set then rather than guessing now.
+PLAYER_PROP_MARKETS = {"Goalscorers"}
+
+# Labels within PLAYER_PROP_MARKETS that don't name an actual player -
+# these show up as an "outcome" of the same market and must be filtered
+# out, not stored as a player prop.
+NON_PLAYER_LABELS = {"No Goalscorer"}
+
+SPORTMONKS_TEAM_NAME_OVERRIDES = {
+    "AFC Bournemouth": "Bournemouth",
+    "Brighton & Hove Albion": "Brighton",
+}
+
+
+def load_env():
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return  # CI sets real env vars directly - no .env file there.
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+def fetch_json(url, api_key, params=None):
+    query = dict(params or {})
+    query["api_token"] = api_key
+    full_url = f"{url}?{urllib.parse.urlencode(query)}"
+    req = urllib.request.Request(full_url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        print(f"  [warn] {full_url}: HTTP {e.code} - {e.read()[:200]}")
+        return None
+
+
+def resolve_team_id(cur, name):
+    """Same 'sportmonks' source pattern as import_fixtures_odds.py's
+    'oddsapi' aliasing, EXCEPT this never inserts a new team row on a
+    miss - every team a top-4-tier English competition could produce
+    already exists here from Odds API's own import, so a miss means the
+    name needs an override entry, not a new team."""
+    cur.execute(
+        "select team_id from team_aliases where source = 'sportmonks' and external_name = %s",
+        (name,),
+    )
+    row = cur.fetchone()
+    if row:
+        return row[0]
+
+    canonical_name = SPORTMONKS_TEAM_NAME_OVERRIDES.get(name, name)
+    cur.execute("select id from teams where name = %s", (canonical_name,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    team_id = row[0]
+    cur.execute(
+        "insert into team_aliases (team_id, source, external_name) values (%s, 'sportmonks', %s) on conflict do nothing",
+        (team_id, name),
+    )
+    return team_id
+
+
+def link_fixtures(cur, api_key, window_days):
+    """Resolves fixtures.sportmonks_fixture_id for unlinked fixtures
+    within the lookahead window, matching SportMonks fixtures (in our
+    entitled leagues) to our own rows by (date, home team, away team)."""
+    start = datetime.now(timezone.utc).date()
+    end = start + timedelta(days=window_days + 45)  # link further ahead than we'll fetch odds for - linking itself costs nothing
+
+    linked, unmatched = 0, 0
+    for league_id in ENTITLED_LEAGUE_IDS:
+        data = fetch_json(
+            f"{SPORTMONKS_BASE}/fixtures/between/{start.isoformat()}/{end.isoformat()}",
+            api_key,
+            {"filters": f"fixtureLeagues:{league_id}", "include": "participants"},
+        )
+        if not data:
+            continue
+        for fx in data.get("data", []):
+            participants = fx.get("participants", [])
+            home = next((p for p in participants if p.get("meta", {}).get("location") == "home"), None)
+            away = next((p for p in participants if p.get("meta", {}).get("location") == "away"), None)
+            if not home or not away:
+                continue
+            home_id = resolve_team_id(cur, home["name"])
+            away_id = resolve_team_id(cur, away["name"])
+            if not home_id or not away_id:
+                unmatched += 1
+                print(f"  [unmatched teams] {home.get('name')} vs {away.get('name')} - add a SPORTMONKS_TEAM_NAME_OVERRIDES entry")
+                continue
+
+            starting_at = fx.get("starting_at")
+            if not starting_at:
+                continue
+            fixture_date = starting_at[:10]
+            cur.execute(
+                """
+                update fixtures set sportmonks_fixture_id = %s
+                where home_team_id = %s and away_team_id = %s
+                  and kickoff_at::date = %s and sportmonks_fixture_id is null
+                """,
+                (fx["id"], home_id, away_id, fixture_date),
+            )
+            if cur.rowcount > 0:
+                linked += 1
+
+    print(f"Linked {linked} fixtures to SportMonks ids ({unmatched} team-name misses).")
+
+
+def team_attack_score(cur, fixture_id, team_id):
+    cur.execute(
+        "select attack_score from team_fixture_difficulty where fixture_id = %s and team_id = %s limit 1",
+        (fixture_id, team_id),
+    )
+    row = cur.fetchone()
+    return float(row[0]) if row else None
+
+
+def resolve_player_id(cur, name, team_ids):
+    """Scoped to ONLY the two teams in this fixture - a ~40-player pool,
+    not a global name search, which is what makes exact matching safe
+    here (see this project's own surname-collision incident earlier
+    this season). Returns (player_id, team_id) so the caller doesn't
+    need a second lookup to know whose attack_score applies."""
+    cur.execute(
+        "select id, team_id from players where full_name = %s and team_id = any(%s)",
+        (name, list(team_ids)),
+    )
+    rows = cur.fetchall()
+    return rows[0] if len(rows) == 1 else (None, None)
+
+
+def parse_probability(row):
+    prob = row.get("probability")
+    if prob:
+        try:
+            return float(prob.strip("%")) / 100.0
+        except ValueError:
+            pass
+    price = row.get("value")
+    try:
+        price = float(price)
+        return 1.0 / price if price > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def import_player_props(cur, api_key, window_days):
+    cutoff = datetime.now(timezone.utc) + timedelta(days=window_days)
+    cur.execute(
+        """
+        select f.id, f.sportmonks_fixture_id, f.home_team_id, f.away_team_id
+        from fixtures f
+        where f.sportmonks_fixture_id is not null
+          and f.kickoff_at >= now() and f.kickoff_at <= %s
+        """,
+        (cutoff,),
+    )
+    fixtures = cur.fetchall()
+
+    bookmaker_names = {}
+    total_props, matched = 0, 0
+
+    for fixture_id, sm_fixture_id, home_team_id, away_team_id in fixtures:
+        data = fetch_json(f"{SPORTMONKS_BASE}/odds/pre-match/fixtures/{sm_fixture_id}", api_key)
+        if not data:
+            continue
+        rows = [r for r in data.get("data", []) if r.get("market_description") in PLAYER_PROP_MARKETS]
+        if not rows:
+            continue
+
+        for row in rows:
+            player_name = row.get("name")
+            label = row.get("label")
+            if not player_name or player_name in NON_PLAYER_LABELS or label in NON_PLAYER_LABELS:
+                continue
+            probability = parse_probability(row)
+            price = row.get("value")
+            if probability is None or price is None:
+                continue
+
+            bookmaker_id = row.get("bookmaker_id")
+            if bookmaker_id not in bookmaker_names:
+                bm = fetch_json(f"https://api.sportmonks.com/v3/odds/bookmakers/{bookmaker_id}", api_key)
+                bookmaker_names[bookmaker_id] = (bm or {}).get("data", {}).get("name", f"sportmonks_bookmaker_{bookmaker_id}")
+            bookmaker = bookmaker_names[bookmaker_id]
+
+            market_key = f"{row.get('market_description')} ({label})"
+            cur.execute(
+                """
+                insert into fixture_player_props (fixture_id, player_name_raw, market, bookmaker, price)
+                values (%s, %s, %s, %s, %s)
+                """,
+                (fixture_id, player_name, market_key, bookmaker, price),
+            )
+            total_props += 1
+
+            player_id, player_team_id = resolve_player_id(cur, player_name, (home_team_id, away_team_id))
+            if player_id is None:
+                continue
+            matched += 1
+            attack_score = team_attack_score(cur, fixture_id, player_team_id)
+            if attack_score is None:
+                continue
+            cur.execute(
+                """
+                insert into player_prop_baselines (player_id, market, fixture_id, observed_probability, team_attack_score)
+                values (%s, %s, %s, %s, %s)
+                on conflict (player_id, market) do update set
+                    fixture_id = excluded.fixture_id,
+                    observed_probability = excluded.observed_probability,
+                    team_attack_score = excluded.team_attack_score,
+                    observed_at = now()
+                """,
+                (player_id, market_key, fixture_id, probability, attack_score),
+            )
+
+        print(f"  fixture {fixture_id}: {len(rows)} player-prop rows")
+
+    print(f"\nCaptured {total_props} player-prop rows across {len(fixtures)} linked fixtures due within {window_days} days; {matched} name-matched to a real player_id.")
+    if not fixtures:
+        print("(No fixtures linked and due within the window yet - expected pre-season / far from kickoff.)")
+    elif total_props == 0:
+        print("(Expected this far from kickoff - bookmakers haven't posted player markets yet.)")
+
+
+def main():
+    window_days = DEFAULT_PROP_WINDOW_DAYS
+    if "--window-days" in sys.argv:
+        window_days = int(sys.argv[sys.argv.index("--window-days") + 1])
+
+    load_env()
+    api_key = os.environ["SPORTMONKS_API_KEY"]
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn.autocommit = False
+    cur = conn.cursor()
+
+    try:
+        link_fixtures(cur, api_key, window_days)
+        conn.commit()
+
+        import_player_props(cur, api_key, window_days)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()

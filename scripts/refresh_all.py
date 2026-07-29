@@ -3,8 +3,9 @@ refresh_all.py
 ----------------
 Single entrypoint for the automated data-refresh pipeline (see
 .github/workflows/refresh_data.yml, twice-daily cron): odds -> fixture
-extras -> probabilities -> FanTeam player pull -> import -> recompute
-scores for every upcoming gameweek. Every step here is
+extras -> SportMonks player props -> probabilities -> FanTeam player
+pull -> import -> recompute scores for every upcoming gameweek. Every
+step here is
 authentication-free (the FanTeam player pull needs no login - confirmed
 live, see scraper_fanteam.py) so this can run entirely unattended in CI.
 
@@ -105,6 +106,9 @@ def main():
     results.append(run_step("Odds: fixtures + h2h", ["scripts/import_fixtures_odds.py"]))
     results.append(
         run_step("Odds: fixture extras (team totals / player props)", ["scripts/import_fixture_extras.py", "--limit", "20"])
+    )
+    results.append(
+        run_step("SportMonks: player-level bookmaker props", ["scripts/import_sportmonks_player_props.py"])
     )
     results.append(run_step("Fixture probabilities", ["scripts/compute_fixture_probabilities.py"]))
     results.append(run_step("Clean sheet probabilities", ["scripts/compute_clean_sheet_probabilities.py"]))
