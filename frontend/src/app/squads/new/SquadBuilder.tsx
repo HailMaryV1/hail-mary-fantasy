@@ -47,6 +47,7 @@ export default function SquadBuilder({
   editingSquadId,
   initialName,
   initialSelected,
+  isScratch,
 }: {
   gameSlug: string;
   rules: Rules;
@@ -55,11 +56,14 @@ export default function SquadBuilder({
   editingSquadId?: number;
   initialName?: string;
   initialSelected?: number[];
+  isScratch?: boolean;
 }) {
   const [formationCode, setFormationCode] = useState<string | null>(
     rules.uses_formations ? formations[0]?.code ?? null : null
   );
-  const [name, setName] = useState(initialName ?? (gameSlug === "dreamteam" ? "Dream Team Squad" : "FanTeam Squad"));
+  const [name, setName] = useState(
+    initialName ?? (isScratch ? "Test Squad" : gameSlug === "dreamteam" ? "Dream Team Squad" : "FanTeam Squad")
+  );
   const [selected, setSelected] = useState<Set<number>>(new Set(initialSelected ?? []));
   const [search, setSearch] = useState("");
   const [positionFilter, setPositionFilter] = useState<(typeof POSITIONS)[number] | "ALL">("ALL");
@@ -134,7 +138,7 @@ export default function SquadBuilder({
     startTransition(async () => {
       const result = editingSquadId
         ? await updateSquadPlayers({ squadId: editingSquadId, gamePlayerIds: Array.from(selected) })
-        : await saveSquad({ gameSlug, formationCode, gamePlayerIds: Array.from(selected), name: trimmedName });
+        : await saveSquad({ gameSlug, formationCode, gamePlayerIds: Array.from(selected), name: trimmedName, isScratch });
       if (result?.error) setError(result.error);
     });
   }

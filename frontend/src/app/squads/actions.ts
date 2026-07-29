@@ -70,6 +70,13 @@ type SaveSquadArgs = {
   formationCode: string | null;
   gamePlayerIds: number[];
   name: string;
+  // A scratch squad is a real `squads` row (gets all the same
+  // infrastructure - Ask Mary, lineup rules, etc. - for free) but is
+  // excluded from /squads' main list and Performance Lab's grading, and
+  // redirects to Ask Mary instead of the squad list on save - it exists
+  // purely to test an alternative route, not as a real entry. See
+  // migration 0059.
+  isScratch?: boolean;
 };
 
 /**
@@ -77,7 +84,7 @@ type SaveSquadArgs = {
  * The client-side builder already enforces these live for UX, but a
  * server action is a trust boundary - never rely solely on client checks.
  */
-export async function saveSquad({ gameSlug, formationCode, gamePlayerIds, name }: SaveSquadArgs) {
+export async function saveSquad({ gameSlug, formationCode, gamePlayerIds, name, isScratch }: SaveSquadArgs) {
   const supabase = await createAuthServerClient();
   const {
     data: { user },
@@ -167,6 +174,7 @@ export async function saveSquad({ gameSlug, formationCode, gamePlayerIds, name }
       name,
       formation_id: formation?.id ?? null,
       starting_formation_id: formationId,
+      is_scratch: !!isScratch,
     })
     .select("id")
     .single();
@@ -187,7 +195,67 @@ export async function saveSquad({ gameSlug, formationCode, gamePlayerIds, name }
     return { error: playersError.message };
   }
 
-  redirect("/squads");
+  // A scratch squad exists to be analysed, not managed like a real
+  // entry - straight to Ask Mary rather than the squad list.
+  redirect(isScratch ? `/ask-mary?squad=${squad.id}` : "/squads");
+}
+
+/**
+ * Clones a real squad's current 15 players + transfer/wildcard state
+ * into a brand new scratch squad, then sends the user straight to Ask
+ * Mary for it - "duplicate an existing squad to test an alternative
+ * route" from the audit's Phase B spec. Deliberately does NOT copy
+ * captain/vice-captain or preferred_strategy/horizon - those are
+ * decisions Ask Mary will recompute fresh for the clone, not assumptions
+ * carried over from the original.
+ */
+export async function duplicateSquadAsScratch(sourceSquadId: number) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const { data: source } = await supabase
+    .from("squads")
+    .select("id, name, user_id, game_id, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek")
+    .eq("id", sourceSquadId)
+    .single();
+  if (!source || source.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: sourcePlayers } = await supabase
+    .from("squad_players")
+    .select("game_player_id, is_starting, bench_order")
+    .eq("squad_id", sourceSquadId);
+  if (!sourcePlayers || sourcePlayers.length === 0) return { error: "That squad has no players to duplicate yet." };
+
+  const { data: newSquad, error: squadError } = await supabase
+    .from("squads")
+    .insert({
+      user_id: user.id,
+      game_id: source.game_id,
+      name: `${source.name} (test)`,
+      free_transfers: source.free_transfers,
+      wildcard_1_used_gameweek: source.wildcard_1_used_gameweek,
+      wildcard_2_used_gameweek: source.wildcard_2_used_gameweek,
+      is_scratch: true,
+      scratch_source_squad_id: source.id,
+    })
+    .select("id")
+    .single();
+  if (squadError || !newSquad) return { error: squadError?.message ?? "Failed to duplicate squad." };
+
+  const { error: playersError } = await supabase.from("squad_players").insert(
+    sourcePlayers.map((p) => ({
+      squad_id: newSquad.id,
+      game_player_id: p.game_player_id,
+      is_starting: p.is_starting,
+      bench_order: p.bench_order,
+    }))
+  );
+  if (playersError) return { error: playersError.message };
+
+  redirect(`/ask-mary?squad=${newSquad.id}`);
 }
 
 type UpdateSquadPlayersArgs = {
@@ -512,12 +580,15 @@ export async function saveTeamForGameweek(args: SaveLineupArgs) {
   const { data: squadRow } = await supabase
     .from("squads")
     .select(
-      "id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, preferred_strategy, preferred_captain_horizon, fantasy_games(id, slug, display_name)"
+      "id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, preferred_strategy, preferred_captain_horizon, is_scratch, fantasy_games(id, slug, display_name)"
     )
     .eq("id", args.squadId)
     .single();
   const game = squadRow?.fantasy_games as unknown as { id: number; slug: string; display_name: string } | undefined;
-  if (squadRow && game?.slug === "fanteam") {
+  // Scratch squads (migration 0059) never archive predictions - they
+  // exist purely to test an alternative route, and Performance Lab's
+  // grading should only ever reflect real decisions on real teams.
+  if (squadRow && game?.slug === "fanteam" && !squadRow.is_scratch) {
     // Archives at this squad's OWN preferred_strategy/preferred_captain_horizon
     // (set from whatever the user last chose on /ask-mary) - was
     // hardcoded to "balanced"/1-gameweek regardless, meaning the

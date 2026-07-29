@@ -44,7 +44,9 @@ export default async function AskMaryPage({
 
   const { data: squadsRaw } = await supabase
     .from("squads")
-    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, preferred_strategy, preferred_captain_horizon")
+    .select(
+      "id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, preferred_strategy, preferred_captain_horizon, is_scratch"
+    )
     .eq("user_id", user.id)
     .eq("game_id", fanteamGame.id)
     .order("created_at", { ascending: false });
@@ -166,6 +168,7 @@ export default async function AskMaryPage({
           }`}
         >
           {s.name}
+          {s.is_scratch && <span className="ml-1 text-navy-500">(test)</span>}
         </Link>
       ))}
     </div>

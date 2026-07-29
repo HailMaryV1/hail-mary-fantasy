@@ -86,7 +86,7 @@ export default async function PerformanceLabPage({
 
   const { data: allSquadsRaw } = await supabase
     .from("squads")
-    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, fantasy_games(id, slug, display_name)")
+    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, is_scratch, fantasy_games(id, slug, display_name)")
     .eq("user_id", user.id)
     .order("created_at", { ascending: false });
   type SquadWithGame = {
@@ -95,9 +95,14 @@ export default async function PerformanceLabPage({
     free_transfers: number;
     wildcard_1_used_gameweek: number | null;
     wildcard_2_used_gameweek: number | null;
+    is_scratch: boolean;
     fantasy_games: { id: number; slug: string; display_name: string };
   };
-  const allSquads = (allSquadsRaw ?? []) as unknown as SquadWithGame[];
+  // Scratch squads (migration 0059) never archive predictions
+  // (saveTeamForGameweek skips them), so they'd only ever show up here
+  // as an empty, confusing entry - excluded outright rather than left
+  // to silently be empty.
+  const allSquads = ((allSquadsRaw ?? []) as unknown as SquadWithGame[]).filter((s) => !s.is_scratch);
   const squadNameById = new Map(allSquads.map((s) => [s.id, s.name]));
 
   if (allSquads.length === 0) {
