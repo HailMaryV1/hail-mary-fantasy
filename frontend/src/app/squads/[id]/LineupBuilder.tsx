@@ -242,9 +242,14 @@ export default function LineupBuilder({
     const ids = new Set<number>();
 
     if (sourceIsBench) {
-      benchPlayers.forEach((p) => {
-        if (p.game_player_id !== selectedForSwapId) ids.add(p.game_player_id);
-      });
+      // Only pitch players are valid targets here - bench-to-bench has
+      // its own dedicated reorder control (the "Res" dropdowns below),
+      // and completeSwap's own pitchPlayer/benchPlayer split assumes
+      // the target is always the pitch side when the source is bench.
+      // Marking another bench player as "swappable" here used to let a
+      // click add the source into the starting XI without removing
+      // anyone (completeSwap had nothing on the pitch to delete) -
+      // confirmed reachable, fixed by never offering it as a target.
       startingPlayers.forEach((pitchPlayer) => {
         if (pitchPlayer.position === source.position) {
           ids.add(pitchPlayer.game_player_id);
@@ -276,6 +281,13 @@ export default function LineupBuilder({
     const source = players.find((p) => p.game_player_id === selectedForSwapId);
     if (!source) return;
     const sourceIsBench = !starting.has(source.game_player_id);
+    const targetIsBench = !starting.has(target.game_player_id);
+    // Defense in depth: this logic only makes sense as bench<->pitch.
+    // swappableIds should never offer a same-zone target, but if it
+    // ever did, treating a bench target as "the pitch player" (the old
+    // bug) added a player to the XI without removing anyone - bail
+    // instead.
+    if (sourceIsBench === targetIsBench) return;
     const benchPlayer = sourceIsBench ? source : target;
     const pitchPlayer = sourceIsBench ? target : source;
 
@@ -330,6 +342,50 @@ export default function LineupBuilder({
     }
     setActionError(null);
     setMenuPlayer(player);
+  }
+
+  // Switching formation used to wipe the entire starting XI back to
+  // empty (setStarting(new Set())) - confirmed live: picking a new
+  // formation put all 15 players on the bench instead of adjusting the
+  // lineup. Keeps every current starter who still fits the new
+  // formation's per-position quota, trimming only the lowest-scoring
+  // excess within a position that now has fewer slots (e.g. 5-3-2 ->
+  // 4-4-2 drops the weakest DEF, not an arbitrary/random one) - nobody
+  // is force-added for a position that now needs more, since guessing
+  // who to promote isn't this action's job (Auto-fill optimal XI
+  // already exists for that).
+  function changeFormation(newFormation: Formation) {
+    const newQuota: Record<string, number> = {
+      GK: newFormation.gk_count,
+      DEF: newFormation.def_count,
+      MID: newFormation.mid_count,
+      FWD: newFormation.fwd_count,
+    };
+    const keptCounts: Record<string, number> = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
+    const kept = new Set<number>();
+    players
+      .filter((p) => starting.has(p.game_player_id))
+      .slice()
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .forEach((p) => {
+        if (keptCounts[p.position] < (newQuota[p.position] ?? 0)) {
+          keptCounts[p.position] += 1;
+          kept.add(p.game_player_id);
+        }
+      });
+
+    const droppedIds = Array.from(starting).filter((id) => !kept.has(id));
+    setBenchOrderIds((prev) => {
+      const next = prev.slice();
+      droppedIds.forEach((id) => {
+        const player = players.find((p) => p.game_player_id === id);
+        if (player && player.position !== "GK" && !next.includes(id)) next.push(id);
+      });
+      return next;
+    });
+    setStarting(kept);
+    setFormationCode(newFormation.code);
+    setSelectedForSwapId(null);
   }
 
   function applySuggestion() {
@@ -427,11 +483,7 @@ export default function LineupBuilder({
           {formations.map((f) => (
             <button
               key={f.code}
-              onClick={() => {
-                setFormationCode(f.code);
-                setStarting(new Set());
-                setSelectedForSwapId(null);
-              }}
+              onClick={() => changeFormation(f)}
               className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                 formationCode === f.code
                   ? "bg-sky-500 text-navy-950"
