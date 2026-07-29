@@ -15,6 +15,10 @@ export type GolfRankingRow = {
   makeCutProbability: number | null;
   value: number | null;
   explanation: string | null;
+  // How far this golfer's pasted top20 market odds sit above what their
+  // price alone predicts (see golfValuePicks.ts) - null when there's no
+  // odds for them or the gap doesn't clear VALUE_GAP_THRESHOLD.
+  valueGapPercent: number | null;
 };
 
 const PERSPECTIVES = [
@@ -199,6 +203,14 @@ export default function GolfRankingsTable({
                           WD
                         </span>
                       )}
+                      {row.valueGapPercent != null && (
+                        <span
+                          title={`Top20 market odds imply +${(row.valueGapPercent * 100).toFixed(1)}pts more chance than this golfer's price alone predicts`}
+                          className="ml-1.5 inline-block shrink-0 animate-pulse rounded bg-amber-400 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-navy-950"
+                        >
+                          Value
+                        </span>
+                      )}
                       <span className="block text-xs font-normal text-navy-400 sm:hidden">£{row.price.toFixed(1)}m</span>
                     </td>
                     <td className="hidden px-4 py-3 text-right text-navy-300 sm:table-cell">£{row.price.toFixed(1)}m</td>
@@ -223,6 +235,11 @@ export default function GolfRankingsTable({
                       <td colSpan={COLUMNS.length} className="px-4 py-2 text-xs text-navy-400">
                         {row.explanation}
                         {row.value != null && <span className="ml-3 text-navy-500">Value: {row.value.toFixed(2)} pts/£</span>}
+                        {row.valueGapPercent != null && (
+                          <span className="ml-3 font-semibold text-amber-400">
+                            Market fancies +{(row.valueGapPercent * 100).toFixed(1)}pts top20 chance vs price
+                          </span>
+                        )}
                       </td>
                     </tr>
                   )}

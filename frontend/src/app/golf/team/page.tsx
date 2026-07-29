@@ -2,6 +2,7 @@ import Link from "next/link";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import GolfTeamBuilder from "./GolfTeamBuilder";
 import type { GolfOptimizerPlayer } from "@/lib/golfTeamOptimizer";
+import { computeTop20ValueGaps } from "@/lib/golfValuePicks";
 
 export const dynamic = "force-dynamic";
 
@@ -47,9 +48,22 @@ export default async function GolfTeamPage({
   if (tournament) {
     const { data: entries } = await supabase
       .from("golf_tournament_entries")
-      .select("game_player_id, price, lineup, status, game_players(golfers(full_name))")
+      .select("game_player_id, price, lineup, status, game_players(golfers(id, full_name))")
       .eq("tournament_id", tournament.id)
-      .returns<{ game_player_id: number; price: number; lineup: string | null; status: string | null; game_players: { golfers: { full_name: string } } }[]>();
+      .returns<
+        { game_player_id: number; price: number; lineup: string | null; status: string | null; game_players: { golfers: { id: number; full_name: string } } }[]
+      >();
+
+    const { data: oddsRows } = await supabase
+      .from("golf_tournament_odds")
+      .select("golfer_id, implied_probability")
+      .eq("tournament_id", tournament.id)
+      .eq("market", "top20")
+      .returns<{ golfer_id: number; implied_probability: number | null }[]>();
+    const valueGaps = computeTop20ValueGaps(
+      (entries ?? []).map((e) => ({ gamePlayerId: e.game_player_id, golferId: e.game_players?.golfers?.id ?? -1, price: Number(e.price) })),
+      (oddsRows ?? []).map((o) => ({ golferId: o.golfer_id, impliedProbability: o.implied_probability }))
+    );
 
     const { data: algo } = await supabase
       .from("algorithm_versions")
@@ -85,6 +99,7 @@ export default async function GolfTeamPage({
           ceiling: typeof inputs.ceiling === "number" ? inputs.ceiling : 0,
           makeCutProbability: typeof inputs.make_cut_probability === "number" ? inputs.make_cut_probability : null,
           explanation: typeof inputs.explanation === "string" ? inputs.explanation : null,
+          valueGapPercent: valueGaps.get(e.game_player_id) ?? null,
         };
       });
   }

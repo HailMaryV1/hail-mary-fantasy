@@ -291,6 +291,14 @@ export default function GolfTeamBuilder({
                       <span className="block truncate" title={p.fullName}>
                         {isWatched && <span className="mr-1 text-amber-400">★</span>}
                         {p.fullName}
+                        {p.valueGapPercent != null && (
+                          <span
+                            title={`Top20 market odds imply +${(p.valueGapPercent * 100).toFixed(1)}pts more chance than this golfer's price alone predicts`}
+                            className="ml-1.5 inline-block shrink-0 animate-pulse rounded bg-amber-400 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-navy-950"
+                          >
+                            Value
+                          </span>
+                        )}
                       </span>
                       <span className="block text-xs text-navy-400">£{p.price.toFixed(1)}m</span>
                     </span>
@@ -348,6 +356,14 @@ export default function GolfTeamBuilder({
                           {isUnderdog && (
                             <span title="Underdog (cheapest pick) - scores x1.25, automatic" className="ml-1.5 rounded bg-emerald-950 px-1 py-0.5 text-[9px] font-bold text-emerald-400">UD</span>
                           )}
+                          {p.valueGapPercent != null && (
+                            <span
+                              title={`Top20 market odds imply +${(p.valueGapPercent * 100).toFixed(1)}pts more chance than this golfer's price alone predicts`}
+                              className="ml-1.5 inline-block shrink-0 animate-pulse rounded bg-amber-400 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-navy-950"
+                            >
+                              Value
+                            </span>
+                          )}
                           {p.explanation && (
                             <button
                               onClick={(e) => {
@@ -392,6 +408,11 @@ export default function GolfTeamBuilder({
                             {p.explanation}
                             {p.makeCutProbability != null && (
                               <span className="ml-3 text-navy-500">Make cut: {(p.makeCutProbability * 100).toFixed(0)}%</span>
+                            )}
+                            {p.valueGapPercent != null && (
+                              <span className="ml-3 font-semibold text-amber-400">
+                                Market fancies +{(p.valueGapPercent * 100).toFixed(1)}pts top20 chance vs price
+                              </span>
                             )}
                           </td>
                         </tr>

@@ -31,6 +31,10 @@ export type GolfOptimizerPlayer = {
   ceiling: number;
   makeCutProbability: number | null;
   explanation?: string | null;
+  // How far this golfer's top20 market odds sit above what their price
+  // alone predicts (see golfValuePicks.ts) - null/undefined when there's
+  // no odds for them or the gap doesn't clear VALUE_GAP_THRESHOLD.
+  valueGapPercent?: number | null;
 };
 
 export const GOLF_SQUAD_SIZE = 6;
