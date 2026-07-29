@@ -176,6 +176,75 @@ FINISH_TIERS = [
     ("top60", "top60"),
 ]
 
+# /golf/odds only accepts 'win' | 'top5' | 'top10' | 'top20' (migration
+# 0051) - of those, only 'win' and 'top10'/'top20' line up with a real
+# FanTeam-scored finish tier above ('win' = finishing 1st). 'top5' has NO
+# corresponding scored category in FanTeam's own rules (the ladder jumps
+# top3 -> top10) - there's nothing honest to blend it into, so it stays
+# reported-but-not-blended (still visible in inputs.market_odds).
+MARKET_TIER_MAP = {"win": "rank1", "top10": "top10", "top20": "top20", "top30": "top30", "top40": "top40", "top50": "top50", "top60": "top60"}
+
+# How much to trust a pasted bookmaker line against our own shrunk model
+# probability for the SAME finish tier, once both exist for a golfer.
+# There's no principled way to derive this weight (no historical
+# backtested track record for either side, unlike SHRINKAGE_TOURNAMENTS
+# which is at least reasoned from a sample-size argument) - 0.5 is an
+# honest, documented "trust them equally" assumption, the same spirit as
+# POINTS_PER_STROKE_GAINED_PER_ROUND above. Odds only move the golfer's
+# priced probability for tiers a market was actually pasted for -
+# everything else stays 100% our own model.
+MARKET_BLEND_WEIGHT = 0.5
+
+
+def resolve_exclusive_tiers(tier_probs):
+    """Nested tiers -> exclusive per-tier probability (P(exactly this
+    tier, not a better one)) via successive differences down the ladder,
+    best-to-worst. Anything left over after the worst tier is "outside
+    every scored tier" (misses the cut or finishes 61st+), worth
+    nothing. Shared by project_entry()'s pure-model pass and its
+    market-blended pass below - same math, different input."""
+    exclusive = {}
+    remaining = 1.0
+    for label, jkey in FINISH_TIERS:
+        this_tier = min(tier_probs[jkey], remaining)
+        exclusive[label] = this_tier
+        remaining = max(0.0, remaining - this_tier)
+        # Each subsequent (worse) tier's raw probability already includes
+        # everyone in the better tiers above it (monotonic), so re-clamp
+        # against what's actually left, not the raw shrunk value again.
+        remaining = min(remaining, 1.0)
+    return exclusive
+
+
+def blend_market_tier_probs(tier_probs, golfer_odds):
+    """Blends a pasted bookmaker probability into OUR tier_probs (the
+    pre-differencing per-tier rates, not the derived exclusive ones) for
+    whichever tiers MARKET_TIER_MAP can map a pasted market onto -
+    returns the blended dict plus a detail record per tier actually
+    touched (used both to build the explanation text and stored in
+    inputs for transparency, matching course_history's own "show your
+    work" pattern)."""
+    if not golfer_odds:
+        return tier_probs, {}
+    blended = dict(tier_probs)
+    detail = {}
+    for market, jkey in MARKET_TIER_MAP.items():
+        odds = golfer_odds.get(market)
+        if not odds or odds.get("implied_probability") is None:
+            continue
+        market_prob = max(0.0, min(1.0, odds["implied_probability"]))
+        model_prob = tier_probs.get(jkey, 0.0)
+        blended_prob = model_prob * (1 - MARKET_BLEND_WEIGHT) + market_prob * MARKET_BLEND_WEIGHT
+        blended[jkey] = blended_prob
+        detail[jkey] = {
+            "market": market,
+            "model_probability": round(model_prob, 4),
+            "market_probability": round(market_prob, 4),
+            "blended_probability": round(blended_prob, 4),
+        }
+    return blended, detail
+
+
 DEFAULT_WEIGHTS = {
     "shrinkage_tournaments": SHRINKAGE_TOURNAMENTS,
     "simulations": SIMULATIONS,
@@ -197,6 +266,11 @@ DEFAULT_WEIGHTS = {
         "points_per_stroke_gained_per_round": POINTS_PER_STROKE_GAINED_PER_ROUND,
         "rounds_per_tournament": ROUNDS_PER_TOURNAMENT,
     },
+    # Market odds now blend into the finish-tier probabilities that price
+    # expected_points itself (see blend_market_tier_probs()) rather than
+    # staying purely informational - bump this if the weight or which
+    # markets map to a scored tier ever changes.
+    "market_blend": {"weight": MARKET_BLEND_WEIGHT, "tiers": sorted(MARKET_TIER_MAP.keys())},
 }
 
 
@@ -332,12 +406,15 @@ def fetch_market_odds(cur, tournament_id):
     """golfer_id -> {market: {decimal_odds, implied_probability}}, from
     whatever's been manually pasted in at /golf/odds (migration 0051) -
     no golf odds API covers regular Tour events at a sane price, so this
-    is bookmaker data the user copies in by hand. Purely informational
-    here (see module docstring) - reported alongside the model's own
-    probabilities for comparison, never blended into expected_points,
-    since there's no principled way to weight "our simulation" against
-    "the market" without inventing another conversion the same way
-    course history's strokes-to-points one already had to be."""
+    is bookmaker data the user copies in by hand. Blended into the
+    finish-tier probabilities that drive expected_points (see
+    blend_market_tier_probs()/MARKET_BLEND_WEIGHT above) for whichever
+    tiers a pasted market maps onto ('win'/'top10'/'top20'/...) - 'top5'
+    has no matching FanTeam-scored tier, so it stays reported-only.
+    There's no principled way to derive the blend weight itself (no
+    backtested track record for either side) - MARKET_BLEND_WEIGHT is an
+    honest, documented "trust them equally" assumption, the same spirit
+    as course history's strokes-to-points conversion."""
     cur.execute(
         "select golfer_id, market, decimal_odds, implied_probability from golf_tournament_odds where tournament_id = %s and golfer_id is not null",
         (tournament_id,),
@@ -472,7 +549,7 @@ def branch_rates(shrunk_rates, exclusive_tier_probs, made_cut_rate):
     return made_cut_stat_rates, missed_cut_stat_rates, conditional_tier_probs
 
 
-def project_entry(entry, cohort, scoring_rules, weights):
+def project_entry(entry, cohort, scoring_rules, weights, golfer_odds=None):
     k = weights["shrinkage_tournaments"]
     mc = entry["match_count"]
     avg_stats = entry["avg_stats"]
@@ -484,20 +561,14 @@ def project_entry(entry, cohort, scoring_rules, weights):
     for _, jkey in FINISH_TIERS:
         tier_probs[jkey] = max(0.0, min(1.0, shrink(avg_stats.get(jkey), mc, cohort[jkey], k)))
 
-    # Nested tiers -> exclusive per-tier probability (P(exactly this tier,
-    # not a better one)) via successive differences down the ladder,
-    # best-to-worst. Anything left over after the worst tier is "outside
-    # every scored tier" (misses the cut or finishes 61st+), worth nothing.
-    exclusive = {}
-    remaining = 1.0
-    for label, jkey in FINISH_TIERS:
-        this_tier = min(tier_probs[jkey], remaining)
-        exclusive[label] = this_tier
-        remaining = max(0.0, remaining - this_tier)
-        # Each subsequent (worse) tier's raw probability already includes
-        # everyone in the better tiers above it (monotonic), so re-clamp
-        # against what's actually left, not the raw shrunk value again.
-        remaining = min(remaining, 1.0)
+    # Pure-model finish probabilities, kept distinct from the (possibly
+    # market-blended) ones used for actual scoring below - this is what
+    # "our model alone thinks", for honest reporting/comparison even
+    # after blending changes what actually prices the golfer.
+    model_exclusive = resolve_exclusive_tiers(tier_probs)
+
+    blended_tier_probs, market_blend_detail = blend_market_tier_probs(tier_probs, golfer_odds)
+    exclusive = resolve_exclusive_tiers(blended_tier_probs)
 
     made_cut_rate = max(0.0, min(1.0, shrink(avg_stats.get("madeCut"), mc, cohort["madeCut"], k)))
     made_cut_stat_rates, missed_cut_stat_rates, conditional_tier_probs = branch_rates(shrunk_rates, exclusive, made_cut_rate)
@@ -528,6 +599,8 @@ def project_entry(entry, cohort, scoring_rules, weights):
     return {
         "shrunk_rates": shrunk_rates,
         "exclusive_tier_probs": exclusive,
+        "model_exclusive_tier_probs": model_exclusive,
+        "market_blend_detail": market_blend_detail,
         "made_cut_rate": made_cut_rate,
         "made_cut_stat_rates": made_cut_stat_rates,
         "missed_cut_stat_rates": missed_cut_stat_rates,
@@ -659,7 +732,8 @@ def main():
 
         written = 0
         for entry in entries:
-            proj = project_entry(entry, cohort, scoring_rules, DEFAULT_WEIGHTS)
+            golfer_odds = market_odds.get(entry["golfer_id"])
+            proj = project_entry(entry, cohort, scoring_rules, DEFAULT_WEIGHTS, golfer_odds)
             avail = availability_multiplier(entry["lineup"], entry["status"])
             ch_points, ch_detail = course_history_adjustment(course_history.get(entry["golfer_id"]))
             expected_points = (proj["expected_points"] + ch_points) * avail
@@ -715,20 +789,20 @@ def main():
                         f"{sign} the projection by {ch_points:+.2f} pts."
                     )
 
-            golfer_odds = market_odds.get(entry["golfer_id"])
-            model_win_probability = proj["exclusive_tier_probs"].get("finish_1st", 0.0)
-            if golfer_odds and "win" in golfer_odds and golfer_odds["win"]["implied_probability"] is not None:
-                market_win_probability = golfer_odds["win"]["implied_probability"]
-                # Purely a comparison note, not a correction - the market
-                # figure includes bookmaker overround (implied probabilities
-                # across a full field sum to >100%) so isn't a clean "true"
-                # probability either; it's a second opinion, not an answer.
-                diff = model_win_probability - market_win_probability
-                if abs(diff) >= 0.02:
-                    verdict = "our model is higher on" if diff > 0 else "the market is higher on"
-                    reasons.append(
-                        f"Win probability: model {model_win_probability:.1%} vs market {market_win_probability:.1%} - {verdict} this golfer."
-                    )
+            model_win_probability = proj["model_exclusive_tier_probs"].get("finish_1st", 0.0)
+            tier_label_by_jkey = {jkey: label for label, jkey in FINISH_TIERS}
+            for jkey, blend in proj["market_blend_detail"].items():
+                label = tier_label_by_jkey.get(jkey, jkey)
+                # Market odds include bookmaker overround (implied
+                # probabilities across a full field sum to >100%), so the
+                # pasted figure isn't a clean "true" probability either -
+                # blended_probability (MARKET_BLEND_WEIGHT-weighted, see
+                # that constant's docstring) is what actually prices this
+                # golfer now, model/market shown alongside for transparency.
+                reasons.append(
+                    f"{label.replace('_', ' ')}: model {blend['model_probability']:.1%} vs market {blend['market_probability']:.1%} "
+                    f"-> blended to {blend['blended_probability']:.1%} (market odds pasted at /golf/odds)."
+                )
 
             inputs = {
                 "tournament_id": tournament_id,
@@ -738,6 +812,8 @@ def main():
                 "made_cut_rate": proj["made_cut_rate"],
                 "shrunk_rates": {k: round(v, 4) for k, v in proj["shrunk_rates"].items()},
                 "exclusive_tier_probabilities": {k: round(v, 4) for k, v in proj["exclusive_tier_probs"].items()},
+                "model_exclusive_tier_probabilities": {k: round(v, 4) for k, v in proj["model_exclusive_tier_probs"].items()},
+                "market_blend": proj["market_blend_detail"],  # {} when no odds mapped to a scored tier for this golfer
                 "priced": proj["priced"],
                 "floor": round(floor, 2),
                 "ceiling": round(ceiling, 2),
