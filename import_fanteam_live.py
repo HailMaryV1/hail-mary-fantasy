@@ -24,9 +24,13 @@ deliberately NOT constrained by team, because a player's team_id in our
 `players` table reflects LAST SEASON and may be stale after summer
 transfers. A confident name match here also corrects that team_id to
 the current one, fixing the exact staleness gap flagged since the
-first Hail Mary Score run. Anyone not found (new signings, promoted
-sides) gets a new canonical player created. Anyone with an existing
-FanTeam game_players row NOT in this live pull gets deactivated
+first Hail Mary Score run - but DEBOUNCED (players.pending_team_id):
+confirmed live that FanTeam's own payload can genuinely alternate which
+club it reports for a given player between scrapes, so a new team only
+gets committed (and logged) once it's been seen on two consecutive
+imports, not acted on the instant it first disagrees. Anyone not found
+(new signings, promoted sides) gets a new canonical player created.
+Anyone with an existing FanTeam game_players row NOT in this live pull gets deactivated
 (is_active = false) - relegated clubs (Burnley, West Ham, Wolves this
 season), dropped players, etc. Found by testing the squad builder
 against real relegation data rather than assumed - it initially left
@@ -161,10 +165,12 @@ def import_fixtures(cur, game_id, fixtures_data, team_id_by_real_id):
 
 def import_players(cur, game_id, players_data, team_id_by_real_id):
     # All canonical players, bucketed by position, for name matching.
-    cur.execute("select id, full_name, position, team_id from players")
+    cur.execute("select id, full_name, position, team_id, pending_team_id from players")
     by_position: dict[str, list[tuple]] = {}
-    for pid, full_name, position, team_id in cur.fetchall():
+    pending_team_by_id: dict[int, int] = {}
+    for pid, full_name, position, team_id, pending_team_id in cur.fetchall():
         by_position.setdefault(position, []).append((pid, full_name, team_id))
+        pending_team_by_id[pid] = pending_team_id
 
     # For activity_log summaries ("moved from X to Y") - teams table is
     # tiny, cheap to load whole.
@@ -250,17 +256,41 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
             player_id, canonical_name, canonical_team_id = candidates[0]
             matched += 1
             if canonical_team_id != live_team_id:
-                cur.execute("update players set team_id = %s where id = %s", (live_team_id, player_id))
-                updated_team += 1
-                old_team_name = team_name_by_id.get(canonical_team_id, "an unknown club")
-                new_team_name = team_name_by_id.get(live_team_id, "an unknown club")
-                log_event(
-                    cur,
-                    "team_changed",
-                    f"{canonical_name} moved from {old_team_name} to {new_team_name}",
-                    game_id=game_id,
-                    details={"player_id": player_id, "old_team_id": canonical_team_id, "new_team_id": live_team_id},
-                )
+                # Debounced: confirmed live that FanTeam's own payload can
+                # genuinely alternate which realTeamId it reports for a
+                # given real player between scrapes (Boubacar Kamara,
+                # Abdoullah Ba both flip-flopped between two real clubs on
+                # every import - not a name-matching issue, each had
+                # exactly one unambiguous DB candidate throughout). Only
+                # commit team_id (and log the event) once the SAME new
+                # team has been seen on two consecutive imports - a real
+                # transfer persists into the next scrape by definition, a
+                # one-off upstream blip doesn't.
+                if pending_team_by_id.get(player_id) == live_team_id:
+                    cur.execute(
+                        "update players set team_id = %s, pending_team_id = null, pending_team_seen_at = null where id = %s",
+                        (live_team_id, player_id),
+                    )
+                    updated_team += 1
+                    old_team_name = team_name_by_id.get(canonical_team_id, "an unknown club")
+                    new_team_name = team_name_by_id.get(live_team_id, "an unknown club")
+                    log_event(
+                        cur,
+                        "team_changed",
+                        f"{canonical_name} moved from {old_team_name} to {new_team_name}",
+                        game_id=game_id,
+                        details={"player_id": player_id, "old_team_id": canonical_team_id, "new_team_id": live_team_id},
+                    )
+                else:
+                    cur.execute(
+                        "update players set pending_team_id = %s, pending_team_seen_at = now() where id = %s",
+                        (live_team_id, player_id),
+                    )
+            elif pending_team_by_id.get(player_id) is not None:
+                # Live team now agrees with what's already stored - clear
+                # a stale pending flag from an earlier blip that never
+                # got confirmed on a second run.
+                cur.execute("update players set pending_team_id = null, pending_team_seen_at = null where id = %s", (player_id,))
         else:
             cur.execute(
                 "insert into players (full_name, team_id, position) values (%s, %s, %s) returning id",
