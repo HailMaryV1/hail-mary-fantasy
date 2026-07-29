@@ -104,6 +104,31 @@ export type GameweekPlanStep = {
   writeup: string; // plain-English summary of what this step recommends and why
 };
 
+export type FavouredMoveKind = "quick_win" | "momentum_3gw" | "long_term_5gw" | "hold" | "prepare_for_target";
+
+/**
+ * One of up to 5 ranked, genuinely different options presented alongside
+ * (not instead of) the sequential gameweekPlan above - "what should I do
+ * THIS gameweek" viewed through different lenses (next week only, next 3,
+ * next 5, doing nothing, or setting up a bigger move) rather than one
+ * committed multi-week path. Each option is independently computed from
+ * the squad's CURRENT real state, so they're real alternatives to pick
+ * between, not steps that assume an earlier option was already taken.
+ * See buildFavouredMoves.
+ */
+export type FavouredMove = {
+  kind: FavouredMoveKind;
+  label: string;
+  transfers: BundleTransfer[]; // empty when hold is true
+  hold: boolean;
+  horizonGameweeks: number; // the window this option was optimized against
+  projectedGainOverHorizon: number; // realized points gain (already net of any -4 hit), 0 for hold
+  writeup: string;
+  // Only set for "prepare_for_target" - the elite player this move is
+  // working toward, not yet affordable outright.
+  targetPlayer?: { gamePlayerId: number; fullName: string; teamName: string; price: number };
+};
+
 type PoolRow = {
   game_player_id: number;
   full_name: string;
@@ -170,6 +195,7 @@ export type AskMaryAnalysis = {
   seasonStarted: boolean;
   planningGameweek: number | null;
   gameweekPlan: GameweekPlanStep[];
+  favouredMoves: FavouredMove[];
   captainHorizonGameweeks: number;
   bestCaptain: CaptaincyPick | null;
   viceCaptain: CaptaincyPick | null;
@@ -332,9 +358,11 @@ export async function runAskMaryAnalysis(
   }
 
   const stepGameweeks = planningGameweek != null ? [0, 1, 2].map((offset) => planningGameweek + offset) : [];
-  const [stepScoreMaps, captainScoreMap] = await Promise.all([
+  const [stepScoreMaps, captainScoreMap, threeGwMap, fiveGwMap] = await Promise.all([
     Promise.all(stepGameweeks.map((gw) => getStepScoreMap(gw))),
     getHorizonMap(captainHorizonGameweeks),
+    getHorizonMap(3),
+    getHorizonMap(5),
   ]);
 
   function avgFor(map: Map<number, number>, gamePlayerId: number): number {
@@ -955,7 +983,299 @@ export async function runAskMaryAnalysis(
     return steps;
   }
 
+  /**
+   * A single independent snapshot search - unlike searchBestMoves (which
+   * chains multiple legs together into one sequential plan), this only
+   * ever proposes ONE leg, evaluated fresh against the squad's real
+   * current state. Used to build each of the "favoured moves" below so
+   * they're genuine alternatives to pick between, not steps of each other.
+   * No pair-bundling here deliberately - favoured moves are meant to be
+   * simple, presentable single swaps; the budget-pooled pair search stays
+   * exclusive to the sequential plan above.
+   */
+  function findBestSingleMove(
+    scoreMapForStep: Map<number, number>,
+    workingSquad: WorkingSquadPlayer[],
+    workingSquadIds: Set<number>,
+    workingBudget: number,
+    workingClubCounts: Map<number, number>,
+    freeRemaining: number,
+    wildcardActive: boolean
+  ): { move: SlotMove; gain: number; cost: number } | null {
+    const poolCandidates: TransferCandidate[] = (pool ?? []).map((p) => ({
+      gamePlayerId: p.game_player_id,
+      fullName: p.full_name,
+      teamId: p.team_id,
+      teamName: p.team_name,
+      price: Number(p.price),
+      score: avgFor(scoreMapForStep, p.game_player_id),
+      position: p.position,
+      formStatus: p.formStatus,
+    }));
+    const currentXITotal = optimalXITotal(workingSquad, scoreMapForStep);
+
+    let best: { move: SlotMove; gain: number } | null = null;
+    for (const outPlayer of workingSquad) {
+      const outScore = avgFor(scoreMapForStep, outPlayer.game_player_id);
+      const legalCandidates = findLegalReplacementsForOutgoing(
+        poolCandidates,
+        {
+          gamePlayerId: outPlayer.game_player_id,
+          fullName: outPlayer.full_name,
+          teamId: outPlayer.team_id,
+          teamName: outPlayer.team_name,
+          price: outPlayer.price,
+          score: outScore,
+          position: outPlayer.position,
+        },
+        workingSquadIds,
+        workingBudget,
+        workingClubCounts,
+        rules.max_per_club
+      );
+      for (const match of legalCandidates.slice(0, 20)) {
+        const hypotheticalSquad = workingSquad.filter((p) => p.game_player_id !== outPlayer.game_player_id).concat(toWorkingSquadPlayer(match.candidate));
+        const gain = optimalXITotal(hypotheticalSquad, scoreMapForStep) - currentXITotal;
+        if (!best || gain > best.gain) {
+          best = { move: buildLegInput(outPlayer, match.candidate, outScore, gain), gain };
+        }
+      }
+    }
+    if (!best || best.gain <= 0) return null;
+    const cost = transferCost(freeRemaining, wildcardActive);
+    if (best.gain + cost <= 0) return null; // doesn't clear its own cost
+    return { move: best.move, gain: best.gain, cost };
+  }
+
+  /**
+   * "Prepare for a Target" - the 5th favoured move, and the only one that
+   * looks beyond what's legally affordable right now. The other options
+   * can only ever suggest a transfer that clears its own cost THIS
+   * gameweek; this one instead asks "is there a genuinely elite player
+   * just out of reach, and is there a small downgrade elsewhere that would
+   * free enough cash to reach them?" - described as a two-step idea (do
+   * the downgrade now, bring the target in once a free transfer's
+   * available), not itself a committed step of gameweekPlan. Only ever
+   * returned when a real downgrade genuinely frees enough cash - never a
+   * wishful target with no legal path to it.
+   */
+  function findPrepareForTargetMove(workingSquad: WorkingSquadPlayer[]): FavouredMove | null {
+    if (planningGameweek == null) return null;
+    const quickWinScoreMap = stepScoreMaps[0] ?? new Map();
+
+    const targetCandidates = (pool ?? [])
+      .filter((p) => !squadIds.has(p.game_player_id))
+      .map((p) => ({
+        gamePlayerId: p.game_player_id,
+        fullName: p.full_name,
+        teamId: p.team_id,
+        teamName: p.team_name,
+        price: Number(p.price),
+        position: p.position,
+        score: avgFor(fiveGwMap, p.game_player_id),
+      }))
+      .filter((c) => c.price > budgetRemaining) // already affordable outright - not a "prepare" case
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 15);
+
+    const currentXITotal = optimalXITotal(workingSquad, quickWinScoreMap);
+
+    for (const target of targetCandidates) {
+      const requiredCash = target.price - budgetRemaining;
+      let best: { sell: WorkingSquadPlayer; buy: TransferCandidate; freed: number; pointCost: number } | null = null;
+
+      for (const sell of workingSquad) {
+        if (sell.position === target.position) continue; // that slot is reserved for the target, not for freeing cash
+        const sellScore = avgFor(quickWinScoreMap, sell.game_player_id);
+        const cheaperCandidates: TransferCandidate[] = (pool ?? [])
+          .filter((p) => p.position === sell.position && p.game_player_id !== sell.game_player_id && !squadIds.has(p.game_player_id) && Number(p.price) < sell.price)
+          .map((p) => ({
+            gamePlayerId: p.game_player_id,
+            fullName: p.full_name,
+            teamId: p.team_id,
+            teamName: p.team_name,
+            price: Number(p.price),
+            position: p.position,
+            score: avgFor(quickWinScoreMap, p.game_player_id),
+          }));
+        const legal = findLegalReplacementsForOutgoing(
+          cheaperCandidates,
+          {
+            gamePlayerId: sell.game_player_id,
+            fullName: sell.full_name,
+            teamId: sell.team_id,
+            teamName: sell.team_name,
+            price: sell.price,
+            score: sellScore,
+            position: sell.position,
+          },
+          squadIds,
+          budgetRemaining,
+          clubCounts,
+          rules.max_per_club
+        );
+        for (const match of legal) {
+          const freed = sell.price - match.candidate.price;
+          if (freed < requiredCash) continue;
+          const squadAfter = workingSquad.filter((p) => p.game_player_id !== sell.game_player_id).concat(toWorkingSquadPlayer(match.candidate));
+          const pointCost = currentXITotal - optimalXITotal(squadAfter, quickWinScoreMap);
+          if (!best || pointCost < best.pointCost) best = { sell, buy: match.candidate, freed, pointCost };
+        }
+      }
+      if (!best) continue; // this target isn't reachable via a single downgrade - try the next-best target
+
+      const legScore = scoreMoveCandidates(
+        [buildLegInput(best.sell, best.buy, avgFor(quickWinScoreMap, best.sell.game_player_id), -best.pointCost).input],
+        activeStrategy
+      )[0];
+      const leg: BundleTransfer = {
+        outGamePlayerId: best.sell.game_player_id,
+        outName: best.sell.full_name,
+        outTeam: best.sell.team_name,
+        outPrice: best.sell.price,
+        inGamePlayerId: best.buy.gamePlayerId,
+        inName: best.buy.fullName,
+        inTeam: best.buy.teamName,
+        inPrice: best.buy.price,
+        position: best.sell.position,
+        pointsGain: Math.round(-best.pointCost * 10) / 10,
+        costPoints: 0,
+        risk: legScore.risk,
+        confidence: legScore.confidence,
+        overall: legScore.overall,
+        reasons: legScore.reasons,
+        warnings: legScore.warnings,
+      };
+      const weakestInTargetPosition = workingSquad
+        .filter((p) => p.position === target.position)
+        .map((p) => ({ p, score: avgFor(fiveGwMap, p.game_player_id) }))
+        .sort((a, b) => a.score - b.score)[0]?.p;
+      const writeup = `${leg.outName} → ${leg.inName} frees £${best.freed.toFixed(1)}m this week (costs ${Math.abs(leg.pointsGain).toFixed(1)} pts off your starting XI). That puts ${target.fullName} within reach${
+        weakestInTargetPosition ? ` - the likely swap for ${weakestInTargetPosition.full_name} once you've got a free transfer to spend on it` : ""
+      }.`;
+
+      return {
+        kind: "prepare_for_target",
+        label: "Prepare for a Target",
+        transfers: [leg],
+        hold: false,
+        horizonGameweeks: 5,
+        projectedGainOverHorizon: Math.round(-best.pointCost * 10) / 10,
+        writeup,
+        targetPlayer: { gamePlayerId: target.gamePlayerId, fullName: target.fullName, teamName: target.teamName, price: target.price },
+      };
+    }
+    return null;
+  }
+
+  /**
+   * The "5 favoured moves" - genuinely different single-move options for
+   * THIS gameweek, each computed independently from the squad's real
+   * current state (not chained, unlike gameweekPlan): the best move judged
+   * over the next gameweek only, the best judged over the next 3, the best
+   * judged over the next 5, doing nothing at all, and (when a real one
+   * exists) a downgrade that sets up an otherwise-unaffordable target.
+   * Deduplicated by outgoing/incoming pair - if the same swap tops more
+   * than one horizon, it's only shown once (as the shortest horizon it
+   * appeared under), rather than presented as if it were 2-3 distinct
+   * ideas.
+   */
+  function buildFavouredMoves(): FavouredMove[] {
+    if (planningGameweek == null) return [];
+    const workingSquad: WorkingSquadPlayer[] = squadPlayers.map((p) => ({
+      game_player_id: p.game_player_id,
+      full_name: p.full_name,
+      position: p.position,
+      team_id: p.team_id,
+      team_name: p.team_name,
+      price: p.price,
+    }));
+    const wildcardActiveNow = isWildcardActive(planningGameweek, squad.wildcard_1_used_gameweek ?? null, squad.wildcard_2_used_gameweek ?? null);
+    const quickWinScoreMap = stepScoreMaps[0] ?? new Map();
+
+    function toFavouredMove(kind: FavouredMoveKind, label: string, horizonGameweeks: number, result: ReturnType<typeof findBestSingleMove>): FavouredMove | null {
+      if (!result) return null;
+      const score = scoreMoveCandidates([result.move.input], activeStrategy)[0];
+      const leg: BundleTransfer = {
+        outGamePlayerId: result.move.input.outGamePlayerId,
+        outName: result.move.input.outName,
+        outTeam: result.move.input.outTeam,
+        outPrice: result.move.outPlayer.price,
+        inGamePlayerId: result.move.input.inGamePlayerId,
+        inName: result.move.input.inName,
+        inTeam: result.move.input.inTeam,
+        inPrice: result.move.inCandidate.price,
+        inFormStatus: result.move.inCandidate.formStatus ?? null,
+        position: result.move.input.position,
+        pointsGain: Math.round(result.gain * 10) / 10,
+        costPoints: result.cost,
+        risk: score.risk,
+        confidence: score.confidence,
+        overall: score.overall,
+        reasons: score.reasons,
+        warnings: score.warnings,
+      };
+      const netGain = Math.round((result.gain + result.cost) * 10) / 10;
+      const horizonPhrase = horizonGameweeks === 1 ? "next gameweek" : `next ${horizonGameweeks} gameweeks`;
+      const writeup = `${leg.outName} → ${leg.inName}: projected ${netGain >= 0 ? "+" : ""}${netGain} pts over the ${horizonPhrase}${leg.costPoints < 0 ? " (after the -4 hit)" : ""}.`;
+      return { kind, label, transfers: [leg], hold: false, horizonGameweeks, projectedGainOverHorizon: netGain, writeup };
+    }
+
+    const moves: FavouredMove[] = [];
+    const seenSignatures = new Set<string>();
+    function pushIfNew(mv: FavouredMove | null) {
+      if (!mv) return;
+      const sig = mv.hold ? "hold" : `${mv.transfers[0].outGamePlayerId}:${mv.transfers[0].inGamePlayerId}`;
+      if (seenSignatures.has(sig)) return;
+      seenSignatures.add(sig);
+      moves.push(mv);
+    }
+
+    pushIfNew(
+      toFavouredMove(
+        "quick_win",
+        "Quick Win - Next Gameweek",
+        1,
+        findBestSingleMove(quickWinScoreMap, workingSquad, squadIds, budgetRemaining, clubCounts, freeTransfersBanked, wildcardActiveNow)
+      )
+    );
+    pushIfNew(
+      toFavouredMove(
+        "momentum_3gw",
+        "Momentum - Next 3 Gameweeks",
+        3,
+        findBestSingleMove(threeGwMap, workingSquad, squadIds, budgetRemaining, clubCounts, freeTransfersBanked, wildcardActiveNow)
+      )
+    );
+    pushIfNew(
+      toFavouredMove(
+        "long_term_5gw",
+        "Long-Term - Next 5 Gameweeks",
+        5,
+        findBestSingleMove(fiveGwMap, workingSquad, squadIds, budgetRemaining, clubCounts, freeTransfersBanked, wildcardActiveNow)
+      )
+    );
+
+    const holdFreeAfter = accrueFreeTransfers(freeTransfersBanked);
+    pushIfNew({
+      kind: "hold",
+      label: "Hold",
+      transfers: [],
+      hold: true,
+      horizonGameweeks: 1,
+      projectedGainOverHorizon: 0,
+      writeup: seasonStarted
+        ? `Make no transfers this gameweek - banks your free transfer, giving you ${holdFreeAfter} available before the next gameweek.`
+        : "Hold for now - transfers are free and unlimited before kickoff, so there's no cost to waiting for late team news.",
+    });
+
+    pushIfNew(findPrepareForTargetMove(workingSquad));
+
+    return moves;
+  }
+
   const gameweekPlan = buildGameweekPlan();
+  const favouredMoves = buildFavouredMoves();
 
   const positionAverages: Record<string, number> = {};
   for (const pos of ["GK", "DEF", "MID", "FWD"]) {
@@ -1159,6 +1479,7 @@ export async function runAskMaryAnalysis(
     seasonStarted,
     planningGameweek,
     gameweekPlan,
+    favouredMoves,
     captainHorizonGameweeks,
     bestCaptain,
     viceCaptain,

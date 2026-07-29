@@ -4,6 +4,7 @@ import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { STRATEGIES, type Strategy } from "@/lib/recommendationScoring";
 import { runAskMaryAnalysis, CAPTAIN_HORIZONS } from "@/lib/askMaryEngine";
 import GameweekPlanRow from "./GameweekPlanRow";
+import FavouredMoveCard from "./FavouredMoveCard";
 import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
 import GameSecondaryNav from "../GameSecondaryNav";
 
@@ -272,7 +273,7 @@ export default async function AskMaryPage({
     );
   }
 
-  const { bestCaptain, viceCaptain, health, gameweekPlan, monitorList, hasCalendar, seasonStarted } = analysis;
+  const { bestCaptain, viceCaptain, health, gameweekPlan, favouredMoves, monitorList, hasCalendar, seasonStarted } = analysis;
 
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
@@ -336,6 +337,21 @@ export default async function AskMaryPage({
                 )}
               </div>
             </div>
+
+            {favouredMoves.length > 0 && (
+              <div>
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Favoured Moves</h2>
+                <p className="mt-1 text-xs text-navy-500">
+                  Independent options for right now, viewed through different lenses - pick whichever fits how you want to
+                  play this gameweek. These aren&apos;t steps of each other.
+                </p>
+                <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {favouredMoves.map((move) => (
+                    <FavouredMoveCard key={move.kind} move={move} squadId={selectedSquad.id} />
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">
