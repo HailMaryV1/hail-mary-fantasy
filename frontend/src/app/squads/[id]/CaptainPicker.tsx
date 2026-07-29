@@ -11,22 +11,35 @@ type Starter = {
   hail_mary_score: number;
 };
 
+type RecommendedPick = { game_player_id: number; full_name: string };
+
 export default function CaptainPicker({
   squadId,
   starters,
   currentCaptainId,
   currentViceCaptainId,
+  recommendedCaptain,
+  recommendedVice,
 }: {
   squadId: number;
   starters: Starter[];
   currentCaptainId: number | null;
   currentViceCaptainId: number | null;
+  // Ask Mary's real captain/vice pick (from the one runAskMaryAnalysis
+  // call the parent squad page now makes), NOT a second independent
+  // guess - this used to just be starters[0]/starters[1] (highest raw
+  // current-gameweek score), which could genuinely disagree with what
+  // Mary actually recommends once the captain planning horizon isn't
+  // 1 gameweek. Falls back to starters[0]/[1] only when Ask Mary's
+  // analysis isn't available at all (e.g. no calendar yet, pre-season).
+  recommendedCaptain: RecommendedPick | null;
+  recommendedVice: RecommendedPick | null;
 }) {
-  const recommendedCaptain = starters[0];
-  const recommendedVice = starters[1];
+  const effectiveRecommendedCaptain = recommendedCaptain ?? starters[0] ?? null;
+  const effectiveRecommendedVice = recommendedVice ?? starters[1] ?? null;
 
-  const [captainId, setCaptainId] = useState<number | null>(currentCaptainId ?? recommendedCaptain?.game_player_id ?? null);
-  const [viceId, setViceId] = useState<number | null>(currentViceCaptainId ?? recommendedVice?.game_player_id ?? null);
+  const [captainId, setCaptainId] = useState<number | null>(currentCaptainId ?? effectiveRecommendedCaptain?.game_player_id ?? null);
+  const [viceId, setViceId] = useState<number | null>(currentViceCaptainId ?? effectiveRecommendedVice?.game_player_id ?? null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -41,16 +54,14 @@ export default function CaptainPicker({
 
   return (
     <div>
-      {recommendedCaptain && (
+      {effectiveRecommendedCaptain && (
         <div className="mb-4 rounded-xl border border-emerald-800 bg-emerald-950/30 p-4">
           <p className="text-xs font-medium uppercase tracking-wide text-emerald-400">Recommended</p>
           <p className="mt-1 text-sm text-white">
-            <span className="font-semibold">{recommendedCaptain.full_name}</span> ({recommendedCaptain.hail_mary_score.toFixed(1)}) as
-            captain
-            {recommendedVice && (
+            <span className="font-semibold">{effectiveRecommendedCaptain.full_name}</span> as captain
+            {effectiveRecommendedVice && (
               <>
-                , <span className="font-semibold">{recommendedVice.full_name}</span> ({recommendedVice.hail_mary_score.toFixed(1)}) as
-                vice-captain
+                , <span className="font-semibold">{effectiveRecommendedVice.full_name}</span> as vice-captain
               </>
             )}
           </p>

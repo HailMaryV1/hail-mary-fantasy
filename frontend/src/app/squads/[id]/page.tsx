@@ -6,6 +6,8 @@ import { TEAM_COLORS } from "@/lib/teamColors";
 import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "@/lib/playerStatus";
 import { computeAutoSubAwareTotal, type AutoSubPlayer } from "@/lib/benchAutoSub";
 import { buildFormByGamePlayerId } from "@/lib/hailMaryForm";
+import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
+import type { Strategy } from "@/lib/recommendationScoring";
 import GameSecondaryNav from "@/app/GameSecondaryNav";
 import LineupBuilder, { type GameweekSnapshot } from "./LineupBuilder";
 import CaptainPicker from "./CaptainPicker";
@@ -67,7 +69,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
   const { data: squad } = await supabase
     .from("squads")
     .select(
-      "id, name, user_id, game_id, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, captain_game_player_id, vice_captain_game_player_id, fantasy_games(id, slug, display_name)"
+      "id, name, user_id, game_id, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, captain_game_player_id, vice_captain_game_player_id, preferred_strategy, preferred_captain_horizon, fantasy_games(id, slug, display_name)"
     )
     .eq("id", squadId)
     .single();
@@ -398,6 +400,31 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
     }))
     .sort((a, b) => b.hail_mary_score - a.hail_mary_score);
 
+  // Computed exactly once here (not a second time inside
+  // MaryRecommendationsPanel, which used to re-run this same engine call
+  // independently, hardcoded to "balanced"/1-gameweek regardless of the
+  // squad's actual preferred_strategy/preferred_captain_horizon) - both
+  // CaptainPicker's "Recommended" banner and MaryRecommendationsPanel
+  // below read off this ONE result, so they can no longer disagree with
+  // each other the way CaptainPicker's own starters[0]/[1] guess used to
+  // vs. Ask Mary's real captain pick.
+  const analysis =
+    game.slug === "fanteam"
+      ? await runAskMaryAnalysis(
+          supabase,
+          {
+            id: squad.id,
+            name: squad.name,
+            free_transfers: squad.free_transfers,
+            wildcard_1_used_gameweek: squad.wildcard_1_used_gameweek,
+            wildcard_2_used_gameweek: squad.wildcard_2_used_gameweek,
+          },
+          { id: game.id, display_name: game.display_name },
+          squad.preferred_strategy as Strategy,
+          squad.preferred_captain_horizon
+        )
+      : null;
+
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto grid max-w-6xl grid-cols-1 gap-8 lg:grid-cols-[1fr_360px]">
@@ -438,22 +465,15 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
                 starters={starters}
                 currentCaptainId={squad.captain_game_player_id}
                 currentViceCaptainId={squad.vice_captain_game_player_id}
+                recommendedCaptain={analysis?.bestCaptain ? { game_player_id: analysis.bestCaptain.game_player_id, full_name: analysis.bestCaptain.full_name } : null}
+                recommendedVice={analysis?.viceCaptain ? { game_player_id: analysis.viceCaptain.game_player_id, full_name: analysis.viceCaptain.full_name } : null}
               />
             </div>
           </div>
 
           {game.slug === "fanteam" && (
             <div className="mt-10">
-              <MaryRecommendationsPanel
-                squad={{
-                  id: squad.id,
-                  name: squad.name,
-                  free_transfers: squad.free_transfers,
-                  wildcard_1_used_gameweek: squad.wildcard_1_used_gameweek,
-                  wildcard_2_used_gameweek: squad.wildcard_2_used_gameweek,
-                  game_id: squad.game_id,
-                }}
-              />
+              <MaryRecommendationsPanel squadId={squad.id} gameId={game.id} analysis={analysis} />
             </div>
           )}
 

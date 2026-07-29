@@ -8,6 +8,7 @@ import { suggestBestXI } from "@/lib/squadOptimizer";
 import { wildcardWindowFor, isWildcardActive, TRANSFER_HIT_COST } from "@/lib/transferEconomy";
 import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
 import { recordPredictions } from "@/app/ask-mary/actions";
+import type { Strategy } from "@/lib/recommendationScoring";
 
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
@@ -510,11 +511,18 @@ export async function saveTeamForGameweek(args: SaveLineupArgs) {
 
   const { data: squadRow } = await supabase
     .from("squads")
-    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, fantasy_games(id, slug, display_name)")
+    .select(
+      "id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, preferred_strategy, preferred_captain_horizon, fantasy_games(id, slug, display_name)"
+    )
     .eq("id", args.squadId)
     .single();
   const game = squadRow?.fantasy_games as unknown as { id: number; slug: string; display_name: string } | undefined;
   if (squadRow && game?.slug === "fanteam") {
+    // Archives at this squad's OWN preferred_strategy/preferred_captain_horizon
+    // (set from whatever the user last chose on /ask-mary) - was
+    // hardcoded to "balanced"/1-gameweek regardless, meaning the
+    // Performance Lab history this feeds could silently record a
+    // horizon/strategy the user never actually saw or chose.
     await runAskMaryAnalysis(
       supabase,
       {
@@ -525,8 +533,8 @@ export async function saveTeamForGameweek(args: SaveLineupArgs) {
         wildcard_2_used_gameweek: squadRow.wildcard_2_used_gameweek,
       },
       { id: game.id, display_name: game.display_name },
-      "balanced",
-      1,
+      squadRow.preferred_strategy as Strategy,
+      squadRow.preferred_captain_horizon,
       recordPredictions
     ).catch(() => null);
   }

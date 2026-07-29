@@ -1,49 +1,44 @@
 import Link from "next/link";
-import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
+import type { AskMaryAnalysis } from "@/lib/askMaryEngine";
 import GameweekPlanRow from "@/app/ask-mary/GameweekPlanRow";
 
 /**
  * Compact "Mary's Recommendations" summary at the top of the Transfers
  * page - the user is already in a transfer mindset here, so they
  * shouldn't have to navigate to /ask-mary to see or act on Mary's advice.
- * Reuses runAskMaryAnalysis (the same engine Ask Mary itself calls)
- * rather than any separate transfer-recommendation logic, and reuses
- * BundleCard for rendering so there's exactly one recommendation UI, not
- * two. Deliberately omits recordPredictionsFn - the Ask Mary page and
- * Performance Lab's own refresh-on-visit already archive predictions on
- * every visit; wiring this page into that too would just be a second,
- * less-visible write path for no analytical benefit.
  *
- * Only rendered for FanTeam-soccer squads (see runAskMaryAnalysis's own
- * scope note) - Dream Team has no live projections pipeline and NFL
- * FanTeam has no gameweek calendar/transfer economy yet, same gating
- * every other Ask Mary/Performance Lab entry point in this app already
- * uses.
+ * Purely presentational - `analysis` is computed exactly ONCE by the
+ * parent squad page (squads/[id]/page.tsx), using that squad's own
+ * preferred_strategy/preferred_captain_horizon, and passed down to both
+ * this panel AND CaptainPicker's "Recommended" banner. This used to run
+ * runAskMaryAnalysis a second time, independently, hardcoded to
+ * "balanced"/1-gameweek regardless of what the squad's actual preference
+ * was - which could silently disagree with both /ask-mary's own display
+ * and CaptainPicker's separate recommendation. See squads/[id]/page.tsx
+ * for the single source of truth this now reads from.
  */
-export default async function MaryRecommendationsPanel({
-  squad,
+export default function MaryRecommendationsPanel({
+  squadId,
+  gameId,
+  analysis,
 }: {
-  squad: { id: number; name: string; free_transfers: number; wildcard_1_used_gameweek: number | null; wildcard_2_used_gameweek: number | null; game_id: number };
+  squadId: number;
+  gameId: number;
+  analysis: AskMaryAnalysis | null;
 }) {
-  const supabase = await createAuthServerClient();
-  const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name").eq("id", squad.game_id).single();
-  if (!fanteamGameRow) return null;
-
-  const analysis = await runAskMaryAnalysis(supabase, squad, fanteamGameRow, "balanced", 1);
   if (!analysis) return null;
 
   return (
     <div className="mb-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Recommendations</h2>
-        <Link href={`/ask-mary?squad=${squad.id}`} className="text-xs font-medium text-sky-400 hover:text-sky-300">
+        <Link href={`/ask-mary?squad=${squadId}`} className="text-xs font-medium text-sky-400 hover:text-sky-300">
           View Full Analysis →
         </Link>
       </div>
       <div className="mt-2 flex flex-col gap-2">
         {analysis.gameweekPlan.map((step) => (
-          <GameweekPlanRow key={step.offset} step={step} squadId={squad.id} gameId={fanteamGameRow.id} />
+          <GameweekPlanRow key={step.offset} step={step} squadId={squadId} gameId={gameId} />
         ))}
         <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
           <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain</h3>

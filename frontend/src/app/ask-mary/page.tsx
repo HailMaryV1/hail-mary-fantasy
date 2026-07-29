@@ -28,12 +28,6 @@ export default async function AskMaryPage({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  // Drives the Captain & Vice-Captain pick only - Mary's Recommendations
-  // is always the sequential GW1/GW2/GW3 plan regardless of this setting,
-  // so this control's job is just "which horizon to captain by."
-  const captainHorizon = CAPTAIN_HORIZONS.find((h) => h.key === horizonParam) ?? CAPTAIN_HORIZONS[2];
-  const activeStrategy = (STRATEGIES.find((s) => s.key === strategyParam)?.key ?? "balanced") as Strategy;
-
   const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name").eq("slug", "fanteam").single();
 
   if (!fanteamGameRow) {
@@ -50,7 +44,7 @@ export default async function AskMaryPage({
 
   const { data: squadsRaw } = await supabase
     .from("squads")
-    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek")
+    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, preferred_strategy, preferred_captain_horizon")
     .eq("user_id", user.id)
     .eq("game_id", fanteamGame.id)
     .order("created_at", { ascending: false });
@@ -87,6 +81,35 @@ export default async function AskMaryPage({
   }
 
   const selectedSquad = squadsRaw.find((s) => s.id === Number(squadParam)) ?? squadsRaw[0];
+
+  // Drives the Captain & Vice-Captain pick only - Mary's Recommendations
+  // is always the sequential GW1/GW2/GW3 plan regardless of this setting,
+  // so this control's job is just "which horizon to captain by." Falls
+  // back to this squad's own last-chosen preference (not a fixed
+  // constant) when the URL doesn't specify one, so landing on /ask-mary
+  // via a bare link ("View Full Analysis") picks up wherever you left
+  // off rather than silently resetting to a default.
+  const captainHorizon =
+    CAPTAIN_HORIZONS.find((h) => h.key === horizonParam) ??
+    CAPTAIN_HORIZONS.find((h) => h.gameweeks === selectedSquad.preferred_captain_horizon) ??
+    CAPTAIN_HORIZONS[2];
+  const activeStrategy = (STRATEGIES.find((s) => s.key === strategyParam)?.key ??
+    selectedSquad.preferred_strategy ??
+    "balanced") as Strategy;
+
+  // Persist whenever the resolved settings actually differ from what's
+  // stored - covers both "user just clicked a pill" (URL param present)
+  // and nothing else, since prefetch is disabled on every settings Link
+  // below (prefetch={false}) so this only runs on a real navigation, not
+  // on hover. Confirmed real bug this was fixing: MaryRecommendationsPanel
+  // and saveTeamForGameweek both independently hardcoded "balanced"/1
+  // gameweek regardless of what a user had actually chosen here.
+  if (activeStrategy !== selectedSquad.preferred_strategy || captainHorizon.gameweeks !== selectedSquad.preferred_captain_horizon) {
+    await supabase
+      .from("squads")
+      .update({ preferred_strategy: activeStrategy, preferred_captain_horizon: captainHorizon.gameweeks })
+      .eq("id", selectedSquad.id);
+  }
 
   function askMaryUrl(overrides: Partial<{ squad: number; horizon: string; strategy: string }>) {
     const params = new URLSearchParams();
