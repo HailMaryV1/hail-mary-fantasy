@@ -20,6 +20,30 @@
  * choice barely changes which team is best (whoever's picked, the
  * highest scorer should be captain regardless of the exact multiplier),
  * but it does change the honest total shown to the user.
+ *
+ * THE SIX VARIANTS BELOW ARE A PORTFOLIO, NOT SEVEN INTERCHANGEABLE
+ * "PERSPECTIVES". With real money on 5-6 entries, the earlier
+ * highest_projected/safest/highest_ceiling/best_value/balanced/
+ * differential/fade_favourite set was really just several ways of
+ * asking "what maximises the mean?" - and top-10 money in a real
+ * tournament usually goes to 100+ point weeks, well above what any
+ * mean-seeking projection alone predicts (confirmed via
+ * /golf/algorithm-performance - see made_cut_branching_v1's own commit
+ * history). So each variant here is deliberately built around a
+ * DIFFERENT risk shape, using signals the algorithm already computes
+ * (ceiling, floor, make-cut probability, bookmaker odds via
+ * golfValuePicks.ts, course history) - not just relabelled means:
+ *   - Ceiling Max: the outright-win bet, floor ignored entirely.
+ *   - Bookies' Trust: leans hard on market odds over our own model -
+ *     a hedge while the algorithm is still learning from few
+ *     tournaments.
+ *   - Cut-Secure Ceiling: upside gated by make-cut confidence - the
+ *     longest runway to actually reach a big score.
+ *   - Contrarian Value: cheap ceiling from golfers the market rates
+ *     above their FanTeam price - genuine differentiation.
+ *   - Floor Anchor: the insurance leg, still live if the others miss.
+ *   - Course Specialists: heavy course-history + top20-odds weighting -
+ *     proven form at this specific track.
  */
 
 import { classifyMarketGap, type MarketGapInfo } from "./golfValuePicks";
@@ -36,84 +60,95 @@ export type GolfOptimizerPlayer = {
   // Bookies-vs-price-predicted top20 info (see golfValuePicks.ts's
   // computeTop20MarketGaps) - null/undefined when there's no odds for
   // them. VALUE/DANGER classification happens via classifyMarketGap(),
-  // not here.
+  // not here. marketGap.marketProbability (the raw bookmaker top20%,
+  // independent of price) is what bookies_trust/course_specialists lean
+  // on below.
   marketGap?: MarketGapInfo | null;
+  // course_history_points_adjustment from compute_golf_projections.py's
+  // inputs - a small, already-shrunk points delta (see that module's
+  // docstring) already folded into expectedPoints. course_specialists
+  // amplifies it for SELECTION purposes (see COURSE_HISTORY_AMPLIFY)
+  // since its honest, conservative size wouldn't otherwise distinguish
+  // this variant's picks. null when no course is linked or this golfer
+  // has no history there.
+  courseHistoryPoints?: number | null;
 };
 
 export const GOLF_SQUAD_SIZE = 6;
 
 export type GolfTeamVariant =
-  | "highest_projected"
-  | "safest"
-  | "highest_ceiling"
-  | "best_value"
-  | "balanced"
-  | "differential"
-  | "fade_favourite";
+  | "ceiling_max"
+  | "bookies_trust"
+  | "cut_secure_ceiling"
+  | "contrarian_value"
+  | "floor_anchor"
+  | "course_specialists";
 
 export const GOLF_TEAM_VARIANTS: { key: GolfTeamVariant; label: string; description: string }[] = [
-  { key: "highest_projected", label: "Highest Projected", description: "Maximises total expected FanTeam points" },
-  { key: "safest", label: "Safest", description: "Maximises floor - the safe, made-the-cut-at-worst outcome" },
-  { key: "highest_ceiling", label: "Highest Ceiling", description: "Maximises ceiling - built to win, not just cash" },
   {
-    key: "best_value",
-    label: "Best Value",
-    description: "Best total points from golfers with strong points-per-£ - not just the cheapest options, spends the full budget",
-  },
-  { key: "balanced", label: "Balanced", description: "Blends projection, floor and ceiling evenly" },
-  {
-    key: "differential",
-    label: "Differential",
-    description: "Best total ceiling from golfers who offer it cheaply - avoids the obvious, already-expensive favourites",
+    key: "ceiling_max",
+    label: "Ceiling Max",
+    description: "Pure ceiling, floor ignored entirely - the outright-win bet, built for if everything breaks right",
   },
   {
-    key: "fade_favourite",
-    label: "Fade the Favourite",
-    description:
-      "Highest projected total WITHOUT your single most expensive golfer - a hedge against every other variant leaning on the same one",
+    key: "bookies_trust",
+    label: "Bookies' Trust",
+    description: "Leans heavily on bookmaker top20 odds over our own model - a hedge while the algorithm is still learning",
+  },
+  {
+    key: "cut_secure_ceiling",
+    label: "Cut-Secure Ceiling",
+    description: "High upside gated by a high make-cut chance - the longest runway to reach a big score",
+  },
+  {
+    key: "contrarian_value",
+    label: "Contrarian Value",
+    description: "Cheap ceiling from golfers the bookies rate above their FanTeam price - real differentiation, not just cheap",
+  },
+  {
+    key: "floor_anchor",
+    label: "Floor Anchor",
+    description: "Maximises floor - the insurance leg that's still live if the other five miss",
+  },
+  {
+    key: "course_specialists",
+    label: "Course Specialists",
+    description: "Weighs heavily on this course's history plus top20 odds - proven form at this specific track",
   },
 ];
 
-/**
- * The pool's single most expensive golfer, excluding anyone already
- * locked or excluded by the user (a lock is a stronger, explicit choice
- * than this variant's own auto-exclude, and an already-excluded golfer
- * has nothing left to fade). Exported so the UI can show WHO is being
- * faded, not just apply it silently - matches this project's standing
- * "always explain what Mary is doing" principle.
- */
-export function determineFavouriteId(
-  pool: GolfOptimizerPlayer[],
-  lockedIds: number[] = [],
-  excludedIds: number[] = []
-): number | null {
-  const eligible = pool.filter((p) => !lockedIds.includes(p.gamePlayerId) && !excludedIds.includes(p.gamePlayerId));
-  if (eligible.length === 0) return null;
-  return eligible.reduce((max, p) => (p.price > max.price ? p : max), eligible[0]).gamePlayerId;
-}
-
-// How strongly best_value/differential tilt toward points-per-£ before
-// spending pressure (see below) kicks in. A golfer priced at exactly the
-// field's average ratio gets no adjustment; one at double the average
-// ratio gets roughly a +VALUE_WEIGHT swing to their effective score, one
-// at zero ratio gets roughly -VALUE_WEIGHT. Bounded and self-scaling
-// (relative to the field, not an arbitrary point constant) rather than
-// a magic number that'd need re-tuning if price/point scales ever shift.
+// How strongly contrarian_value tilts toward ceiling-per-£ before
+// spending pressure (see spendRemainingBudget) kicks in. A golfer priced
+// at exactly the field's average ratio gets no adjustment; one at double
+// the average ratio gets roughly a +VALUE_WEIGHT swing to their
+// effective score, one at zero ratio gets roughly -VALUE_WEIGHT.
+// Bounded and self-scaling (relative to the field, not an arbitrary
+// point constant) rather than a magic number that'd need re-tuning if
+// price/point scales ever shift.
 const VALUE_WEIGHT = 0.3;
 
-// The metric actually being summed/maximised by the knapsack for each
-// variant. best_value and differential deliberately do NOT filter out or
-// cap expensive golfers, and do NOT maximise a raw per-player ratio
-// either - either of those silently left most of the £100m budget unused
-// (a team of 6 minimum-priced golfers can have the best summed ratio, or
-// be the only golfers a "good ratio" cutoff allows through, while never
-// pricing anywhere near the cap - both were real bugs here). Instead the
-// per-player value is the SAME points/ceiling metric as the non-value
-// variants, nudged by how much better- or worse-than-average that
-// golfer's points-per-£ is - so the knapsack still feels the same "spend
-// the budget on the best total" pressure as Highest Projected, just
-// biased toward efficient golfers rather than the single most expensive
-// ones when points are otherwise close.
+// Extra lean for contrarian_value specifically toward golfers already
+// flagged VALUE (see golfValuePicks.ts) - stacks with VALUE_WEIGHT's
+// price-efficiency lean above, since a value-flagged golfer being cheap
+// AND market-endorsed is exactly this variant's whole point.
+const CONTRARIAN_VALUE_FLAG_BONUS = 0.2;
+
+// How heavily bookies_trust (and course_specialists, alongside its own
+// course-history term) leans on a golfer's raw market top20 probability
+// relative to the field average - deliberately stronger than
+// VALUE_WEIGHT's 0.3, since "leans heavily on the bookies" is this
+// variant's entire identity, not a minor nudge.
+const BOOKIES_TRUST_WEIGHT = 0.6;
+
+// course_specialists amplifies the (small, already-conservative)
+// course_history_points_adjustment well beyond its honest size in
+// expectedPoints - there's no principled "correct" amplification factor
+// here (same spirit as MARKET_BLEND_WEIGHT in compute_golf_projections.py -
+// an honest, documented assumption, not a fact), chosen so real course
+// form actually moves this variant's picks rather than getting lost
+// alongside everything else expectedPoints already accounts for.
+const COURSE_HISTORY_AMPLIFY = 6;
+
 // How hard the knapsack is nudged away from a DANGER-flagged golfer
 // (>= DANGER_MIN_PRICE, market rates their top20 chance
 // DANGER_GAP_THRESHOLD or more below what their price predicts) - a soft
@@ -121,45 +156,64 @@ const VALUE_WEIGHT = 0.3;
 // expectedPoints/displayed score (that stays honest and untouched), and
 // not a hard exclude either: the optimizer can still pick a danger-
 // flagged golfer if they're genuinely the best of a bad set of options,
-// same philosophy as VALUE_WEIGHT's soft nudge below rather than a
+// same philosophy as VALUE_WEIGHT's soft nudge above rather than a
 // price cutoff that could leave no legal team at all.
 const DANGER_PENALTY = 0.15;
 
-function rawMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio: number): number {
+/** (marketProbability - field average) / field average - the relative signal bookies_trust/course_specialists lean on, 0 when this golfer has no odds pasted (silence isn't evidence, so no adjustment rather than a penalty). */
+function relativeMarketBonus(p: GolfOptimizerPlayer, meanMarketProb: number): number {
+  const prob = p.marketGap?.marketProbability;
+  if (prob == null || meanMarketProb <= 0) return 0;
+  return (prob - meanMarketProb) / meanMarketProb;
+}
+
+function rawMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio: number, meanMarketProb: number): number {
   switch (variant) {
-    case "highest_projected":
-    case "fade_favourite":
-      return p.expectedPoints;
-    case "safest":
-      return p.floor;
-    case "highest_ceiling":
+    case "ceiling_max":
       return p.ceiling;
-    case "balanced":
-      return 0.5 * p.expectedPoints + 0.25 * p.floor + 0.25 * p.ceiling;
-    case "best_value": {
-      const ratio = p.price > 0 ? p.expectedPoints / p.price : 0;
-      const relativeValue = meanRatio > 0 ? (ratio - meanRatio) / meanRatio : 0;
-      return p.expectedPoints * (1 + VALUE_WEIGHT * relativeValue);
+    case "floor_anchor":
+      return p.floor;
+    case "cut_secure_ceiling": {
+      // A probability-weighted mix of the big upside (if the cut is
+      // made) and the safe floor (if it isn't) - rewards genuinely high
+      // floor+ceiling+cut-probability golfers, and naturally discounts
+      // boom-or-bust picks with a big raw ceiling but a low chance of
+      // ever reaching the weekend to use it.
+      const cutProb = p.makeCutProbability ?? 0;
+      return cutProb * p.ceiling + (1 - cutProb) * p.floor;
     }
-    case "differential": {
+    case "bookies_trust":
+      return p.expectedPoints * (1 + BOOKIES_TRUST_WEIGHT * relativeMarketBonus(p, meanMarketProb));
+    case "contrarian_value": {
       const ratio = p.price > 0 ? p.ceiling / p.price : 0;
       const relativeValue = meanRatio > 0 ? (ratio - meanRatio) / meanRatio : 0;
-      return p.ceiling * (1 + VALUE_WEIGHT * relativeValue);
+      const valueFlagBonus = classifyMarketGap(p.price, p.marketGap) === "value" ? CONTRARIAN_VALUE_FLAG_BONUS : 0;
+      return p.ceiling * (1 + VALUE_WEIGHT * relativeValue + valueFlagBonus);
     }
+    case "course_specialists":
+      return (
+        p.expectedPoints +
+        COURSE_HISTORY_AMPLIFY * (p.courseHistoryPoints ?? 0) +
+        p.expectedPoints * BOOKIES_TRUST_WEIGHT * relativeMarketBonus(p, meanMarketProb)
+      );
   }
 }
 
-function baseMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio: number): number {
-  const raw = rawMetric(variant, p, meanRatio);
+function baseMetric(variant: GolfTeamVariant, p: GolfOptimizerPlayer, meanRatio: number, meanMarketProb: number): number {
+  const raw = rawMetric(variant, p, meanRatio, meanMarketProb);
   return classifyMarketGap(p.price, p.marketGap) === "danger" ? raw * (1 - DANGER_PENALTY) : raw;
 }
 
 function meanRatioFor(variant: GolfTeamVariant, pool: GolfOptimizerPlayer[]): number {
-  if (variant !== "best_value" && variant !== "differential") return 0;
-  const ratios = pool
-    .filter((p) => p.price > 0)
-    .map((p) => (variant === "best_value" ? p.expectedPoints / p.price : p.ceiling / p.price));
+  if (variant !== "contrarian_value") return 0;
+  const ratios = pool.filter((p) => p.price > 0).map((p) => p.ceiling / p.price);
   return ratios.length > 0 ? ratios.reduce((a, b) => a + b, 0) / ratios.length : 0;
+}
+
+function meanMarketProbFor(variant: GolfTeamVariant, pool: GolfOptimizerPlayer[]): number {
+  if (variant !== "bookies_trust" && variant !== "course_specialists") return 0;
+  const probs = pool.map((p) => p.marketGap?.marketProbability).filter((x): x is number => x != null);
+  return probs.length > 0 ? probs.reduce((a, b) => a + b, 0) / probs.length : 0;
 }
 
 // £0.1m is the real price granularity FanTeam uses - working in these
@@ -271,14 +325,7 @@ export function buildGolfTeam(
   lockedIds: number[] = [],
   excludedIds: number[] = []
 ): number[] | null {
-  // Fade the Favourite is Highest Projected re-run on a pool with its own
-  // priciest golfer removed - the exclusion is computed here (not passed
-  // in by the caller) so it always tracks whichever tournament/pool is
-  // live, rather than a name hardcoded for one week.
-  const favouriteId = variant === "fade_favourite" ? determineFavouriteId(pool, lockedIds, excludedIds) : null;
-  const effectiveExcludedIds = favouriteId != null ? [...excludedIds, favouriteId] : excludedIds;
-
-  const excluded = new Set(effectiveExcludedIds);
+  const excluded = new Set(excludedIds);
   const candidates = pool.filter((p) => !excluded.has(p.gamePlayerId));
   const locked = candidates.filter((p) => lockedIds.includes(p.gamePlayerId));
   if (locked.length > GOLF_SQUAD_SIZE) return null;
@@ -288,15 +335,16 @@ export function buildGolfTeam(
   const unlocked = candidates.filter((p) => !lockedIds.includes(p.gamePlayerId));
 
   // Computed once from the real candidate pool (not a fixed constant) so
-  // "average points-per-£" tracks whatever this tournament's actual
-  // pricing looks like.
+  // "average points-per-£"/"average market top20%" tracks whatever this
+  // tournament's actual pricing/odds look like.
   const meanRatio = meanRatioFor(variant, unlocked);
+  const meanMarketProb = meanMarketProbFor(variant, unlocked);
 
   const remainingSlots = GOLF_SQUAD_SIZE - locked.length;
   const remainingBudgetUnits = toUnits(budget) - toUnits(lockedPrice);
   if (remainingBudgetUnits < 0) return null;
 
-  const picked = knapsack(unlocked, remainingSlots, remainingBudgetUnits, (p) => baseMetric(variant, p, meanRatio));
+  const picked = knapsack(unlocked, remainingSlots, remainingBudgetUnits, (p) => baseMetric(variant, p, meanRatio, meanMarketProb));
   if (!picked) return null;
 
   const final = spendRemainingBudget(locked.concat(picked), candidates, budget, lockedIds);

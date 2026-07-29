@@ -100,6 +100,7 @@ export default async function GolfTeamPage({
           makeCutProbability: typeof inputs.make_cut_probability === "number" ? inputs.make_cut_probability : null,
           explanation: typeof inputs.explanation === "string" ? inputs.explanation : null,
           marketGap: marketGaps.get(e.game_player_id) ?? null,
+          courseHistoryPoints: typeof inputs.course_history_points_adjustment === "number" ? inputs.course_history_points_adjustment : null,
         };
       });
   }
