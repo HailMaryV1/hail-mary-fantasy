@@ -39,9 +39,21 @@ Two passes, both safe to run on a schedule:
 
 Every REAL row captured also upserts player_prop_baselines (migration
 0060) with this fixture's team_fixture_difficulty.attack_score - the
-anchor frontend/src/lib/estimatedPlayerProps.ts scales from for a
-future fixture with no real props posted yet. Only written when a real
-row was actually captured and name-matched - never fabricated.
+anchor a future fixture with no real props posted yet scales from. Only
+written when a real row was actually captured and name-matched - never
+fabricated.
+
+3. populate_hub() - the Bookmaker Intelligence Hub write path
+   (bookmaker_player_features, migration 0064): every real "Anytime"
+   goalscorer row just captured becomes a REAL hub row
+   (is_estimated = false); every player with a baseline also gets an
+   ESTIMATED hub row (is_estimated = true) for every other upcoming
+   fixture their team plays, scaled by that fixture's own team-strength
+   signal - resolved once here, game-independently (no game_id at all,
+   see migration 0064's own comment), so every fantasy game's scoring
+   engine and Ask Mary read one already-resolved value instead of each
+   re-deriving this fallback. Never overwrites a real row with an
+   estimate.
 
 RUN:
     python3 scripts/import_sportmonks_player_props.py [--window-days N]
@@ -302,6 +314,26 @@ def import_player_props(cur, api_key, window_days):
                 (player_id, market_key, fixture_id, probability, attack_score),
             )
 
+            # Real "Anytime" goalscorer odds go straight into the hub as a
+            # REAL row - "First"/"Last" alone don't give P(scores >= 1),
+            # so only this specific label populates score_probability.
+            if label == "Anytime":
+                cur.execute(
+                    """
+                    insert into bookmaker_player_features
+                        (player_id, fixture_id, score_probability, is_estimated, source, confidence, market_observed_at)
+                    values (%s, %s, %s, false, 'sportmonks_real', 1.0, now())
+                    on conflict (player_id, fixture_id) do update set
+                        score_probability = excluded.score_probability,
+                        is_estimated = false,
+                        source = excluded.source,
+                        confidence = excluded.confidence,
+                        market_observed_at = excluded.market_observed_at,
+                        computed_at = now()
+                    """,
+                    (player_id, fixture_id, probability),
+                )
+
         print(f"  fixture {fixture_id}: {len(rows)} player-prop rows")
 
     print(f"\nCaptured {total_props} player-prop rows across {len(fixtures)} linked fixtures due within {window_days} days; {matched} name-matched to a real player_id.")
@@ -309,6 +341,90 @@ def import_player_props(cur, api_key, window_days):
         print("(No fixtures linked and due within the window yet - expected pre-season / far from kickoff.)")
     elif total_props == 0:
         print("(Expected this far from kickoff - bookmakers haven't posted player markets yet.)")
+
+
+def populate_estimated_hub_rows(cur):
+    """The hub's fallback half: for every player with a real observed
+    baseline, upserts an ESTIMATED bookmaker_player_features row for
+    every upcoming fixture their team plays that doesn't already have a
+    REAL one - scaled by how that fixture's own team-strength signal
+    compares to the one the baseline was observed under.
+
+    Deliberately game-independent: reads fixture_probabilities (real
+    odds) COALESCEd with fixture_strength_model_probabilities (the
+    season-strength fallback) directly, NOT through team_fixture_difficulty
+    (which is joined per-game purely for competition scoping, not a
+    different computation) - so this never depends on which fantasy game
+    happens to call it, matching bookmaker_player_features having no
+    game_id column at all (migration 0064).
+    """
+    cur.execute(
+        """
+        select ppb.player_id, ppb.observed_probability, ppb.team_attack_score, p.team_id
+        from player_prop_baselines ppb
+        join players p on p.id = ppb.player_id
+        where ppb.market ilike '%%Anytime%%'
+        """
+    )
+    baselines = cur.fetchall()
+    if not baselines:
+        return 0
+
+    written = 0
+    for player_id, observed_prob, baseline_attack, team_id in baselines:
+        baseline_attack = float(baseline_attack)
+        if baseline_attack <= 0:
+            continue
+
+        cur.execute(
+            """
+            select
+                f.id as fixture_id, f.home_team_id,
+                coalesce(rp.home_win_prob, mp.home_win_prob) as home_win_prob,
+                coalesce(rp.away_win_prob, mp.away_win_prob) as away_win_prob
+            from fixtures f
+            left join lateral (
+                select home_win_prob, away_win_prob from fixture_probabilities
+                where fixture_id = f.id order by computed_at desc limit 1
+            ) rp on true
+            left join lateral (
+                select home_win_prob, away_win_prob from fixture_strength_model_probabilities
+                where fixture_id = f.id order by computed_at desc limit 1
+            ) mp on true
+            where (f.home_team_id = %s or f.away_team_id = %s) and f.kickoff_at >= now()
+              and coalesce(rp.home_win_prob, mp.home_win_prob) is not null
+            """,
+            (team_id, team_id),
+        )
+        for fixture_id, home_team_id, home_win_prob, away_win_prob in cur.fetchall():
+            attack_score = float(home_win_prob) if team_id == home_team_id else float(away_win_prob)
+
+            cur.execute(
+                "select is_estimated from bookmaker_player_features where player_id = %s and fixture_id = %s",
+                (player_id, fixture_id),
+            )
+            existing = cur.fetchone()
+            if existing is not None and not existing[0]:
+                continue  # never overwrite a real observation with an estimate
+
+            scaled = max(0.01, min(0.9, float(observed_prob) * (attack_score / baseline_attack)))
+            cur.execute(
+                """
+                insert into bookmaker_player_features
+                    (player_id, fixture_id, score_probability, is_estimated, source, confidence, market_observed_at)
+                values (%s, %s, %s, true, 'sportmonks_baseline_scaled', 0.5, now())
+                on conflict (player_id, fixture_id) do update set
+                    score_probability = excluded.score_probability,
+                    is_estimated = true,
+                    source = excluded.source,
+                    confidence = excluded.confidence,
+                    computed_at = now()
+                """,
+                (player_id, fixture_id, scaled),
+            )
+            written += 1
+
+    return written
 
 
 def main():
@@ -328,6 +444,10 @@ def main():
 
         import_player_props(cur, api_key, window_days)
         conn.commit()
+
+        hub_written = populate_estimated_hub_rows(cur)
+        conn.commit()
+        print(f"Hub: wrote {hub_written} estimated bookmaker_player_features row(s).")
     except Exception:
         conn.rollback()
         raise

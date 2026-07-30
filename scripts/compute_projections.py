@@ -90,6 +90,7 @@ RUN:
 """
 
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -366,7 +367,26 @@ DEFAULT_WEIGHTS_V2 = {
     # new mechanisms, not literal tunable numbers.
     "bonus_model": "ppm_tier_v1",
     "involvement_fallback": "minutes_proxy_v1",
+    # Forces a new algorithm_versions revision the first time the modular
+    # goal/assist/clean-sheet blending (historical/fixture-model/bookmaker,
+    # see MODULAR_STATS below) runs, even if module weight VALUES happen
+    # to coincide with whatever the pre-modular single-formula version
+    # last computed with - same purpose as the keys above.
+    "module_engine_version": "v2",
 }
+
+# The 3 stats with both a real fixture-level driver AND a real bookmaker
+# market to draw from (goal: SportMonks anytime-goalscorer via the
+# Bookmaker Intelligence Hub; clean_sheet_60min: real match-winner odds
+# directly). Every other STAT_COLUMNS entry keeps the exact single-formula
+# treatment it always had (historical rate x the coalesced fixture
+# factor) - modularizing a stat with no genuinely independent extra
+# signal would just add complexity with nothing new to blend in. `assist`
+# is listed here (Historical Performance + Fixture Model both apply) even
+# though Bookmaker Intelligence has no assist market ingested yet - see
+# compute_module_rate_bookmaker, which correctly returns None for it, so
+# its configured weight simply redistributes to the other two.
+MODULAR_STATS = {"goal", "assist", "clean_sheet_60min"}
 
 # Guessed raw-string -> multiplier mapping for FanTeam's pre-match status
 # fields (`lineup`/`status` on each playerChoices record - see
@@ -492,14 +512,43 @@ def fixture_factor(position, attack_score, clean_sheet_score, weights):
     )
 
 
+# Selected once by every fixture query below, alongside the existing
+# coalesced tfd.attack_score/clean_sheet_score (kept for every non-modular
+# stat, unchanged) - the REAL-odds-only and model-only components split
+# apart, so the modular stats' Bookmaker Intelligence and Fixture Model
+# modules each read from exactly one source and can never see the same
+# raw probability the other one used (see stat_factor_from_scores,
+# compute_module_rate_historical/fixture_model/bookmaker below).
+FIXTURE_PROBABILITY_JOIN_SQL = """
+        join fixtures f on f.id = tfd.fixture_id
+        left join lateral (
+            select home_win_prob, draw_prob, away_win_prob from fixture_probabilities
+            where fixture_id = tfd.fixture_id order by computed_at desc limit 1
+        ) real_prob on true
+        left join lateral (
+            select home_win_prob, draw_prob, away_win_prob from fixture_strength_model_probabilities
+            where fixture_id = tfd.fixture_id order by computed_at desc limit 1
+        ) model_prob on true
+"""
+FIXTURE_PROBABILITY_SELECT_SQL = """
+               p.id as player_id, p.team_id, tfd.fixture_id, tfd.kickoff_at,
+               tfd.attack_score, tfd.clean_sheet_score,
+               f.home_team_id, f.away_team_id,
+               real_prob.home_win_prob as real_home_win_prob, real_prob.draw_prob as real_draw_prob,
+               real_prob.away_win_prob as real_away_win_prob,
+               model_prob.home_win_prob as model_home_win_prob, model_prob.draw_prob as model_draw_prob,
+               model_prob.away_win_prob as model_away_win_prob
+"""
+
+
 def fetch_fixtures_by_period(cur, game_id, period_start, period_end):
     cur.execute(
-        """
-        select p.id as player_id, tfd.fixture_id, tfd.kickoff_at,
-               tfd.attack_score, tfd.clean_sheet_score
+        f"""
+        select {FIXTURE_PROBABILITY_SELECT_SQL}
         from players p
         join team_fixture_difficulty tfd
             on tfd.team_id = p.team_id and tfd.game_id = %s
+        {FIXTURE_PROBABILITY_JOIN_SQL}
         where tfd.kickoff_at >= %s and tfd.kickoff_at < %s
         """,
         (game_id, period_start, period_end),
@@ -509,18 +558,271 @@ def fetch_fixtures_by_period(cur, game_id, period_start, period_end):
 
 def fetch_fixtures_by_gameweek(cur, game_id, gameweek):
     cur.execute(
-        """
-        select p.id as player_id, tfd.fixture_id, tfd.kickoff_at,
-               tfd.attack_score, tfd.clean_sheet_score
+        f"""
+        select {FIXTURE_PROBABILITY_SELECT_SQL}
         from players p
         join team_fixture_difficulty tfd
             on tfd.team_id = p.team_id and tfd.game_id = %s
+        {FIXTURE_PROBABILITY_JOIN_SQL}
         join game_fixture_gameweeks gfg
             on gfg.fixture_id = tfd.fixture_id and gfg.game_id = tfd.game_id and gfg.gameweek = %s
         """,
         (game_id, gameweek),
     )
     return cur.fetchall()
+
+
+def _team_side_win_draw(home_win_prob, draw_prob, away_win_prob, team_id, home_team_id):
+    """None if this source (real odds or the strength model) has no row
+    at all for this fixture - a genuinely absent signal, not a 0."""
+    if home_win_prob is None:
+        return None, None
+    win_prob = float(home_win_prob) if team_id == home_team_id else float(away_win_prob)
+    return win_prob, float(draw_prob) if draw_prob is not None else 0.0
+
+
+def _attack_and_clean_sheet(win_prob, draw_prob):
+    if win_prob is None:
+        return None, None
+    return win_prob, win_prob + 0.5 * draw_prob
+
+
+def stat_factor_from_scores(stat, attack_score, clean_sheet_score, weights):
+    """The attack/clean_sheet/pressure/flat fixture adjustment for one
+    stat, given EXPLICIT attack/clean-sheet numbers rather than reading
+    them off a fixture dict - callers choose which source (the legacy
+    coalesced team_fixture_difficulty values for non-modular stats, the
+    real-odds-only figures for Bookmaker Intelligence, or the model-only
+    figures for Fixture Model/Historical Performance) to pass in, so this
+    one formula serves all of them without the attack/pressure/
+    clean_sheet math being duplicated per source. None in, None out - a
+    missing source produces no factor, never a fabricated neutral one."""
+    if attack_score is None or clean_sheet_score is None:
+        return None
+    neutral_attack = weights["neutral_attack"]
+    neutral_clean_sheet = weights["neutral_clean_sheet"]
+    mode = STAT_FIXTURE_MODE[stat]
+    if mode == "attack":
+        return attack_score / neutral_attack
+    if mode == "clean_sheet":
+        return clean_sheet_score / neutral_clean_sheet
+    if mode == "pressure":
+        return (1 - clean_sheet_score) / (1 - neutral_clean_sheet)
+    return 1.0
+
+
+def fixture_stat_factor(stat, fixture, weights):
+    """The existing (coalesced, real-odds-or-strength-model) fixture
+    factor - unchanged behaviour, used by every non-modular stat exactly
+    as before this file gained a modular engine."""
+    return stat_factor_from_scores(stat, float(fixture["attack_score"]), float(fixture["clean_sheet_score"]), weights)
+
+
+def anytime_prob_to_expected_goals(p):
+    """Converts a real P(scores >= 1 goal) market probability to E[goals],
+    assuming goals in a match follow a Poisson distribution: P(0 goals) =
+    e^-lambda, so lambda = -ln(1 - p). A standard, well-established
+    conversion, not a guess - without it, a striker's multi-goal
+    probability would be silently ignored and E[goals] systematically
+    understated relative to treating the anytime-goalscorer price as if
+    it were already an expected-goals figure."""
+    p = max(0.0, min(0.99, p))
+    return -math.log(1 - p) if p > 0 else 0.0
+
+
+def compute_module_rate_historical(stat, historical_row, position, position_avg, fixture, weights):
+    """This player's own shrunk per-90 rate x our own team-strength
+    MODEL's fixture factor (fixture_strength_model_probabilities,
+    migration 0017) - deliberately never the real-odds figure, even when
+    one exists for this fixture, so real market data enters the blend
+    through exactly one module (Bookmaker Intelligence) and never through
+    this one too. Always available (every player has a historical row,
+    all-zero for zero-history ones) - falls back to a neutral 1.0 factor
+    only in the (shouldn't-happen) case the model has no row at all for
+    this fixture, since this module must never simply go missing."""
+    factor = stat_factor_from_scores(stat, fixture.get("model_attack_score"), fixture.get("model_clean_sheet_score"), weights)
+    if factor is None:
+        factor = 1.0
+    k = weights["shrinkage_games"]
+    col = STAT_COLUMNS[stat]
+    games90 = historical_row["minutes_played"] / 90.0
+    raw_rate = (historical_row[col] + k * position_avg[position][col]) / (games90 + k)
+    return raw_rate * factor
+
+
+def compute_module_rate_fixture_model(stat, position, position_avg, fixture, weights):
+    """The POSITION's own average historical rate x the same team-strength
+    MODEL fixture factor as compute_module_rate_historical (never real
+    odds) - "what would a league-average player in this slot be expected
+    to do in this exact matchup, by our own model's view of it,"
+    independent of this specific player's own track record. None if the
+    model genuinely has no row for this fixture yet."""
+    factor = stat_factor_from_scores(stat, fixture.get("model_attack_score"), fixture.get("model_clean_sheet_score"), weights)
+    if factor is None:
+        return None
+    col = STAT_COLUMNS[stat]
+    return position_avg[position][col] * factor
+
+
+def compute_module_rate_bookmaker(stat, fixture, player_id, hub_features):
+    """Real market-derived signal ONLY - never the season-strength
+    fallback (that's Historical Performance's and Fixture Model's job
+    above), so the same raw number can never enter the blend twice.
+    clean_sheet_60min uses this fixture's REAL win/draw odds directly
+    (fixture_probabilities) - None if no real odds exist yet for this
+    fixture. goal uses the Bookmaker Intelligence Hub's score_probability
+    (bookmaker_player_features, migration 0064 - real observation or a
+    baseline scaled from one, see scripts/import_sportmonks_player_props.py)
+    converted from P(scores >= 1) to E[goals]. Every other stat returns
+    None - no assist/cards/saves market is ingested into the hub yet, so
+    its configured weight simply redistributes to the other modules."""
+    if stat == "clean_sheet_60min":
+        return fixture.get("real_clean_sheet_score")
+    if stat == "goal":
+        feature = hub_features.get((player_id, fixture.get("fixture_id")))
+        if not feature or feature.get("score_probability") is None:
+            return None
+        return anytime_prob_to_expected_goals(float(feature["score_probability"]))
+    return None
+
+
+def compute_module_rate_player_role(stat, historical_row, team_id, team_stat_totals, fixture, weights):
+    """This player's share of their OWN TEAM's real historical goal/assist
+    output, applied to that team's own model-fixture-adjusted expected
+    output - "is this player disproportionately involved in how THIS team
+    scores," independent of the player's own raw volume (useful for a
+    role change, a system change, or a player undervalued by a thin
+    personal sample but clearly the focal point of their team's attack).
+    Never touches real odds - same model-only fixture factor as Historical
+    Performance/Fixture Model, so this is a 4th consumer of the model
+    table, never a 2nd consumer of Bookmaker Intelligence's real data.
+    Only meaningful for goal/assist; None otherwise, or when the team has
+    no historical output at all for this stat to compute a share from
+    (division by zero avoided, not a fabricated share)."""
+    if stat not in ("goal", "assist"):
+        return None
+    team = team_stat_totals.get(team_id)
+    if not team:
+        return None
+    total_key = f"{stat}_total"
+    per90_key = f"{stat}_per90"
+    team_total = team[total_key]
+    if team_total <= 0:
+        return None
+    player_total = historical_row[STAT_COLUMNS[stat]]
+    share = player_total / team_total
+    factor = stat_factor_from_scores(stat, fixture.get("model_attack_score"), fixture.get("model_clean_sheet_score"), weights)
+    if factor is None:
+        factor = 1.0
+    return share * team[per90_key] * factor
+
+
+def fetch_recent_form_rates(cur, game_id, current_gameweek, lookback=5):
+    """{player_id: {"goal": per90rate, "assist": per90rate}} from this
+    player's last `lookback` REAL completed gameweeks - actual_goals/
+    actual_assists/actual_minutes on player_gameweek_predictions
+    (migration 0044), populated only once a gameweek has actually been
+    played and graded (see scripts/capture_gameweek_actuals.py /
+    evaluate_predictions.py). This is genuinely different information
+    from Historical Performance (last SEASON's aggregate) once the
+    current season is under way: a player in a hot streak or an injury-
+    affected dip shows up here well before it would move their season-
+    long average. Empty for any player with zero completed gameweeks
+    captured yet - which, pre-season, is everyone - so this module
+    returns None everywhere until real 2026/27 results start landing;
+    never a fabricated early-season guess. Period-mode games (no
+    gameweek calendar, e.g. Dream Team pre-season) have no concept of
+    "current gameweek" to look back from, so this returns {} for them."""
+    if current_gameweek is None:
+        return {}
+    cur.execute(
+        """
+        select gp.player_id, sum(pgp.actual_goals), sum(pgp.actual_assists), sum(pgp.actual_minutes)
+        from player_gameweek_predictions pgp
+        join game_players gp on gp.id = pgp.game_player_id
+        where pgp.game_id = %s and pgp.gameweek < %s and pgp.gameweek >= %s - %s
+          and pgp.actual_minutes is not null
+        group by gp.player_id
+        """,
+        (game_id, current_gameweek, current_gameweek, lookback),
+    )
+    out = {}
+    for player_id, goals, assists, minutes in cur.fetchall():
+        games90 = float(minutes) / 90.0 if minutes else 0.0
+        if games90 <= 0:
+            continue
+        out[player_id] = {"goal": float(goals or 0) / games90, "assist": float(assists or 0) / games90}
+    return out
+
+
+def compute_module_rate_recent_form(stat, player_id, recent_form_rates):
+    """This player's own per-90 rate over their last few REAL completed
+    gameweeks - see fetch_recent_form_rates. None whenever no completed
+    gameweek data exists yet for this player (the universal case
+    pre-season) - never a fabricated early guess."""
+    if stat not in ("goal", "assist"):
+        return None
+    rates = recent_form_rates.get(player_id)
+    if not rates:
+        return None
+    return rates.get(stat)
+
+
+def blend_module_rates(module_rates, module_weights):
+    """Weighted average of whichever modules actually have a value for
+    this stat/player/fixture, renormalized among just those - a module
+    with no signal here (e.g. bookmaker_intelligence for 'assist', or for
+    any player with no real/baseline goal odds yet) is EXCLUDED rather
+    than treated as a fabricated 0, so it can't drag a legitimate
+    estimate down just because one signal source hasn't populated yet.
+    Falls back to a plain average of whatever's available if none of the
+    available modules have a configured weight (a game with no
+    projection_module_weights seed rows) - never crashes, never returns
+    0 while real signal exists."""
+    available = {module: rate for module, rate in module_rates.items() if rate is not None}
+    if not available:
+        return 0.0
+    total_weight = sum(module_weights.get(module, 0.0) for module in available)
+    if total_weight <= 0:
+        return sum(available.values()) / len(available)
+    return sum(module_weights.get(module, 0.0) * rate for module, rate in available.items()) / total_weight
+
+
+def resolve_module_weights(cur, game_id):
+    """{position: {module: weight}} for this game, from
+    projection_module_weights (migration 0063) - the configurable,
+    DB-editable knob for how much each independent signal source
+    contributes to a blended goal/assist/clean-sheet rate. Empty dict
+    (blend_module_rates then falls back to a plain average) if this game
+    hasn't been seeded yet."""
+    cur.execute("select position, module, weight from projection_module_weights where game_id = %s", (game_id,))
+    out = {}
+    for position, module, weight in cur.fetchall():
+        out.setdefault(position, {})[module] = float(weight)
+    return out
+
+
+def fetch_hub_features(cur, fixture_ids):
+    """{(player_id, fixture_id): {score_probability, is_estimated}} from
+    the Bookmaker Intelligence Hub (bookmaker_player_features, migration
+    0064) for the given fixtures - read-only here, this script never
+    writes to the hub (see scripts/import_sportmonks_player_props.py for
+    that). Game-independent by construction: the hub has no game_id
+    column, so the same row serves whichever game is scoring right now."""
+    if not fixture_ids:
+        return {}
+    cur.execute(
+        """
+        select player_id, fixture_id, score_probability, is_estimated
+        from bookmaker_player_features
+        where fixture_id = any(%s)
+        """,
+        (list(fixture_ids),),
+    )
+    return {
+        (player_id, fixture_id): {"score_probability": score_probability, "is_estimated": is_estimated}
+        for player_id, fixture_id, score_probability, is_estimated in cur.fetchall()
+    }
 
 
 def fetch_scoring_rules(cur, game_id):
@@ -638,6 +940,35 @@ def compute_involvement_rates(players, historical_rows, season_games):
     }
 
 
+def compute_team_stat_totals(players, historical_rows, team_id_by_player_id):
+    """{team_id: {"goal_total", "assist_total", "goal_per90", "assist_per90"}} -
+    the REAL, unshrunk sum of every rostered player's historical goals/
+    assists for that team (and the team-wide per-90 rate), used by the
+    Player Role module below. Deliberately not shrunk toward a position
+    prior like compute_shrunk_rates' position_avg - Player Role needs the
+    team's actual real total to compute a meaningful share, not a
+    blended prior."""
+    totals = {}
+    for _, _, player_id in players:
+        team_id = team_id_by_player_id.get(player_id)
+        row = historical_rows.get(player_id)
+        if team_id is None or not row or row["minutes_played"] <= 0:
+            continue
+        entry = totals.setdefault(team_id, {"goal": 0.0, "assist": 0.0, "games90": 0.0})
+        entry["goal"] += row["goals"]
+        entry["assist"] += row["assists"]
+        entry["games90"] += row["minutes_played"] / 90.0
+    return {
+        team_id: {
+            "goal_total": v["goal"],
+            "assist_total": v["assist"],
+            "goal_per90": v["goal"] / v["games90"] if v["games90"] > 0 else 0.0,
+            "assist_per90": v["assist"] / v["games90"] if v["games90"] > 0 else 0.0,
+        }
+        for team_id, v in totals.items()
+    }
+
+
 # Rough Premier League-wide norms, used only as a last resort when a game
 # has no real PT1/PT60/PT90 export at all (Dream Team's CSV doesn't carry
 # these fields - see the fallback's call site in main()). Not derived from
@@ -665,12 +996,21 @@ def _implied_involvement(raw_pt1, raw_pt60, raw_pt90, minutes_played):
     return {"pt1": pt1, "pt60": pt60, "pt90": pt90}
 
 
-def project_player_stats(position, historical_row, fixture, weights, position_avg, position_involvement):
+def project_player_stats(
+    position, player_id, team_id, historical_row, fixture, weights, position_avg, position_involvement,
+    hub_features, team_stat_totals, recent_form_rates,
+):
     """Per-stat projected count for one player's one fixture (v2-decomposed).
     Returns (projected, expected_minutes_fraction) - the fraction is also
     exposed as predicted_minutes on each fixture_breakdown entry in main(),
     for the Hail Mary Form System (player_gameweek_predictions, migration
-    0044) to freeze - it was previously computed here and discarded."""
+    0044) to freeze - it was previously computed here and discarded.
+
+    goal/assist/clean_sheet_60min (MODULAR_STATS) are blended from up to
+    5 independent modules (historical/fixture-model/bookmaker/player-role/
+    recent-form - see compute_module_rate_* and blend_module_rates above)
+    instead of the single historical-rate x coalesced-fixture-factor formula every other stat
+    below still uses unchanged."""
     k = weights["shrinkage_games"]
     neutral_attack = weights["neutral_attack"]
     neutral_clean_sheet = weights["neutral_clean_sheet"]
@@ -681,6 +1021,8 @@ def project_player_stats(position, historical_row, fixture, weights, position_av
     clean_sheet_factor = clean_sheet_score / neutral_clean_sheet
     pressure_factor = (1 - clean_sheet_score) / (1 - neutral_clean_sheet)
     factor_by_mode = {"attack": attack_factor, "clean_sheet": clean_sheet_factor, "pressure": pressure_factor, "flat": 1.0}
+
+    module_weights_by_position = weights.get("module_weights", {}).get(position, {})
 
     games90 = historical_row["minutes_played"] / 90.0
     season_games = weights["season_games"]
@@ -720,10 +1062,21 @@ def project_player_stats(position, historical_row, fixture, weights, position_av
         "played_full_match": appearance_rate * cond90_rate,
     }
     for stat, col in STAT_COLUMNS.items():
-        raw_rate = (historical_row[col] + k * position_avg[position][col]) / (games90 + k)
-        factor = factor_by_mode[STAT_FIXTURE_MODE[stat]]
         rate_scale = STAT_RATE_SCALE.get(stat, 1.0)
-        projected[stat] = raw_rate * factor * expected_minutes_fraction * rate_scale
+        if stat in MODULAR_STATS:
+            module_rates = {
+                "historical_performance": compute_module_rate_historical(stat, historical_row, position, position_avg, fixture, weights),
+                "fixture_model": compute_module_rate_fixture_model(stat, position, position_avg, fixture, weights),
+                "bookmaker_intelligence": compute_module_rate_bookmaker(stat, fixture, player_id, hub_features),
+                "player_role": compute_module_rate_player_role(stat, historical_row, team_id, team_stat_totals, fixture, weights),
+                "recent_form": compute_module_rate_recent_form(stat, player_id, recent_form_rates),
+            }
+            raw_rate = blend_module_rates(module_rates, module_weights_by_position)
+            projected[stat] = raw_rate * expected_minutes_fraction * rate_scale
+        else:
+            raw_rate = (historical_row[col] + k * position_avg[position][col]) / (games90 + k)
+            factor = factor_by_mode[STAT_FIXTURE_MODE[stat]]
+            projected[stat] = raw_rate * factor * expected_minutes_fraction * rate_scale
     return projected, expected_minutes_fraction
 
 
@@ -833,12 +1186,20 @@ def main():
         use_v2 = len(scoring_rules) > 0
 
         if use_v2:
+            # module_weights is part of the hashed weights dict on purpose -
+            # editing projection_module_weights (migration 0063) is a real
+            # tuning change, so it must mint a new algorithm_versions
+            # revision the same way any other weight edit does (see
+            # get_or_create_algorithm_version's docstring) - Performance
+            # Lab needs to be able to attribute an accuracy shift to it.
+            module_weights_by_position = resolve_module_weights(cur, game_id)
             algo_id, weights = get_or_create_algorithm_version(
                 cur, "v2-decomposed",
                 "per-stat projection (goals/assists/clean sheets/cards/saves/shots on target/own goals/"
                 "penalty saves) priced through game_scoring_rules, PT1/60/90-based involvement, "
-                "self-calibrating neutral_attack",
-                DEFAULT_WEIGHTS_V2,
+                "self-calibrating neutral_attack, modular goal/assist/clean-sheet blending "
+                "(historical/fixture-model/bookmaker via the Bookmaker Intelligence Hub)",
+                {**DEFAULT_WEIGHTS_V2, "module_weights": module_weights_by_position},
             )
         else:
             algo_id, weights = get_or_create_algorithm_version(
@@ -854,7 +1215,7 @@ def main():
         dict_cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         dict_cur.execute(
             """
-            select gp.id as game_player_id, p.position, gp.player_id, p.full_name,
+            select gp.id as game_player_id, p.position, gp.player_id, p.full_name, p.team_id,
                    coalesce(gps.total_points, 0) as total_points, coalesce(gps.minutes_played, 0) as minutes_played,
                    coalesce(gps.goals, 0) as goals, coalesce(gps.assists, 0) as assists,
                    coalesce(gps.clean_sheets, 0) as clean_sheets, coalesce(gps.saves, 0) as saves,
@@ -878,6 +1239,7 @@ def main():
         raw_players = dict_cur.fetchall()
         dict_cur.close()
         players = [(r["game_player_id"], r["position"], r["player_id"]) for r in raw_players]
+        team_id_by_player_id = {r["player_id"]: r["team_id"] for r in raw_players}
         full_name_by_game_player_id = {r["game_player_id"]: r["full_name"] for r in raw_players}
 
         # Dream Team's raw_stats uses different key names than FanTeam's
@@ -972,6 +1334,7 @@ def main():
         # rates' own position_avg dict just below.
         position_avg_pp90 = {pos: (pts / games if games > 0 else 0.0) for pos, (pts, games) in position_totals.items()}
         position_avg_rates = compute_shrunk_rates(players, historical_by_player_id)
+        team_stat_totals = compute_team_stat_totals(players, historical_by_player_id, team_id_by_player_id) if use_v2 else {}
         # Only meaningful for v2 (weights["season_games"] doesn't exist on
         # v1's DEFAULT_WEIGHTS) - v1 never calls project_player_stats.
         position_involvement = (
@@ -998,12 +1361,29 @@ def main():
 
         fixtures_by_player = {}
         all_kickoffs = []
-        for player_id, fixture_id, kickoff_at, attack_score, clean_sheet_score in rows:
+        all_fixture_ids = set()
+        for (player_id, team_id, fixture_id, kickoff_at, attack_score, clean_sheet_score,
+             home_team_id, away_team_id,
+             real_home_win_prob, real_draw_prob, real_away_win_prob,
+             model_home_win_prob, model_draw_prob, model_away_win_prob) in rows:
             all_kickoffs.append(kickoff_at)
-            fixtures_by_player.setdefault(player_id, []).append(
-                {"fixture_id": fixture_id, "kickoff_at": kickoff_at.isoformat(),
-                 "attack_score": float(attack_score), "clean_sheet_score": float(clean_sheet_score)}
-            )
+            all_fixture_ids.add(fixture_id)
+            real_win, real_draw = _team_side_win_draw(real_home_win_prob, real_draw_prob, real_away_win_prob, team_id, home_team_id)
+            model_win, model_draw = _team_side_win_draw(model_home_win_prob, model_draw_prob, model_away_win_prob, team_id, home_team_id)
+            real_attack, real_cs = _attack_and_clean_sheet(real_win, real_draw)
+            model_attack, model_cs = _attack_and_clean_sheet(model_win, model_draw)
+            fixtures_by_player.setdefault(player_id, []).append({
+                "fixture_id": fixture_id, "kickoff_at": kickoff_at.isoformat(),
+                "attack_score": float(attack_score), "clean_sheet_score": float(clean_sheet_score),
+                # Split real-odds-only / model-only components - see
+                # compute_module_rate_historical/fixture_model/bookmaker -
+                # None when that source genuinely has no row for this fixture.
+                "real_attack_score": real_attack, "real_clean_sheet_score": real_cs,
+                "model_attack_score": model_attack, "model_clean_sheet_score": model_cs,
+            })
+
+        hub_features = fetch_hub_features(cur, all_fixture_ids) if use_v2 else {}
+        recent_form_rates = fetch_recent_form_rates(cur, game_id, gameweek) if use_v2 else {}
 
         # Even in gameweek mode, derive a display period from the actual
         # fixture dates found - period_start/period_end stay populated
@@ -1019,6 +1399,7 @@ def main():
             player_fixtures = fixtures_by_player.get(player_id, [])
             if not player_fixtures:
                 continue
+            team_id = team_id_by_player_id.get(player_id)
             historical_row = historical_by_player_id[player_id]
 
             if use_v2:
@@ -1033,7 +1414,8 @@ def main():
                     "clean_sheet_score": runtime_weights["neutral_clean_sheet"],
                 }
                 neutral_stats, neutral_minutes_fraction = project_player_stats(
-                    position, historical_row, neutral_fixture, runtime_weights, position_avg_rates, position_involvement
+                    position, player_id, team_id, historical_row, neutral_fixture, runtime_weights, position_avg_rates,
+                    position_involvement, hub_features, team_stat_totals, recent_form_rates,
                 )
                 points_per_90, neutral_priced = price_projected_stats(position, neutral_stats, scoring_rules)
                 neutral_bonus = compute_bonus_points(
@@ -1046,7 +1428,8 @@ def main():
                 fixture_breakdown = []
                 for fx in player_fixtures:
                     projected_stats, expected_minutes_fraction = project_player_stats(
-                        position, historical_row, fx, runtime_weights, position_avg_rates, position_involvement
+                        position, player_id, team_id, historical_row, fx, runtime_weights, position_avg_rates,
+                        position_involvement, hub_features, team_stat_totals, recent_form_rates,
                     )
                     contribution, priced = price_projected_stats(position, projected_stats, scoring_rules)
                     bonus_points = compute_bonus_points(
