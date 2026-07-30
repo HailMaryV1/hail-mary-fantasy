@@ -1,6 +1,7 @@
 import {
   MODULE_NAMES,
   MODULE_DISPLAY_NAMES,
+  MODULE_STATUS,
   MODULAR_STATS,
   STAT_DISPLAY_NAMES,
   confidenceTone,
@@ -133,9 +134,20 @@ export default function EngineExplanationCard({ data }: { data: EngineExplanatio
                     {MODULE_NAMES.map((module) => {
                       const m = detail.modules[module];
                       const unavailable = m.rawRate == null;
+                      const moduleStatus = MODULE_STATUS[module];
                       return (
                         <tr key={module} className={`border-t border-navy-800 ${unavailable ? "text-navy-600" : "text-navy-200"}`}>
-                          <td className="py-1.5 pr-3">{MODULE_DISPLAY_NAMES[module]}</td>
+                          <td className="py-1.5 pr-3">
+                            {MODULE_DISPLAY_NAMES[module]}
+                            {moduleStatus.status === "Experimental" && (
+                              <span
+                                className="ml-1.5 rounded-full bg-amber-950 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-400"
+                                title="Experimental - still computed and shown here, but its production weight is 0 and it does not affect the final score, optimiser, captaincy or Ask Mary."
+                              >
+                                Experimental · Disabled
+                              </span>
+                            )}
+                          </td>
                           <td className="py-1.5 pr-3">{unavailable ? "N/A" : fmt(m.rawRate, 4)}</td>
                           <td className="py-1.5 pr-3">{(m.configuredWeight * 100).toFixed(0)}%</td>
                           <td className="py-1.5 pr-3">{unavailable ? "0%" : `${(m.effectiveWeight * 100).toFixed(0)}%`}</td>
@@ -168,9 +180,20 @@ export default function EngineExplanationCard({ data }: { data: EngineExplanatio
 
       {/* Player Role detail */}
       {data.playerRoleDetail && (
-        <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-          <h3 className="text-sm font-semibold text-white">Player Role - what's actually driving it</h3>
-          <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm text-navy-200 sm:grid-cols-4">
+        <div className="rounded-xl border border-amber-800/60 bg-navy-900 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-white">Player Role V1 - what's actually driving it</h3>
+            <span className="rounded-full bg-amber-950 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-400">
+              Experimental
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-amber-400/90">
+            A full-pool audit found this module&apos;s effect is one-directional - near-zero-to-negative everywhere,
+            meaningfully positive for no one, with its largest cuts landing on elite attackers. Its production weight
+            is 0: it no longer affects the final score, optimiser, captaincy or Ask Mary. It keeps computing and
+            storing real numbers below so it stays comparable against a future V2.
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm text-navy-200 sm:grid-cols-4">
             <div>
               <p className="text-[10px] uppercase tracking-wide text-navy-500">Team Goal Share</p>
               <p className="font-medium">

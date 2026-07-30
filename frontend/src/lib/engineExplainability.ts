@@ -27,6 +27,48 @@ export const MODULE_DISPLAY_NAMES: Record<ModuleName, string> = {
   recent_form: "Recent Form",
 };
 
+// Player Role V1's own audit (scripts/audit_player_role.py) found it
+// mathematically consistent but not measuring the intended concept: a
+// one-directional suppression concentrated on elite attackers, not a
+// weighting or outlier problem. Its production weight is 0 (migration
+// 0067) - it still computes and stores a real raw_rate every run (see
+// module_detail below) so it stays visible here and usable as a dormant
+// comparison signal for the eventual V2, it just no longer moves any
+// final score, optimiser choice, captaincy call or Ask Mary strategy.
+// This is a STATIC status map, not derived from configured_weight,
+// because "why is the weight 0" is a design decision worth stating
+// explicitly rather than inferring from a number that could be 0 for
+// other reasons (e.g. no data this fixture).
+export type ModuleStatus = {
+  status: "Production" | "Experimental";
+  productionInfluence: "Enabled" | "Disabled";
+  askMaryInfluence: "Enabled" | "Disabled";
+  performanceLabTracking: "Enabled" | "Disabled";
+  explainabilityVisibility: "Enabled" | "Disabled";
+};
+
+const PRODUCTION_MODULE_STATUS: ModuleStatus = {
+  status: "Production",
+  productionInfluence: "Enabled",
+  askMaryInfluence: "Enabled",
+  performanceLabTracking: "Enabled",
+  explainabilityVisibility: "Enabled",
+};
+
+export const MODULE_STATUS: Record<ModuleName, ModuleStatus> = {
+  historical_performance: PRODUCTION_MODULE_STATUS,
+  fixture_model: PRODUCTION_MODULE_STATUS,
+  bookmaker_intelligence: PRODUCTION_MODULE_STATUS,
+  recent_form: PRODUCTION_MODULE_STATUS,
+  player_role: {
+    status: "Experimental",
+    productionInfluence: "Disabled",
+    askMaryInfluence: "Disabled",
+    performanceLabTracking: "Enabled",
+    explainabilityVisibility: "Enabled",
+  },
+};
+
 export const MODULAR_STATS = ["goal", "assist", "clean_sheet_60min"] as const;
 export type ModularStat = (typeof MODULAR_STATS)[number];
 
