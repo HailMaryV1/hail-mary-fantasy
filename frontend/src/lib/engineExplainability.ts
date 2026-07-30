@@ -169,6 +169,52 @@ export type OpportunityDetail = {
   footballUncertainty: number | null;
 };
 
+// Recent Form - see compute_recent_form_stat()/build_recent_form_rates()
+// in scripts/compute_projections.py. Recency-weighted (calendar gameweek
+// distance, NOT appearance count - a player's pre-injury form goes stale
+// while they're absent) then shrunk toward this player's OWN Historical
+// Performance rate (never a position average - see the architectural
+// review's §07 for why). finalShrunkRate always lies between
+// historicalPriorRate and rawRecencyWeightedRate. A stat is absent
+// entirely (not zero-filled) whenever it has no real observations this
+// window - goal/assist availability are independent (one stat's data
+// existing never implies the other's does).
+export type RecentFormStatDetail = {
+  rawUnweightedRate: number;
+  rawRecencyWeightedRate: number;
+  historicalPriorRate: number;
+  finalShrunkRate: number;
+  observedWeight: number;
+  priorWeight: number;
+  // Signed diagnostic: finalShrunkRate - rawRecencyWeightedRate. Negative
+  // when the historical prior sits below the observed rate (shrinkage
+  // pulls the number down), positive when the prior sits above it, and
+  // exactly 0 at k_recent=0 (no shrinkage applied at all).
+  priorPull: number;
+  effectiveWeightedMinutes: number;
+  effectiveGames90: number;
+  observedAppearancesForStat: number;
+  oldestGameweekUsed: number;
+  newestGameweekUsed: number;
+};
+
+export type RecentFormDetail = {
+  goal: RecentFormStatDetail | null;
+  assist: RecentFormStatDetail | null;
+  lookbackGameweeks: number;
+  decay: number;
+  kRecent: number;
+  decayBasis: string;
+  playingAppearancesInWindow: number;
+  // Deliberately not built yet - team_fixture_difficulty is an
+  // unsnapshotted view and every real query path reading its sources
+  // lacks a computed_at <= kickoff_at filter (confirmed live: real rows
+  // already have a post-kickoff computed_at) - an absent diagnostic
+  // here, not a historically inaccurate one.
+  scheduleStrength: number | null;
+  scheduleStrengthSource: string;
+};
+
 // "What if only this module had decided goal/assist/clean-sheet, with
 // everything else (saves, cards, bonus...) left exactly as actually
 // projected" - a full scenario total in the SAME units as the final
@@ -192,12 +238,20 @@ export type EngineExplanation = {
   status: PlayerStatus;
   expectedMinutesFraction: number | null;
   opportunityDetail: OpportunityDetail | null;
+  recentFormDetail: RecentFormDetail | null;
   moduleDetailScope: ModuleDetailScope;
   moduleDetail: Partial<Record<ModularStat, StatDetail>> | null;
   moduleScenarios: ModuleScenarios;
   playerRoleDetail: PlayerRoleDetail | null;
   dataConfidence: DataConfidence;
   reconciliation: Reconciliation | null;
+};
+
+type RawRecentFormStatDetail = {
+  raw_unweighted_rate: number; raw_recency_weighted_rate: number; historical_prior_rate: number;
+  final_shrunk_rate: number; observed_weight: number; prior_weight: number; prior_pull: number;
+  effective_weighted_minutes: number; effective_games90: number; observed_appearances_for_stat: number;
+  oldest_gameweek_used: number; newest_gameweek_used: number;
 };
 
 type RawInputs = {
@@ -212,6 +266,12 @@ type RawInputs = {
     start_share_proxy: number; p_appear: number; p_60_plus: number; p_full_match: number;
     is_transferred: boolean; is_congested: boolean; live_status_applied: boolean;
     structural_confidence: number; football_uncertainty: number | null;
+  } | null;
+  recent_form_detail?: {
+    goal?: RawRecentFormStatDetail; assist?: RawRecentFormStatDetail;
+    lookback_gameweeks: number; decay: number; k_recent: number; decay_basis: string;
+    playing_appearances_in_window: number;
+    schedule_strength: number | null; schedule_strength_source: string;
   } | null;
   module_detail_scope?: { is_primary_fixture_only: boolean; fixture_count: number };
   module_detail?: Record<string, { final_rate: number; points_each: number | null; modules: Record<string, {
@@ -269,6 +329,24 @@ function parseModuleDetail(raw: RawInputs["module_detail"]): EngineExplanation["
   return out;
 }
 
+function parseRecentFormStatDetail(raw: RawRecentFormStatDetail | undefined): RecentFormStatDetail | null {
+  if (!raw) return null;
+  return {
+    rawUnweightedRate: raw.raw_unweighted_rate,
+    rawRecencyWeightedRate: raw.raw_recency_weighted_rate,
+    historicalPriorRate: raw.historical_prior_rate,
+    finalShrunkRate: raw.final_shrunk_rate,
+    observedWeight: raw.observed_weight,
+    priorWeight: raw.prior_weight,
+    priorPull: raw.prior_pull,
+    effectiveWeightedMinutes: raw.effective_weighted_minutes,
+    effectiveGames90: raw.effective_games90,
+    observedAppearancesForStat: raw.observed_appearances_for_stat,
+    oldestGameweekUsed: raw.oldest_gameweek_used,
+    newestGameweekUsed: raw.newest_gameweek_used,
+  };
+}
+
 export function parseEngineExplanation(gameSlug: string, row: SummaryRow): EngineExplanation | null {
   if (!row.inputs) return null;
   const inputs = row.inputs;
@@ -303,6 +381,19 @@ export function parseEngineExplanation(gameSlug: string, row: SummaryRow): Engin
           liveStatusApplied: inputs.opportunity_detail.live_status_applied,
           structuralConfidence: inputs.opportunity_detail.structural_confidence,
           footballUncertainty: inputs.opportunity_detail.football_uncertainty,
+        }
+      : null,
+    recentFormDetail: inputs.recent_form_detail
+      ? {
+          goal: parseRecentFormStatDetail(inputs.recent_form_detail.goal),
+          assist: parseRecentFormStatDetail(inputs.recent_form_detail.assist),
+          lookbackGameweeks: inputs.recent_form_detail.lookback_gameweeks,
+          decay: inputs.recent_form_detail.decay,
+          kRecent: inputs.recent_form_detail.k_recent,
+          decayBasis: inputs.recent_form_detail.decay_basis,
+          playingAppearancesInWindow: inputs.recent_form_detail.playing_appearances_in_window,
+          scheduleStrength: inputs.recent_form_detail.schedule_strength,
+          scheduleStrengthSource: inputs.recent_form_detail.schedule_strength_source,
         }
       : null,
     moduleDetailScope: inputs.module_detail_scope

@@ -9,6 +9,8 @@ import {
   dataSourceLabel,
   type EngineExplanation,
   type OpportunityDetail,
+  type RecentFormDetail,
+  type RecentFormStatDetail,
 } from "@/lib/engineExplainability";
 
 function fmt(value: number | null | undefined, digits = 3): string {
@@ -97,6 +99,91 @@ function OpportunityModelSection({ opp }: { opp: OpportunityDetail }) {
         Football uncertainty (rotation/tactical volatility, distinct from the structural confidence above):{" "}
         {opp.footballUncertainty != null ? `${opp.footballUncertainty}%` : "Not yet modelled - planned for a later phase, once a team-level rotation model exists to measure it from."}
       </p>
+    </div>
+  );
+}
+
+const RECENT_FORM_STAT_LABELS: Record<"goal" | "assist", string> = { goal: "Goals", assist: "Assists" };
+
+function RecentFormStatCard({ label, d }: { label: string; d: RecentFormStatDetail }) {
+  return (
+    <div className="rounded-lg border border-navy-800 bg-navy-950 p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-white">{label}</span>
+        <span className="text-xs text-navy-400">
+          {d.observedAppearancesForStat} real observation{d.observedAppearancesForStat === 1 ? "" : "s"} (GW{d.oldestGameweekUsed}-{d.newestGameweekUsed})
+        </span>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-sm text-navy-200 sm:grid-cols-4">
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Final (shrunk) rate</p>
+          <p className="font-medium text-white">{fmt(d.finalShrunkRate, 3)}/90</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Historical prior</p>
+          <p className="font-medium text-white">{fmt(d.historicalPriorRate, 3)}/90</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Raw (recency-weighted)</p>
+          <p className="font-medium text-white">{fmt(d.rawRecencyWeightedRate, 3)}/90</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Raw (unweighted)</p>
+          <p className="font-medium text-white">{fmt(d.rawUnweightedRate, 3)}/90</p>
+        </div>
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-navy-800">
+          <div className="h-full bg-sky-500" style={{ width: `${d.observedWeight * 100}%` }} />
+        </div>
+        <span className="whitespace-nowrap text-[10px] text-navy-500">
+          {(d.observedWeight * 100).toFixed(0)}% observed / {(d.priorWeight * 100).toFixed(0)}% prior
+        </span>
+      </div>
+      <p className="mt-1.5 text-[11px] text-navy-500">
+        effective_games90: {fmt(d.effectiveGames90, 2)} ({fmt(d.effectiveWeightedMinutes, 0)} recency-weighted minutes)
+        {" · "}
+        prior_pull:{" "}
+        <span className={d.priorPull < 0 ? "text-red-400" : d.priorPull > 0 ? "text-emerald-400" : "text-navy-500"}>
+          {fmtPts(d.priorPull)}/90
+        </span>
+        {" "}(shrinkage's net effect vs. the raw observed rate - negative pulls down, positive pulls up, 0 at k_recent=0)
+      </p>
+    </div>
+  );
+}
+
+function RecentFormSection({ rf }: { rf: RecentFormDetail }) {
+  const stats = (["goal", "assist"] as const).filter((s) => rf[s] != null);
+  return (
+    <div className="rounded-xl border border-emerald-800/60 bg-navy-900 p-4">
+      <h3 className="text-sm font-semibold text-white">Recent Form - deviation from this player&apos;s own established baseline</h3>
+      <p className="mt-1 text-xs text-navy-500">
+        Recency-weighted (calendar gameweek distance, decay={rf.decay}, lookback={rf.lookbackGameweeks} GWs) then shrunk toward this
+        player&apos;s OWN Historical Performance rate (k_recent={rf.kRecent} equivalent 90-minute games) - never a position average. A
+        stat below is shown only when real observations exist for it this window; goal and assist availability are independent.
+      </p>
+
+      {stats.length === 0 ? (
+        <p className="mt-3 text-xs text-navy-500">No real gameweek data in this window yet for either stat.</p>
+      ) : (
+        <div className="mt-3 flex flex-col gap-2">
+          {stats.map((s) => (
+            <RecentFormStatCard key={s} label={RECENT_FORM_STAT_LABELS[s]} d={rf[s]!} />
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-navy-800 pt-2 text-[11px] text-navy-500">
+        <span>Real appearances in window (any stat): {rf.playingAppearancesInWindow}</span>
+        <span>Decay basis: {rf.decayBasis}</span>
+        <span>
+          Recent schedule strength:{" "}
+          {rf.scheduleStrength != null
+            ? fmt(rf.scheduleStrength, 2)
+            : "Not available - no point-in-time-correct historical fixture-strength data exists yet (tracked for future capture, not fabricated)"}
+        </span>
+      </div>
     </div>
   );
 }
@@ -193,6 +280,9 @@ export default function EngineExplanationCard({ data }: { data: EngineExplanatio
 
       {/* Opportunity Model - playing-time-only breakdown (Phase A) */}
       {data.opportunityDetail && <OpportunityModelSection opp={data.opportunityDetail} />}
+
+      {/* Recent Form - recency-weighted, historical-shrunk event-rate deviation */}
+      {data.recentFormDetail && <RecentFormSection rf={data.recentFormDetail} />}
 
       {/* Per-stat module tables */}
       {data.moduleDetail &&

@@ -641,9 +641,31 @@ def anytime_prob_to_expected_goals(p):
     return -math.log(1 - p) if p > 0 else 0.0
 
 
+def historical_shrunk_rate(stat, historical_row, position, position_avg, weights):
+    """This player's own shrunk per-90 rate for `stat` - fixture-neutral,
+    no factor applied. Extracted from compute_module_rate_historical (its
+    raw_rate line, unchanged) so Recent Form's shrinkage prior (see
+    compute_recent_form_stat) and Historical Performance's own blended
+    rate both read from exactly one shared calculation - never from each
+    other's output, and never from the post-blend modular rate (which,
+    for Recent Form's purposes, would already include Recent Form's own
+    contribution - a real circularity, not a hypothetical one).
+
+    Always defined: every player has a historical_row (all-zero for a
+    zero-history one), and k-shrinkage already folds toward
+    position_avg[position][stat] as games90 -> 0 - the same single
+    formula IS both "step 1: player's own rate" and "step 2: position
+    prior" in the fallback sense (see compute_recent_form_stat's
+    docstring) - not two separate branches."""
+    k = weights["shrinkage_games"]
+    col = STAT_COLUMNS[stat]
+    games90 = historical_row["minutes_played"] / 90.0
+    return (historical_row[col] + k * position_avg[position][col]) / (games90 + k)
+
+
 def compute_module_rate_historical(stat, historical_row, position, position_avg, fixture, weights):
-    """This player's own shrunk per-90 rate x our own team-strength
-    MODEL's fixture factor (fixture_strength_model_probabilities,
+    """This player's own shrunk per-90 rate (historical_shrunk_rate) x our
+    own team-strength MODEL's fixture factor (fixture_strength_model_probabilities,
     migration 0017) - deliberately never the real-odds figure, even when
     one exists for this fixture, so real market data enters the blend
     through exactly one module (Bookmaker Intelligence) and never through
@@ -654,11 +676,7 @@ def compute_module_rate_historical(stat, historical_row, position, position_avg,
     factor = stat_factor_from_scores(stat, fixture.get("model_attack_score"), fixture.get("model_clean_sheet_score"), weights)
     if factor is None:
         factor = 1.0
-    k = weights["shrinkage_games"]
-    col = STAT_COLUMNS[stat]
-    games90 = historical_row["minutes_played"] / 90.0
-    raw_rate = (historical_row[col] + k * position_avg[position][col]) / (games90 + k)
-    return raw_rate * factor
+    return historical_shrunk_rate(stat, historical_row, position, position_avg, weights) * factor
 
 
 def compute_module_rate_fixture_model(stat, position, position_avg, fixture, weights):
@@ -751,37 +769,130 @@ def compute_module_rate_player_role(stat, historical_row, team_id, team_stat_tot
     return share * team[per90_key] * factor
 
 
-def fetch_recent_form_rates(cur, game_id, current_gameweek, lookback=5):
-    """{player_id: {"goal"?: per90rate, "assist"?: per90rate}} from this
-    player's last `lookback` REAL completed gameweeks - actual_goals/
-    actual_assists/actual_minutes on player_gameweek_predictions
-    (migration 0044), populated only once a gameweek has actually been
-    played and graded (see scripts/capture_gameweek_actuals.py /
-    evaluate_predictions.py). This is genuinely different information
-    from Historical Performance (last SEASON's aggregate) once the
-    current season is under way: a player in a hot streak or an injury-
-    affected dip shows up here well before it would move their season-
-    long average. Empty for any player with zero completed gameweeks
-    captured yet - which, pre-season, is everyone - so this module
-    returns None everywhere until real 2026/27 results start landing;
-    never a fabricated early-season guess.
+RECENT_FORM_STATS = ("goal", "assist")
 
-    "goal"/"assist" are independently PRESENT OR ABSENT per player, not
-    just possibly-zero: as of this build, scripts/attach_gameweek_results.py
-    only ever writes actual_minutes/actual_points - actual_goals/
-    actual_assists stay NULL indefinitely (no source feed carries that
-    breakdown yet - see migration 0044's docstring). Filtering only on
-    actual_minutes IS NOT NULL (as this query used to) would have meant
-    the moment real minutes start landing (FanTeam GW1, 2026-08-21), a
-    genuinely-missing goal/assist breakdown got read as SUM(NULL) = 0 -
-    a real, confirmed "this player scored nothing recently," not the
-    "we don't have this data yet" it actually is. COUNT(pgp.actual_goals)/
-    COUNT(pgp.actual_assists) (SQL COUNT already skips NULLs) now gates
-    each stat independently, so a player with real minutes but no
-    attacking breakdown correctly produces no "goal"/"assist" key at all -
-    excluded, same as every other module's missing-data case, not faked.
-    Found via the Recent Form architectural review, fixed on its own
-    ahead of that redesign - a correctness issue, not a design choice.
+# Calibration hypotheses, per the Recent Form architectural review - none
+# of these are architectural, all three are configurable independently
+# (see build_recent_form_rates), and none are derived from data yet.
+# decay=0.85: a goal 4 gameweeks old contributes ~0.52 of one from last
+# week. lookback=8: independently testable from decay itself - a flat
+# average over a longer window is a coherent config too, not fused with
+# "use decay at all." k_recent=3.0 (revised down from an initial 6.0
+# after the initial value was shown, not just asserted, to guarantee
+# Historical Performance stayed the majority vote even at the largest
+# sample this window can ever contain - see the review's own k_recent
+# quantification table): at k_recent=3, one effective full match
+# contributes 25% observed weight, three matches 50%, and the maximum
+# possible 8-gameweek decayed sample ~61.8% - still conservative for a
+# single cameo, but able to let a sustained run of evidence become the
+# majority signal, which k_recent=6 could never do within this window.
+RECENT_FORM_DECAY = 0.85
+RECENT_FORM_LOOKBACK = 8
+RECENT_FORM_K = 3.0
+
+
+def compute_recent_form_stat(observations, historical_prior, current_gameweek, decay, k_recent):
+    """Pure function - no database access, no historical-row lookups, no
+    side effects - directly unit-testable with synthetic inputs. Given
+    ONE stat's real observations and that player's already-resolved
+    historical_shrunk_rate prior, returns the recency-weighted, shrunk
+    rate plus the full breakdown recent_form_detail needs.
+
+    observations: [(gameweek, observed_value, minutes), ...]. The CALLER
+    (fetch_recent_gameweek_observations) guarantees every row here has a
+    real, non-null observed_value for this specific stat - a gameweek
+    where this stat was never recorded (actual_goals IS NULL, say) must
+    never appear in this list at all; that is the caller's contract, not
+    re-derived here. A row with observed_value = 0 (a real, observed
+    "didn't score this game") is valid evidence and IS included - the
+    observed-zero-vs-unobserved-NULL distinction is enforced entirely by
+    which rows the caller includes, not by any check inside this
+    function. Rows with minutes <= 0 are additionally excluded here,
+    defensively, so the denominator can never be zero or negative
+    regardless of what the caller passes in.
+
+    Returns None if no valid observations remain after filtering - "no
+    evidence" stays "no evidence," never converted into a rate of 0.
+
+    Two separate steps, kept algebraically distinct (see the review's
+    §02/§07):
+      Step 1 - recency weighting: weight(gw) = decay ^ (current_gameweek
+      - gw - 1), decayed from CALENDAR gameweek distance (a player's
+      pre-injury form goes stale while they're out, not frozen until
+      their next real appearance).
+      Step 2 - shrinkage toward historical_prior, weighted by k_recent
+      (in equivalent 90-minute games) against effective_games90 (real
+      recency-weighted minutes / 90). Algebraically a weighted average
+      of historical_prior and the recency-weighted observed rate, so
+      final_shrunk_rate is always bounded between the two (when both are
+      non-negative) - a real, checked invariant, not just intended
+      behaviour."""
+    valid = [(gw, value, minutes) for gw, value, minutes in observations if minutes is not None and minutes > 0]
+    if not valid:
+        return None
+
+    weighted_value_sum = 0.0
+    weighted_minutes_sum = 0.0
+    oldest_gw = None
+    newest_gw = None
+    for gw, value, minutes in valid:
+        weight = decay ** (current_gameweek - gw - 1)
+        weighted_value_sum += weight * value
+        weighted_minutes_sum += weight * minutes
+        oldest_gw = gw if oldest_gw is None else min(oldest_gw, gw)
+        newest_gw = gw if newest_gw is None else max(newest_gw, gw)
+
+    effective_games90 = weighted_minutes_sum / 90.0
+    if effective_games90 <= 0:
+        return None
+
+    raw_unweighted_rate = sum(value for _, value, _ in valid) / (sum(minutes for _, _, minutes in valid) / 90.0)
+    raw_recency_weighted_rate = weighted_value_sum / effective_games90
+
+    final_shrunk_rate = (weighted_value_sum + k_recent * historical_prior) / (effective_games90 + k_recent)
+    observed_weight = effective_games90 / (effective_games90 + k_recent)
+    prior_weight = 1.0 - observed_weight
+
+    return {
+        "raw_unweighted_rate": raw_unweighted_rate,
+        "raw_recency_weighted_rate": raw_recency_weighted_rate,
+        "historical_prior_rate": historical_prior,
+        "final_shrunk_rate": final_shrunk_rate,
+        "observed_weight": observed_weight,
+        "prior_weight": prior_weight,
+        # Signed diagnostic - how far, and in which direction, shrinkage
+        # moved the final rate away from the raw recency-weighted
+        # observation: negative when the prior sits below the observed
+        # rate (shrinkage pulls the number down), positive when the prior
+        # sits above it (pulls up), exactly 0.0 at k_recent=0 (no
+        # shrinkage at all - final_shrunk_rate equals the raw rate by
+        # construction, see the k_recent=0 identity above).
+        "prior_pull": final_shrunk_rate - raw_recency_weighted_rate,
+        "effective_weighted_minutes": weighted_minutes_sum,
+        "effective_games90": effective_games90,
+        "observed_appearances_for_stat": len(valid),
+        "oldest_gameweek_used": oldest_gw,
+        "newest_gameweek_used": newest_gw,
+    }
+
+
+def fetch_recent_gameweek_observations(cur, game_id, current_gameweek, lookback=RECENT_FORM_LOOKBACK):
+    """Layer 1 - database access ONLY, no recency/shrinkage math, no
+    historical-row lookups. Returns
+    {player_id: {"goal": [(gw, value, minutes), ...], "assist": [...],
+                 "playing_appearances_in_window": N}}
+    from player_gameweek_predictions (migration 0044) - a row enters
+    "goal"'s list only when actual_goals IS NOT NULL for that gameweek
+    (same for "assist"/actual_assists, independently) - a gameweek with
+    real minutes but no attacking breakdown yet (the actual GW1 state -
+    see the shipped bug fix, scripts/attach_gameweek_results.py only
+    ever writes actual_minutes/actual_points) correctly contributes to
+    NEITHER list, not a fabricated zero. playing_appearances_in_window
+    counts real minutes-played gameweeks regardless of stat availability
+    - a player can have 5 real appearances but only 3 with usable assist
+    data; this parent-level figure and each stat's own
+    observed_appearances_for_stat (see compute_recent_form_stat) answer
+    different questions and are both kept.
 
     Period-mode games (no gameweek calendar, e.g. Dream Team pre-season)
     have no concept of "current gameweek" to look back from, so this
@@ -790,47 +901,125 @@ def fetch_recent_form_rates(cur, game_id, current_gameweek, lookback=5):
         return {}
     cur.execute(
         """
-        select gp.player_id,
-               sum(pgp.actual_goals), count(pgp.actual_goals),
-               sum(pgp.actual_assists), count(pgp.actual_assists),
-               sum(pgp.actual_minutes)
+        select gp.player_id, pgp.gameweek, pgp.actual_goals, pgp.actual_assists, pgp.actual_minutes
         from player_gameweek_predictions pgp
         join game_players gp on gp.id = pgp.game_player_id
         where pgp.game_id = %s and pgp.gameweek < %s and pgp.gameweek >= %s - %s
           and pgp.actual_minutes is not null
-        group by gp.player_id
+        order by gp.player_id, pgp.gameweek
         """,
         (game_id, current_gameweek, current_gameweek, lookback),
     )
     out = {}
-    for player_id, goals, goals_n, assists, assists_n, minutes in cur.fetchall():
-        games90 = float(minutes) / 90.0 if minutes else 0.0
-        if games90 <= 0:
+    for player_id, gameweek, actual_goals, actual_assists, actual_minutes in cur.fetchall():
+        entry = out.setdefault(player_id, {"goal": [], "assist": [], "playing_appearances_in_window": 0})
+        minutes = float(actual_minutes)
+        if minutes > 0:
+            entry["playing_appearances_in_window"] += 1
+        if actual_goals is not None:
+            entry["goal"].append((gameweek, float(actual_goals), minutes))
+        if actual_assists is not None:
+            entry["assist"].append((gameweek, float(actual_assists), minutes))
+    return out
+
+
+def build_recent_form_rates(
+    players, historical_by_player_id, position_avg, weights, cur, game_id, current_gameweek,
+    lookback=RECENT_FORM_LOOKBACK, decay=RECENT_FORM_DECAY, k_recent=RECENT_FORM_K,
+):
+    """Layer 3 - orchestration. Ties Layer 1 (fetch_recent_gameweek_observations)
+    and Layer 2 (compute_recent_form_stat, historical_shrunk_rate) together
+    once per player, per gameweek run - Recent Form has no fixture
+    dimension, so this is computed once in main() and reused across
+    however many fixtures a player has this scoring period, exactly like
+    the module it replaces.
+
+    Returns {player_id: {"goal"?: {"rate": x, "detail": {...}}, "assist"?: {...}}} -
+    compute_module_rate_recent_form reads "rate", the Engine Validation
+    inputs layer reads "detail" (recent_form_detail, per player)."""
+    observations_by_player = fetch_recent_gameweek_observations(cur, game_id, current_gameweek, lookback)
+    if not observations_by_player:
+        return {}
+
+    out = {}
+    for _, position, player_id in players:
+        obs = observations_by_player.get(player_id)
+        if not obs:
             continue
-        rates = {}
-        if goals_n > 0:
-            rates["goal"] = float(goals or 0) / games90
-        if assists_n > 0:
-            rates["assist"] = float(assists or 0) / games90
-        if rates:
-            out[player_id] = rates
+        historical_row = historical_by_player_id.get(player_id)
+        stats = {}
+        for stat in RECENT_FORM_STATS:
+            stat_observations = obs.get(stat, [])
+            if not stat_observations:
+                continue
+            # §01's fallback chain: historical_shrunk_rate always resolves
+            # (steps 1/2 of the chain are the SAME formula's shrinkage
+            # behaviour) as long as historical_row exists - step 3 (no
+            # signal) fires only if it doesn't, which main()'s existing
+            # data flow should never produce for a real player, but is
+            # not assumed here regardless.
+            if historical_row is None:
+                continue
+            prior = historical_shrunk_rate(stat, historical_row, position, position_avg, weights)
+            result = compute_recent_form_stat(stat_observations, prior, current_gameweek, decay, k_recent)
+            if result is not None:
+                stats[stat] = {"rate": result["final_shrunk_rate"], "detail": result}
+        if stats:
+            out[player_id] = {
+                **stats,
+                "_parent": {
+                    "lookback_gameweeks": lookback,
+                    "decay": decay,
+                    "k_recent": k_recent,
+                    "decay_basis": "calendar_gameweek",
+                    "playing_appearances_in_window": obs["playing_appearances_in_window"],
+                    # Not built yet - see the Recent Form architectural
+                    # review's schedule-strength investigation:
+                    # team_fixture_difficulty is an unsnapshotted view and
+                    # every real query path that reads its sources lacks a
+                    # computed_at <= kickoff_at filter (183 real rows
+                    # already have a post-kickoff computed_at, confirmed
+                    # live) - an absent diagnostic here, not a historically
+                    # inaccurate one.
+                    "schedule_strength": None,
+                    "schedule_strength_source": "not_available",
+                },
+            }
     return out
 
 
 def compute_module_rate_recent_form(stat, player_id, recent_form_rates):
-    """This player's own per-90 rate over their last few REAL completed
-    gameweeks - see fetch_recent_form_rates. None whenever no completed
-    gameweek data exists yet for this player (the universal case
-    pre-season), AND None for this specific stat if this player has real
-    minutes but no real goal/assist breakdown for it yet (see
-    fetch_recent_form_rates' docstring) - never a fabricated early guess
-    either way."""
-    if stat not in ("goal", "assist"):
+    """This player's own recency-weighted, historical-shrunk per-90 rate -
+    see build_recent_form_rates/compute_recent_form_stat. None whenever
+    no completed gameweek data exists yet for this player (the universal
+    case pre-season), AND None for this specific stat if this player has
+    real minutes but no real goal/assist breakdown for it yet - never a
+    fabricated early guess either way."""
+    if stat not in RECENT_FORM_STATS:
         return None
-    rates = recent_form_rates.get(player_id)
-    if not rates:
+    player_rates = recent_form_rates.get(player_id)
+    if not player_rates:
         return None
-    return rates.get(stat)
+    stat_entry = player_rates.get(stat)
+    if not stat_entry:
+        return None
+    return stat_entry["rate"]
+
+
+def build_recent_form_detail(recent_form_rates, player_id):
+    """Engine Validation's recent_form_detail (see the implementation
+    plan's §07 schema) - {"goal": StatDetail|None, "assist": StatDetail|None,
+    <parent-level fields>} or None if this player has no Recent Form
+    signal for either stat this run. A stat key is entirely absent (not
+    a zero-filled placeholder) whenever that stat had no real
+    observations, mirroring build_module_detail_report's own "excluded,
+    not faked" discipline."""
+    player_rates = recent_form_rates.get(player_id)
+    if not player_rates:
+        return None
+    detail = {stat: player_rates[stat]["detail"] for stat in RECENT_FORM_STATS if stat in player_rates}
+    detail.update(player_rates["_parent"])
+    return detail
 
 
 def blend_module_rates(module_rates, module_weights):
@@ -2007,7 +2196,10 @@ def main():
             })
 
         hub_features = fetch_hub_features(cur, all_fixture_ids) if use_v2 else {}
-        recent_form_rates = fetch_recent_form_rates(cur, game_id, gameweek) if use_v2 else {}
+        recent_form_rates = (
+            build_recent_form_rates(players, historical_by_player_id, position_avg_rates, runtime_weights, cur, game_id, gameweek)
+            if use_v2 else {}
+        )
         # Opportunity Model (Phase A) rotation-risk signal - see
         # fetch_rotation_congestion(). Only meaningful for v2, same reason
         # position_involvement above is v2-only.
@@ -2174,6 +2366,14 @@ def main():
                     # Same "primary fixture only" scope as module_detail
                     # above, for the same reason.
                     "opportunity_detail": primary_opportunity_detail,
+                    # Recent Form's full recency-weighted, historical-
+                    # shrunk breakdown per stat - see build_recent_form_rates/
+                    # compute_recent_form_stat. Not fixture-scoped at all
+                    # (unlike opportunity_detail) - Recent Form produces one
+                    # number per player per gameweek run, reused across
+                    # every fixture that gameweek, so this is simply the
+                    # player's detail, not a "primary fixture" figure.
+                    "recent_form_detail": build_recent_form_detail(recent_form_rates, player_id),
                     "player_role_detail": build_player_role_detail(team_id, historical_row, team_stat_totals, player_id, transferred_player_ids),
                     "expected_minutes_fraction": round(primary_expected_minutes_fraction, 4) if primary_expected_minutes_fraction is not None else None,
                     "data_confidence": {"score": data_confidence_score, "label": data_confidence_label(data_confidence_score)},
