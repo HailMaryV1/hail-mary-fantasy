@@ -1,0 +1,138 @@
+[
+  {
+    "player_name": "Ethan Ampadu",
+    "original": {
+      "player_id": 37,
+      "full_name": "Ethan Ampadu",
+      "position": "DEF",
+      "team_id": 11,
+      "game_player_id": 74,
+      "external_id": "4293421",
+      "position_code": "DEF",
+      "price": "4.40",
+      "is_active": false
+    },
+    "phantom": {
+      "player_id": 765,
+      "full_name": "Ethan Ampadu",
+      "position": "MID",
+      "team_id": 11,
+      "game_player_id": 1248,
+      "external_id": "4700966",
+      "position_code": "midfielder",
+      "price": "4.50",
+      "is_active": true
+    },
+    "action": {
+      "reactivate_game_player_id": 74,
+      "new_external_id": "4700966",
+      "new_position_code": "midfielder",
+      "new_price": "4.50",
+      "new_team_id": 11,
+      "new_position": "MID",
+      "deactivate_game_player_id": 1248
+    }
+  },
+  {
+    "player_name": "Evann Guessand",
+    "original": {
+      "player_id": 92,
+      "full_name": "Evann Guessand",
+      "position": "FWD",
+      "team_id": 8,
+      "game_player_id": 184,
+      "external_id": "4348599",
+      "position_code": "FOR",
+      "price": "6.20",
+      "is_active": false
+    },
+    "phantom": {
+      "player_id": 729,
+      "full_name": "Evann Guessand",
+      "position": "MID",
+      "team_id": 2,
+      "game_player_id": 1203,
+      "external_id": "4700831",
+      "position_code": "midfielder",
+      "price": "5.50",
+      "is_active": true
+    },
+    "action": {
+      "reactivate_game_player_id": 184,
+      "new_external_id": "4700831",
+      "new_position_code": "midfielder",
+      "new_price": "5.50",
+      "new_team_id": 2,
+      "new_position": "MID",
+      "deactivate_game_player_id": 1203
+    }
+  },
+  {
+    "player_name": "Lamare Bogarde",
+    "original": {
+      "player_id": 442,
+      "full_name": "Lamare Bogarde",
+      "position": "DEF",
+      "team_id": 2,
+      "game_player_id": 884,
+      "external_id": "3948113",
+      "position_code": "DEF",
+      "price": "4.00",
+      "is_active": false
+    },
+    "phantom": {
+      "player_id": 724,
+      "full_name": "Lamare Bogarde",
+      "position": "MID",
+      "team_id": 2,
+      "game_player_id": 1198,
+      "external_id": "4700819",
+      "position_code": "midfielder",
+      "price": "4.50",
+      "is_active": true
+    },
+    "action": {
+      "reactivate_game_player_id": 884,
+      "new_external_id": "4700819",
+      "new_position_code": "midfielder",
+      "new_price": "4.50",
+      "new_team_id": 2,
+      "new_position": "MID",
+      "deactivate_game_player_id": 1198
+    }
+  },
+  {
+    "player_name": "Mats Wieffer",
+    "original": {
+      "player_id": 50,
+      "full_name": "Mats Wieffer",
+      "position": "MID",
+      "team_id": 5,
+      "game_player_id": 100,
+      "external_id": "3893796",
+      "position_code": "MID",
+      "price": "4.70",
+      "is_active": false
+    },
+    "phantom": {
+      "player_id": 737,
+      "full_name": "Mats Wieffer",
+      "position": "DEF",
+      "team_id": 5,
+      "game_player_id": 1212,
+      "external_id": "4700866",
+      "position_code": "defender",
+      "price": "5.00",
+      "is_active": true
+    },
+    "action": {
+      "reactivate_game_player_id": 100,
+      "new_external_id": "4700866",
+      "new_position_code": "defender",
+      "new_price": "5.00",
+      "new_team_id": 5,
+      "new_position": "DEF",
+      "deactivate_game_player_id": 1212
+    }
+  }
+]
