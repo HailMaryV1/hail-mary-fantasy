@@ -373,6 +373,14 @@ DEFAULT_WEIGHTS_V2 = {
     # to coincide with whatever the pre-modular single-formula version
     # last computed with - same purpose as the keys above.
     "module_engine_version": "v2",
+    # Forces a new algorithm_versions revision the moment the Opportunity
+    # Model (Phase A) actually goes live - expected_minutes_fraction (and,
+    # with it, the "appearance"/"minutes_60_plus"/"played_full_match"
+    # scoring stats - see compute_opportunity()) now comes from the
+    # decomposed P(start) model instead of the single blended appearance_
+    # rate x avg_minutes_per_appearance formula it replaces, even though
+    # no literal weight value below changed.
+    "opportunity_model_version": "v1",
 }
 
 # The 3 stats with both a real fixture-level driver AND a real bookmaker
@@ -941,11 +949,42 @@ def compute_shrunk_rates(players, historical_rows):
     return position_avg
 
 
+# Opportunity Model, Phase A (Minimum Viable Opportunity Model) - see
+# memory project-opportunity-model-accepted for the binding scope
+# boundary (playing-time only, never event quality) and the Phase A
+# implementation plan artifact for the full formula derivation and its
+# documented "Risks, Assumptions & Technical Debt" table.
+#
+# SUB_MINUTES_CEILING/START_MINUTES_FLOOR: no field distinguishes a
+# start from a substitute appearance anywhere in this pipeline yet, so
+# start_share_from_avg_minutes() below infers a proxy from how long a
+# player tends to stay on when they do appear. START_MINUTES_FLOOR
+# reuses the same 60-minute threshold cond60_rate already uses
+# elsewhere in this file, not a new arbitrary number.
+SUB_MINUTES_CEILING = 30.0
+START_MINUTES_FLOOR = 60.0
+ROTATION_CONGESTION_DISCOUNT = 0.85
+
+
+def start_share_from_avg_minutes(avg_minutes_per_appearance):
+    """Proxy for what fraction of a player's historical appearances were
+    starts (as opposed to substitute cameos), inferred from their average
+    minutes per appearance - monotonic and bounded [0, 1], not a
+    fabricated precise split. An explicitly-labelled Phase A
+    approximation, replaced by real start/sub labels in Phase B."""
+    if avg_minutes_per_appearance <= SUB_MINUTES_CEILING:
+        return 0.0
+    if avg_minutes_per_appearance >= START_MINUTES_FLOOR:
+        return 1.0
+    return (avg_minutes_per_appearance - SUB_MINUTES_CEILING) / (START_MINUTES_FLOOR - SUB_MINUTES_CEILING)
+
+
 def compute_involvement_rates(players, historical_rows, season_games):
     """
     players: [(game_player_id, position, player_id)]
     historical_rows: {player_id: {..., pt1, pt60, pt90}}
-    Returns {pos: {"appearance": x, "cond60": x, "cond90": x, "avg_minutes_per_appearance": x}} -
+    Returns {pos: {"appearance": x, "cond60": x, "cond90": x, "avg_minutes_per_appearance": x,
+                   "start_rate": x, "appear_given_not_started": x, "avg_sub_minutes": x}} -
     unshrunk position averages used as the shrinkage prior for each
     player's own appearance/cond60/cond90 rate in project_player_stats,
     same technique as compute_shrunk_rates above but in "games" units, not
@@ -957,8 +996,21 @@ def compute_involvement_rates(players, historical_rows, season_games):
     project_player_stats falls back to this for a player with zero
     historical PT1 (a real appearance-per-90 average, not a guess) instead
     of computing 0 minutes played / 0 appearances.
+
+    start_rate / appear_given_not_started / avg_sub_minutes (added for the
+    Opportunity Model, Phase A - see compute_opportunity()) are position
+    priors built from the SAME single pass, using start_share_from_avg_
+    minutes()'s proxy split since no real start/sub label exists in the
+    data yet - see the Phase A implementation plan's "Risks, Assumptions &
+    Technical Debt" table for this approximation's documented limits.
     """
-    totals = {pos: {"pt1": 0.0, "pt60": 0.0, "pt90": 0.0, "minutes": 0.0, "players": 0} for pos in POSITIONS}
+    totals = {
+        pos: {
+            "pt1": 0.0, "pt60": 0.0, "pt90": 0.0, "minutes": 0.0, "players": 0,
+            "start_pt1": 0.0, "sub_minutes_sum": 0.0, "sub_pt1_sum": 0.0,
+        }
+        for pos in POSITIONS
+    }
     for _, position, player_id in players:
         row = historical_rows.get(player_id)
         # Same "minutes_played <= 0 excludes, not just a missing row"
@@ -974,19 +1026,286 @@ def compute_involvement_rates(players, historical_rows, season_games):
         t["pt90"] += row["pt90"]
         t["minutes"] += row["minutes_played"]
         t["players"] += 1
-    return {
-        pos: {
-            "appearance": (totals[pos]["pt1"] / (totals[pos]["players"] * season_games)) if totals[pos]["players"] else 0.0,
-            "cond60": (totals[pos]["pt60"] / totals[pos]["pt1"]) if totals[pos]["pt1"] else 0.0,
-            "cond90": (totals[pos]["pt90"] / totals[pos]["pt1"]) if totals[pos]["pt1"] else 0.0,
+        raw_pt1 = row["pt1"]
+        if raw_pt1 > 0:
+            avg_min = row["minutes_played"] / raw_pt1
+            t["start_pt1"] += raw_pt1 * start_share_from_avg_minutes(avg_min)
+            # This player's OWN average reads as "mostly a substitute" -
+            # counts toward the sub-minutes cohort used for
+            # avg_sub_minutes below. A real (if coarse) proxy cohort, not
+            # a guess - see compute_opportunity()'s docstring.
+            if avg_min <= SUB_MINUTES_CEILING:
+                t["sub_minutes_sum"] += row["minutes_played"]
+                t["sub_pt1_sum"] += raw_pt1
+    out = {}
+    for pos in POSITIONS:
+        pt1_total = totals[pos]["pt1"]
+        players_n = totals[pos]["players"]
+        start_pt1 = totals[pos]["start_pt1"]
+        non_start_pt1 = pt1_total - start_pt1
+        non_start_games = max(players_n * season_games - start_pt1, 1.0)
+        out[pos] = {
+            "appearance": (pt1_total / (players_n * season_games)) if players_n else 0.0,
+            "cond60": (totals[pos]["pt60"] / pt1_total) if pt1_total else 0.0,
+            "cond90": (totals[pos]["pt90"] / pt1_total) if pt1_total else 0.0,
             # 70.0 fallback only fires if literally every player at this
             # position has zero historical minutes - shouldn't happen in
             # practice but avoids a div/0 in the (impossible in normal
             # data) all-new-position case.
-            "avg_minutes_per_appearance": (totals[pos]["minutes"] / totals[pos]["pt1"]) if totals[pos]["pt1"] else 70.0,
+            "avg_minutes_per_appearance": (totals[pos]["minutes"] / pt1_total) if pt1_total else 70.0,
+            # start_given_appeared is PT1-denominated (not season_games-
+            # denominated) deliberately - see compute_opportunity()'s
+            # P(start) construction, which multiplies this by appearance
+            # rate rather than using it as a standalone rate. Using PT1
+            # here (not season_games) is what lets a confirmed impact-sub
+            # player's real sample size actually pull their own estimate
+            # down, instead of always reverting to this same position
+            # average regardless of how much real evidence exists -
+            # caught by testing this against a real player before wiring
+            # this in (see the Phase A risk log).
+            "start_given_appeared": (start_pt1 / pt1_total) if pt1_total else 0.0,
+            "appear_given_not_started": (non_start_pt1 / non_start_games) if players_n else 0.0,
+            # 20.0 fallback only fires if literally no player at this
+            # position ever reads as "mostly a substitute" - possible for
+            # a thin position/pool, fails to a documented round-number
+            # default rather than a div/0.
+            "avg_sub_minutes": (totals[pos]["sub_minutes_sum"] / totals[pos]["sub_pt1_sum"]) if totals[pos]["sub_pt1_sum"] else 20.0,
         }
-        for pos in POSITIONS
+    return out
+
+
+def fetch_rotation_congestion(cur, fixture_ids):
+    """{fixture_id: bool} - a first-pass, uniform-per-fixture rotation-risk
+    signal: True if this fixture is a cup/non-league competition, or
+    either side's previous fixture was less than 4 days earlier. NOT the
+    per-player exposure / team-level rotation model from
+    project-opportunity-model-research - that's a later phase. Every
+    player at a flagged fixture receives the same discount
+    (ROTATION_CONGESTION_DISCOUNT) regardless of their own role, an
+    explicit Phase A simplification - see the implementation plan's risk
+    log. Fails open (False) on missing competition/date data rather than
+    guessing."""
+    if not fixture_ids:
+        return {}
+    cur.execute(
+        "select id, competition, home_team_id, away_team_id, kickoff_at from fixtures where id = any(%s)",
+        (list(fixture_ids),),
+    )
+    target_fixtures = cur.fetchall()
+    out = {}
+    for row in target_fixtures:
+        fixture_id, competition, home_id, away_id, kickoff_at = row
+        if competition is None or kickoff_at is None:
+            out[fixture_id] = False
+            continue
+        # Both games this applies to (FanTeam, Dream Team) are the same
+        # Premier League - 'soccer_epl' confirmed live as the real
+        # competition key for it, distinct from 'soccer_england_efl_cup'
+        # etc. Hardcoded rather than derived per-game since both games
+        # share the exact same real fixture pool.
+        is_cup = competition != "soccer_epl"
+        cur.execute(
+            "select max(kickoff_at) from fixtures where (home_team_id = %s or away_team_id = %s) and kickoff_at < %s",
+            (home_id, home_id, kickoff_at),
+        )
+        home_prev = cur.fetchone()[0]
+        cur.execute(
+            "select max(kickoff_at) from fixtures where (home_team_id = %s or away_team_id = %s) and kickoff_at < %s",
+            (away_id, away_id, kickoff_at),
+        )
+        away_prev = cur.fetchone()[0]
+        short_turnaround = False
+        for prev in (home_prev, away_prev):
+            if prev is not None and (kickoff_at - prev).days < 4:
+                short_turnaround = True
+        out[fixture_id] = bool(is_cup or short_turnaround)
+    return out
+
+
+def compute_opportunity_confidence(minutes_played, live_status_applied):
+    """0-100 STRUCTURAL confidence only (sample size + whether live status
+    was available this fixture) - mirrors compute_data_confidence()'s
+    coverage x sample-size shape. Deliberately does NOT attempt a
+    football-uncertainty number (rotation/tactical volatility) in Phase A -
+    per project-opportunity-model-research, that axis has nothing real to
+    measure from until the team-level rotation model exists. See
+    opportunity_detail's "football_uncertainty": None in compute_opportunity()."""
+    coverage_factor = 1.0 if live_status_applied else 0.6
+    games90 = minutes_played / 90.0
+    sample_factor = 1.0 if games90 >= 5 else max(0.4, 0.4 + 0.12 * games90)
+    return round(100 * max(0.0, min(1.0, coverage_factor * sample_factor)))
+
+
+# Live-status -> P(start) blend targets. Reuses LINEUP_MULTIPLIERS'/
+# STATUS_MULTIPLIERS' own already-calibrated numbers (defined above,
+# still used unchanged by status_multiplier() until Milestone 2 removes
+# that call site) - not a new set of guesses. Blend weights (how much to
+# trust the live signal vs. history) are a defensible starting point,
+# explicitly flagged for Performance Lab calibration once real live-
+# status-vs-outcome data accumulates - see the implementation plan's risk
+# log.
+OPPORTUNITY_HARD_OUT_STATUSES = {"injured", "suspended", "not_available", "gameweek_off"}
+OPPORTUNITY_LINEUP_BLEND = {
+    "confirmed_starting": (1.0, 0.97),
+    "confirmed_not_in_squad": (1.0, 0.0),
+    "confirmed_benched": (1.0, 0.02),
+    "expected": (0.3, 0.95),
+    "might_start": (0.4, 0.75),
+    "not_expected": (0.4, 0.35),
+}
+
+
+def compute_opportunity(historical_row, position, pos_inv, weights, lineup, status, is_transferred, is_congested):
+    """The Opportunity Model (Phase A - Minimum Viable Opportunity Model).
+    Returns (expected_minutes_fraction, opportunity_detail).
+
+    Scoped STRICTLY to playing time, per project-opportunity-model-
+    accepted: P(start), P(appear | didn't start), and the opportunity
+    (in minutes) if either - never reads or influences anything about
+    event rates. Replaces the single blended appearance_rate x avg_
+    minutes_per_appearance number project_player_stats used to compute
+    inline, decomposing it into the actual generative sequence (manager
+    picks XI -> player starts or doesn't -> if not, may appear as a sub)
+    instead of averaging over it.
+
+    Every approximation below is real and documented, not hidden - see
+    the Phase A implementation plan's "Risks, Assumptions & Technical
+    Debt" table for why each one is reasonable today and which later
+    phase removes it. In short: no field distinguishes a start from a
+    sub-appearance anywhere in this pipeline yet, so start_share_from_
+    avg_minutes() infers a proxy from how long a player tends to stay on
+    when they do appear, and several position-level priors below (P(start),
+    P(appear | not started), sub-appearance minutes) are built from that
+    same proxy split rather than a real label.
+
+    lineup/status should be None for anything but the PRIMARY fixture -
+    live team news doesn't exist for a fixture two gameweeks out, same
+    simplification module_detail_scope already documents elsewhere in
+    this file."""
+    k = weights["shrinkage_games"]
+    k_effective = k * 2.0 if is_transferred else k
+    season_games = weights["season_games"]
+
+    raw_pt1 = historical_row["pt1"]
+    minutes_played = historical_row["minutes_played"]
+    pt1 = max(raw_pt1, 1.0)
+    pt60 = historical_row["pt60"]
+    pt90 = historical_row["pt90"]
+
+    avg_min = (minutes_played / raw_pt1) if raw_pt1 > 0 else pos_inv["avg_minutes_per_appearance"]
+    start_share = start_share_from_avg_minutes(avg_min)
+
+    # --- P(start): historical base rate, then live status update ---
+    # Deliberately two multiplied stages, not one shrinkage step directly
+    # against season_games: P(start) = P(appear at all) x P(start | appear).
+    # appearance_rate reuses the exact formula project_player_stats
+    # already trusted for this; start_given_appeared is shrunk using PT1
+    # (real appearances) as its own local sample size, not season_games -
+    # collapsing straight to one shrinkage step against season_games
+    # would let a confirmed impact-sub player's real evidence (many real
+    # appearances, all short) vanish the moment start_share is 0, since
+    # raw_pt1 * 0 contributes no weight regardless of how large raw_pt1
+    # is. Caught by testing this against a real player before wiring this
+    # in - see the Phase A risk log.
+    appearance_rate = (raw_pt1 + k_effective * pos_inv["appearance"]) / (season_games + k_effective)
+    start_given_appeared = (raw_pt1 * start_share + k_effective * pos_inv["start_given_appeared"]) / (pt1 + k_effective)
+    p_start_historical = appearance_rate * start_given_appeared
+
+    p_start = p_start_historical
+    live_status_applied = False
+    if status in OPPORTUNITY_HARD_OUT_STATUSES:
+        p_start = 0.0
+        live_status_applied = True
+    elif lineup in OPPORTUNITY_LINEUP_BLEND:
+        live_weight, live_value = OPPORTUNITY_LINEUP_BLEND[lineup]
+        p_start = live_weight * live_value + (1.0 - live_weight) * p_start_historical
+        live_status_applied = True
+
+    # --- Rotation/congestion: first-pass uniform discount (Component 7) ---
+    if is_congested and status not in OPPORTUNITY_HARD_OUT_STATUSES and lineup != "confirmed_not_in_squad":
+        p_start *= ROTATION_CONGESTION_DISCOUNT
+    p_start = max(0.0, min(1.0, p_start))
+
+    # --- P(appear | didn't start) (Component 3) ---
+    non_start_pt1 = raw_pt1 * (1.0 - start_share)
+    non_start_games = max(season_games - raw_pt1 * start_share, 1.0)
+    p_appear_if_not_started = (non_start_pt1 + k_effective * pos_inv["appear_given_not_started"]) / (non_start_games + k_effective)
+    if status in OPPORTUNITY_HARD_OUT_STATUSES or lineup == "confirmed_not_in_squad":
+        p_appear_if_not_started = 0.0
+    p_appear_if_not_started = max(0.0, min(1.0, p_appear_if_not_started))
+
+    # --- Opportunity if starting (Component 2), early-substitution risk
+    # falls out for free (Component 5) - a 3-bucket construction that
+    # reinterprets cond60/cond90 (formally defined relative to ALL
+    # appearances) as if conditioned on starting specifically, since sub
+    # appearances rarely reach 60+ minutes in practice. ---
+    cond60_rate = (pt60 + k * pos_inv["cond60"]) / (pt1 + k)
+    cond90_rate = (pt90 + k * pos_inv["cond90"]) / (pt1 + k)
+    effective_start_share = max(start_share, 0.05)
+    p_full90 = cond90_rate
+    p_60_to_89 = max(0.0, cond60_rate - cond90_rate)
+    p_early_sub = max(0.0, effective_start_share - cond60_rate)
+    bucket_total = p_full90 + p_60_to_89 + p_early_sub
+    if bucket_total > 0:
+        opportunity_if_start = (p_full90 * 90.0 + p_60_to_89 * 75.0 + p_early_sub * 35.0) / bucket_total
+        early_substitution_risk = p_early_sub / bucket_total
+        p_60_plus_given_start = (p_full90 + p_60_to_89) / bucket_total
+        p_full90_given_start = p_full90 / bucket_total
+    else:
+        opportunity_if_start = pos_inv["avg_minutes_per_appearance"]
+        early_substitution_risk = None
+        p_60_plus_given_start = cond60_rate
+        p_full90_given_start = cond90_rate
+
+    # --- Opportunity if appearing as a substitute (Component 4) - a
+    # position-level prior, since no personal start/sub split exists yet
+    # to draw a player-specific number from. ---
+    opportunity_if_sub = pos_inv["avg_sub_minutes"]
+
+    # --- Combine - the output interface is unchanged, everything
+    # downstream still just multiplies raw_rate * expected_minutes_fraction. ---
+    expected_minutes_fraction = min(
+        1.0,
+        (p_start * opportunity_if_start + (1.0 - p_start) * p_appear_if_not_started * opportunity_if_sub) / 90.0,
+    )
+
+    # --- Scoring-stat probabilities (Component 6) - "appearance"/
+    # "minutes_60_plus"/"played_full_match" are real priced stats in
+    # game_scoring_rules (fanteam: 1/3/1 pts - see migration 0021), not
+    # just internal telemetry. This replaces the same appearance_rate x
+    # cond60_rate/cond90_rate formula project_player_stats used to compute
+    # inline, asked of the new decomposed model instead: a sub appearance
+    # is assumed not to reach 60+ minutes (per the bucket construction
+    # above, which already reflects that sub cameos rarely do), so only
+    # the starting branch contributes to p_60_plus/p_full_match.
+    p_appear = p_start + (1.0 - p_start) * p_appear_if_not_started
+    p_60_plus = p_start * p_60_plus_given_start
+    p_full_match = p_start * p_full90_given_start
+
+    structural_confidence = compute_opportunity_confidence(minutes_played, live_status_applied)
+
+    opportunity_detail = {
+        "p_start": round(p_start, 4),
+        "p_start_historical": round(p_start_historical, 4),
+        "p_appear_if_not_started": round(p_appear_if_not_started, 4),
+        "opportunity_if_start": round(opportunity_if_start, 2),
+        "opportunity_if_sub": round(opportunity_if_sub, 2),
+        "early_substitution_risk": round(early_substitution_risk, 4) if early_substitution_risk is not None else None,
+        "start_share_proxy": round(start_share, 4),
+        "p_appear": round(p_appear, 4),
+        "p_60_plus": round(p_60_plus, 4),
+        "p_full_match": round(p_full_match, 4),
+        "is_transferred": bool(is_transferred),
+        "is_congested": bool(is_congested),
+        "live_status_applied": live_status_applied,
+        "structural_confidence": structural_confidence,
+        # Deliberately not modeled in Phase A - see
+        # project-opportunity-model-research and compute_opportunity_confidence()'s
+        # own docstring. None, not fabricated.
+        "football_uncertainty": None,
+        "expected_minutes_fraction": round(expected_minutes_fraction, 4),
     }
+    return expected_minutes_fraction, opportunity_detail
 
 
 MIN_ROSTER_FOR_TEAM_TOTALS = 8
@@ -1084,13 +1403,23 @@ def _implied_involvement(raw_pt1, raw_pt60, raw_pt90, minutes_played):
 
 def project_player_stats(
     position, player_id, team_id, historical_row, fixture, weights, position_avg, position_involvement,
-    hub_features, team_stat_totals, recent_form_rates,
+    hub_features, team_stat_totals, recent_form_rates, lineup, status, is_transferred, is_congested,
 ):
     """Per-stat projected count for one player's one fixture (v2-decomposed).
-    Returns (projected, expected_minutes_fraction) - the fraction is also
-    exposed as predicted_minutes on each fixture_breakdown entry in main(),
-    for the Hail Mary Form System (player_gameweek_predictions, migration
-    0044) to freeze - it was previously computed here and discarded.
+    Returns (projected, expected_minutes_fraction, module_rates_by_stat,
+    opportunity_detail) - the fraction is also exposed as predicted_minutes
+    on each fixture_breakdown entry in main(), for the Hail Mary Form
+    System (player_gameweek_predictions, migration 0044) to freeze - it was
+    previously computed here and discarded.
+
+    Playing-time (expected_minutes_fraction, plus the "appearance"/
+    "minutes_60_plus"/"played_full_match" scoring stats below) is entirely
+    delegated to compute_opportunity() (the Opportunity Model, Phase A) -
+    see its own docstring for the full P(start)-based decomposition. lineup/
+    status/is_congested should be None/None/False for anything but the
+    PRIMARY fixture - live team news and rotation-risk don't exist for a
+    fixture two gameweeks out, same simplification module_detail_scope
+    already documents elsewhere in this file.
 
     goal/assist/clean_sheet_60min (MODULAR_STATS) are blended from up to
     5 independent modules (historical/fixture-model/bookmaker/player-role/
@@ -1111,41 +1440,16 @@ def project_player_stats(
     module_weights_by_position = weights.get("module_weights", {}).get(position, {})
 
     games90 = historical_row["minutes_played"] / 90.0
-    season_games = weights["season_games"]
 
-    # Involvement: three separately-shrunk probabilities derived from last
-    # season's PT1/PT60/PT90 (games featured / games with 60+ minutes /
-    # games with a full 90), instead of one linear minutes/90/season_games
-    # number copied across all three stats below - see
-    # compute_involvement_rates(). pt1 is floored to 1 defensively (never
-    # 0 in live data when minutes_played > 0, but avoids a div/0 if that
-    # ever changes).
-    raw_pt1 = historical_row["pt1"]
-    pt1 = max(raw_pt1, 1.0)
-    pt60 = historical_row["pt60"]
-    pt90 = historical_row["pt90"]
     pos_inv = position_involvement[position]
-
-    appearance_rate = (pt1 + k * pos_inv["appearance"]) / (season_games + k)
-    cond60_rate = (pt60 + k * pos_inv["cond60"]) / (pt1 + k)
-    cond90_rate = (pt90 + k * pos_inv["cond90"]) / (pt1 + k)
-    # A player with zero historical appearances (raw_pt1 == 0 - a newly
-    # promoted team's whole squad, most transfer-window signings, ...)
-    # has no personal minutes/appearance ratio to compute - historical_row
-    # ["minutes_played"] is 0 too, so 0/pt1_floored would silently project
-    # 0 expected minutes regardless of how confident appearance_rate is.
-    # Falls back to the position's own average instead, same shrink-to-
-    # cohort philosophy as every other stat here.
-    if raw_pt1 > 0:
-        avg_minutes_per_appearance = historical_row["minutes_played"] / raw_pt1
-    else:
-        avg_minutes_per_appearance = pos_inv["avg_minutes_per_appearance"]
-    expected_minutes_fraction = min(1.0, appearance_rate * avg_minutes_per_appearance / 90.0)
+    expected_minutes_fraction, opportunity_detail = compute_opportunity(
+        historical_row, position, pos_inv, weights, lineup, status, is_transferred, is_congested,
+    )
 
     projected = {
-        "appearance": appearance_rate,
-        "minutes_60_plus": appearance_rate * cond60_rate,
-        "played_full_match": appearance_rate * cond90_rate,
+        "appearance": opportunity_detail["p_appear"],
+        "minutes_60_plus": opportunity_detail["p_60_plus"],
+        "played_full_match": opportunity_detail["p_full_match"],
     }
     # Raw (pre-blend) module rates per modular stat - kept alongside the
     # blended `projected` dict purely so main() can build the Engine
@@ -1182,7 +1486,7 @@ def project_player_stats(
             raw_rate = (historical_row[col] + k * position_avg[position][col]) / (games90 + k)
             factor = factor_by_mode[STAT_FIXTURE_MODE[stat]]
             projected[stat] = raw_rate * factor * expected_minutes_fraction * rate_scale
-    return projected, expected_minutes_fraction, module_rates_by_stat
+    return projected, expected_minutes_fraction, module_rates_by_stat, opportunity_detail
 
 
 MODULE_NAMES = ("historical_performance", "fixture_model", "bookmaker_intelligence", "player_role", "recent_form")
@@ -1673,6 +1977,10 @@ def main():
 
         hub_features = fetch_hub_features(cur, all_fixture_ids) if use_v2 else {}
         recent_form_rates = fetch_recent_form_rates(cur, game_id, gameweek) if use_v2 else {}
+        # Opportunity Model (Phase A) rotation-risk signal - see
+        # fetch_rotation_congestion(). Only meaningful for v2, same reason
+        # position_involvement above is v2-only.
+        rotation_congestion = fetch_rotation_congestion(cur, all_fixture_ids) if use_v2 else {}
 
         # Even in gameweek mode, derive a display period from the actual
         # fixture dates found - period_start/period_end stay populated
@@ -1690,6 +1998,12 @@ def main():
                 continue
             team_id = team_id_by_player_id.get(player_id)
             historical_row = historical_by_player_id[player_id]
+            # Fetched once per player, before the v1/v2 branch, so the
+            # Opportunity Model can consume real live team news for the
+            # primary fixture below - previously this lookup happened only
+            # after both branches, purely to feed status_multiplier().
+            lineup, status = player_status.get(game_player_id, (None, None))
+            is_transferred = player_id in transferred_player_ids
 
             if use_v2:
                 # A neutral-fixture (factor = 1.0 everywhere) baseline, priced
@@ -1702,9 +2016,15 @@ def main():
                     "attack_score": runtime_weights["neutral_attack"],
                     "clean_sheet_score": runtime_weights["neutral_clean_sheet"],
                 }
-                neutral_stats, neutral_minutes_fraction, _ = project_player_stats(
+                # Neutral baseline deliberately ignores live status/rotation
+                # (lineup=None, status=None, is_congested=False) - it
+                # describes the player's own underlying rate, not any one
+                # fixture's team news, same "neutral" spirit as the
+                # attack/clean_sheet factors above.
+                neutral_stats, neutral_minutes_fraction, _, _ = project_player_stats(
                     position, player_id, team_id, historical_row, neutral_fixture, runtime_weights, position_avg_rates,
                     position_involvement, hub_features, team_stat_totals, recent_form_rates,
+                    None, None, is_transferred, False,
                 )
                 points_per_90, neutral_priced = price_projected_stats(position, neutral_stats, scoring_rules)
                 neutral_bonus = compute_bonus_points(
@@ -1726,16 +2046,26 @@ def main():
                 # sums every fixture.
                 primary_module_detail = None
                 primary_expected_minutes_fraction = None
+                primary_opportunity_detail = None
                 for fixture_index, fx in enumerate(player_fixtures):
-                    projected_stats, expected_minutes_fraction, module_rates_by_stat = project_player_stats(
+                    # Live team news and rotation-congestion only exist (and
+                    # are only meaningful) for the PRIMARY fixture - same
+                    # scope as module_detail's own "primary fixture only"
+                    # simplification just below.
+                    fixture_lineup = lineup if fixture_index == 0 else None
+                    fixture_status = status if fixture_index == 0 else None
+                    fixture_is_congested = rotation_congestion.get(fx["fixture_id"], False)
+                    projected_stats, expected_minutes_fraction, module_rates_by_stat, opportunity_detail = project_player_stats(
                         position, player_id, team_id, historical_row, fx, runtime_weights, position_avg_rates,
                         position_involvement, hub_features, team_stat_totals, recent_form_rates,
+                        fixture_lineup, fixture_status, is_transferred, fixture_is_congested,
                     )
                     if fixture_index == 0:
                         primary_module_detail = build_module_detail_report(
                             module_rates_by_stat, position, scoring_rules, expected_minutes_fraction, player_id, fx, hub_features
                         )
                         primary_expected_minutes_fraction = expected_minutes_fraction
+                        primary_opportunity_detail = opportunity_detail
                     contribution, priced = price_projected_stats(position, projected_stats, scoring_rules)
                     bonus_points = compute_bonus_points(
                         position, historical_row, position_avg_rates, pass_completion_position_avg, runtime_weights, expected_minutes_fraction
@@ -1806,6 +2136,13 @@ def main():
                     # the moment one does).
                     "module_detail_scope": {"is_primary_fixture_only": True, "fixture_count": len(player_fixtures)},
                     "module_detail": primary_module_detail,
+                    # Opportunity Model (Phase A) full breakdown for the
+                    # primary fixture - P(start), P(appear | didn't start),
+                    # opportunity-if-start/sub, early-substitution risk,
+                    # structural confidence - see compute_opportunity().
+                    # Same "primary fixture only" scope as module_detail
+                    # above, for the same reason.
+                    "opportunity_detail": primary_opportunity_detail,
                     "player_role_detail": build_player_role_detail(team_id, historical_row, team_stat_totals, player_id, transferred_player_ids),
                     "expected_minutes_fraction": round(primary_expected_minutes_fraction, 4) if primary_expected_minutes_fraction is not None else None,
                     "data_confidence": {"score": data_confidence_score, "label": data_confidence_label(data_confidence_score)},
@@ -1839,8 +2176,18 @@ def main():
                 }
 
             raw_score_before_multiplier = score
-            lineup, status = player_status.get(game_player_id, (None, None))
-            multiplier = status_multiplier(lineup, status)
+            # v2: availability is already fully reflected in P(start) via
+            # compute_opportunity() (live status + rotation congestion both
+            # feed it above) - a second post-hoc multiplier here would
+            # double-count it. v1 never calls project_player_stats/
+            # compute_opportunity at all, so status_multiplier() remains
+            # its only availability mechanism, unchanged - see
+            # scripts/verify_player_status_mapping.py, which still imports
+            # LINEUP_MULTIPLIERS/STATUS_MULTIPLIERS directly.
+            if use_v2:
+                multiplier = 1.0
+            else:
+                multiplier = status_multiplier(lineup, status)
             if multiplier != 1.0:
                 score *= multiplier
             inputs["status"] = {"lineup": lineup, "status": status, "multiplier": multiplier}

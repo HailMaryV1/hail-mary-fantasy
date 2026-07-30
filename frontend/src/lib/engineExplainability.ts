@@ -142,6 +142,33 @@ export type Reconciliation = {
 
 export type PlayerStatus = { lineup: string | null; status: string | null; multiplier: number };
 
+// Opportunity Model (Phase A) - see compute_opportunity() in
+// scripts/compute_projections.py. Playing-time only (start probability,
+// substitute probability, opportunity in minutes) - never event-rate
+// quality. Present only for v2 games' primary fixture (module_detail_scope
+// applies here too - same "primary fixture only" simplification).
+// footballUncertainty is deliberately null - Phase A only models
+// STRUCTURAL confidence (sample size + live-status coverage); the
+// football-uncertainty axis (rotation/tactical volatility) has nothing
+// real to measure from until a later phase's team-level rotation model.
+export type OpportunityDetail = {
+  pStart: number;
+  pStartHistorical: number;
+  pAppearIfNotStarted: number;
+  opportunityIfStart: number;
+  opportunityIfSub: number;
+  earlySubstitutionRisk: number | null;
+  startShareProxy: number;
+  pAppear: number;
+  p60Plus: number;
+  pFullMatch: number;
+  isTransferred: boolean;
+  isCongested: boolean;
+  liveStatusApplied: boolean;
+  structuralConfidence: number;
+  footballUncertainty: number | null;
+};
+
 // "What if only this module had decided goal/assist/clean-sheet, with
 // everything else (saves, cards, bonus...) left exactly as actually
 // projected" - a full scenario total in the SAME units as the final
@@ -164,6 +191,7 @@ export type EngineExplanation = {
   explanation: string;
   status: PlayerStatus;
   expectedMinutesFraction: number | null;
+  opportunityDetail: OpportunityDetail | null;
   moduleDetailScope: ModuleDetailScope;
   moduleDetail: Partial<Record<ModularStat, StatDetail>> | null;
   moduleScenarios: ModuleScenarios;
@@ -178,6 +206,13 @@ type RawInputs = {
   explanation?: string;
   status?: { lineup: string | null; status: string | null; multiplier: number };
   expected_minutes_fraction?: number | null;
+  opportunity_detail?: {
+    p_start: number; p_start_historical: number; p_appear_if_not_started: number;
+    opportunity_if_start: number; opportunity_if_sub: number; early_substitution_risk: number | null;
+    start_share_proxy: number; p_appear: number; p_60_plus: number; p_full_match: number;
+    is_transferred: boolean; is_congested: boolean; live_status_applied: boolean;
+    structural_confidence: number; football_uncertainty: number | null;
+  } | null;
   module_detail_scope?: { is_primary_fixture_only: boolean; fixture_count: number };
   module_detail?: Record<string, { final_rate: number; points_each: number | null; modules: Record<string, {
     raw_rate: number | null; configured_weight: number; effective_weight: number; weighted_point_contribution: number | null;
@@ -251,6 +286,25 @@ export function parseEngineExplanation(gameSlug: string, row: SummaryRow): Engin
     explanation: inputs.explanation ?? "",
     status: inputs.status ?? { lineup: null, status: null, multiplier: 1 },
     expectedMinutesFraction: inputs.expected_minutes_fraction ?? null,
+    opportunityDetail: inputs.opportunity_detail
+      ? {
+          pStart: inputs.opportunity_detail.p_start,
+          pStartHistorical: inputs.opportunity_detail.p_start_historical,
+          pAppearIfNotStarted: inputs.opportunity_detail.p_appear_if_not_started,
+          opportunityIfStart: inputs.opportunity_detail.opportunity_if_start,
+          opportunityIfSub: inputs.opportunity_detail.opportunity_if_sub,
+          earlySubstitutionRisk: inputs.opportunity_detail.early_substitution_risk,
+          startShareProxy: inputs.opportunity_detail.start_share_proxy,
+          pAppear: inputs.opportunity_detail.p_appear,
+          p60Plus: inputs.opportunity_detail.p_60_plus,
+          pFullMatch: inputs.opportunity_detail.p_full_match,
+          isTransferred: inputs.opportunity_detail.is_transferred,
+          isCongested: inputs.opportunity_detail.is_congested,
+          liveStatusApplied: inputs.opportunity_detail.live_status_applied,
+          structuralConfidence: inputs.opportunity_detail.structural_confidence,
+          footballUncertainty: inputs.opportunity_detail.football_uncertainty,
+        }
+      : null,
     moduleDetailScope: inputs.module_detail_scope
       ? { isPrimaryFixtureOnly: inputs.module_detail_scope.is_primary_fixture_only, fixtureCount: inputs.module_detail_scope.fixture_count }
       : { isPrimaryFixtureOnly: true, fixtureCount: 1 },

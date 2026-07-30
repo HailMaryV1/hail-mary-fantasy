@@ -8,6 +8,7 @@ import {
   dataSourceTone,
   dataSourceLabel,
   type EngineExplanation,
+  type OpportunityDetail,
 } from "@/lib/engineExplainability";
 
 function fmt(value: number | null | undefined, digits = 3): string {
@@ -17,6 +18,87 @@ function fmt(value: number | null | undefined, digits = 3): string {
 function fmtPts(value: number | null | undefined): string {
   if (value == null) return "N/A";
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+}
+
+function structuralConfidenceTone(score: number): string {
+  if (score >= 70) return "bg-emerald-950 text-emerald-400";
+  if (score >= 40) return "bg-amber-950 text-amber-400";
+  return "bg-red-950 text-red-400";
+}
+
+function OpportunityModelSection({ opp }: { opp: OpportunityDetail }) {
+  const flags: string[] = [];
+  if (opp.liveStatusApplied) flags.push("Live status applied");
+  if (opp.isCongested) flags.push("Rotation/congestion discount applied");
+  if (opp.isTransferred) flags.push("Transferred - wider shrinkage window");
+  return (
+    <div className="rounded-xl border border-sky-800/60 bg-navy-900 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-white">Opportunity Model - how much of this fixture they&apos;re expected to be on the pitch</h3>
+        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${structuralConfidenceTone(opp.structuralConfidence)}`}>
+          Structural Confidence: {opp.structuralConfidence}%
+        </span>
+      </div>
+      <p className="mt-1 text-xs text-navy-500">
+        Scoped strictly to playing time - never attacking quality, tactical role or goal/assist likelihood (those stay
+        event-rate questions, handled by the modules below). Drives expected_minutes_fraction above plus the
+        appearance / 60+ minutes / full match scoring stats.
+      </p>
+
+      <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-3 text-sm text-navy-200 sm:grid-cols-4">
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">P(start)</p>
+          <p className="font-medium text-white">{fmt(opp.pStart, 3)}</p>
+          <p className="text-xs text-navy-500">Historical: {fmt(opp.pStartHistorical, 3)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">P(appear | didn&apos;t start)</p>
+          <p className="font-medium text-white">{fmt(opp.pAppearIfNotStarted, 3)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Opportunity if starting</p>
+          <p className="font-medium text-white">{fmt(opp.opportunityIfStart, 1)} min</p>
+          <p className="text-xs text-navy-500">Early-sub risk: {opp.earlySubstitutionRisk != null ? `${(opp.earlySubstitutionRisk * 100).toFixed(0)}%` : "N/A"}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Opportunity if sub</p>
+          <p className="font-medium text-white">{fmt(opp.opportunityIfSub, 1)} min</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Start-share proxy</p>
+          <p className="font-medium text-white">{fmt(opp.startShareProxy, 2)}</p>
+          <p className="text-xs text-navy-500">Inferred from avg minutes/appearance - no real start/sub label exists yet</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">P(appear at all)</p>
+          <p className="font-medium text-white">{fmt(opp.pAppear, 3)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">P(60+ minutes)</p>
+          <p className="font-medium text-white">{fmt(opp.p60Plus, 3)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">P(full 90)</p>
+          <p className="font-medium text-white">{fmt(opp.pFullMatch, 3)}</p>
+        </div>
+      </div>
+
+      {flags.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {flags.map((f) => (
+            <span key={f} className="rounded-full bg-sky-950 px-2 py-0.5 text-[10px] font-medium text-sky-300">
+              {f}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p className="mt-3 border-t border-navy-800 pt-2 text-xs text-navy-500">
+        Football uncertainty (rotation/tactical volatility, distinct from the structural confidence above):{" "}
+        {opp.footballUncertainty != null ? `${opp.footballUncertainty}%` : "Not yet modelled - planned for a later phase, once a team-level rotation model exists to measure it from."}
+      </p>
+    </div>
+  );
 }
 
 function ReconciliationRow({ label, expected, actual, difference, tolerance, passed }: {
@@ -86,7 +168,14 @@ export default function EngineExplanationCard({ data }: { data: EngineExplanatio
           <p className="text-xs font-semibold uppercase tracking-wide text-navy-400">Availability</p>
           <div className="mt-2 flex flex-col gap-1 text-sm text-navy-200">
             <span>Expected minutes factor: {fmt(data.expectedMinutesFraction, 3)} ({data.expectedMinutesFraction != null ? `${Math.round(data.expectedMinutesFraction * 90)} min` : "—"})</span>
-            <span>Status multiplier: ×{data.status.multiplier.toFixed(2)}</span>
+            {data.opportunityDetail ? (
+              <span className="text-xs text-navy-500">
+                Post-hoc status multiplier retired for this game - availability is computed directly inside the
+                Opportunity Model below (×{data.status.multiplier.toFixed(2)} shown for reference only).
+              </span>
+            ) : (
+              <span>Status multiplier: ×{data.status.multiplier.toFixed(2)}</span>
+            )}
             <span className="text-xs text-navy-500">
               Lineup: {data.status.lineup ?? "unknown"} · Status: {data.status.status ?? "unknown"}
             </span>
@@ -101,6 +190,9 @@ export default function EngineExplanationCard({ data }: { data: EngineExplanatio
           </p>
         </div>
       </div>
+
+      {/* Opportunity Model - playing-time-only breakdown (Phase A) */}
+      {data.opportunityDetail && <OpportunityModelSection opp={data.opportunityDetail} />}
 
       {/* Per-stat module tables */}
       {data.moduleDetail &&
