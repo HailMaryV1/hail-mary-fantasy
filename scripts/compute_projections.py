@@ -1752,23 +1752,31 @@ def main():
                 score *= multiplier
             inputs["status"] = {"lineup": lineup, "status": status, "multiplier": multiplier}
 
-            # Reconciliation check (Engine Validation report) - proves the
-            # Primary Fixture Breakdown's per-module numbers actually sum
-            # to the real final score, rather than just trusting that the
-            # decomposition is correct. modular_sum is independently
-            # re-derived from module_detail's weighted_point_contribution
-            # figures (a different code path than the one that produced
-            # fixture_breakdown's own "contribution"), so a genuine future
-            # bug in either path shows up here as a non-reconciling
-            # projection - flagged, never silently hidden.
-            # other_fixtures_total only matters for a genuine double
-            # gameweek (none exist in the data as of this build) - the
-            # primary fixture is the ONLY one with a module breakdown
-            # (see module_detail above), so this line item is what keeps
-            # the reconciliation honest rather than silently comparing
-            # against just one fixture's worth of the real total.
+            # Reconciliation - Engine Validation report (see
+            # frontend/src/lib/engineExplainability.ts). TWO independent
+            # checks, neither comparing a value against itself:
+            #
+            # Check 1 (primary fixture): rebuilds the primary fixture's
+            # expected total from module_detail's weighted_point_
+            # contribution figures (build_module_detail_report - a wholly
+            # separate function/code path) plus the non-modular stats and
+            # bonus points, and compares it to fixture_breakdown[0]'s own
+            # "contribution" (produced earlier by price_projected_stats +
+            # compute_bonus_points). Two independently-written
+            # computations over the same underlying rates - a real
+            # regression check, not a tautology.
+            #
+            # Check 2 (full score): re-sums EVERY fixture's stored
+            # "contribution" fresh from fixture_breakdown (not the live
+            # `score` accumulator variable used during the loop - a
+            # separate pass over the persisted list, so a bug that let
+            # the accumulator and the stored breakdown drift apart would
+            # be caught), applies the availability multiplier exactly
+            # once, and compares to the real final score. All comparisons
+            # use unrounded values - rounding is display-only.
             if use_v2 and primary_module_detail and fixture_breakdown:
-                RECONCILE_TOLERANCE = 0.05
+                RECONCILE_TOLERANCE = 0.01
+
                 modular_sum = sum(
                     (m.get("weighted_point_contribution") or 0.0)
                     for stat_detail in primary_module_detail.values()
@@ -1781,23 +1789,49 @@ def main():
                     if stat not in MODULAR_STATS and stat != "bonus_points"
                 )
                 bonus_component = primary_fixture["stats"].get("bonus_points", {}).get("contribution", 0.0)
-                primary_fixture_computed = modular_sum + non_modular_sum + bonus_component
-                primary_fixture_actual = primary_fixture["contribution"]
-                other_fixtures_total = raw_score_before_multiplier - primary_fixture_actual
-                computed_final = (primary_fixture_computed + other_fixtures_total) * multiplier
-                difference = abs(computed_final - score)
+                expected_primary_total = modular_sum + non_modular_sum + bonus_component
+                actual_primary_total = primary_fixture["contribution"]
+                primary_difference = expected_primary_total - actual_primary_total
+                primary_check = {
+                    "expected": round(expected_primary_total, 6),
+                    "actual": round(actual_primary_total, 6),
+                    "difference": round(primary_difference, 6),
+                    "tolerance": RECONCILE_TOLERANCE,
+                    "passed": abs(primary_difference) <= RECONCILE_TOLERANCE,
+                }
+
+                expected_pre_availability = sum(fx["contribution"] for fx in fixture_breakdown)
+                additional_fixtures_subtotal = expected_pre_availability - fixture_breakdown[0]["contribution"]
+                expected_final = expected_pre_availability * multiplier
+                full_difference = expected_final - score
+                full_score_check = {
+                    "expected": round(expected_final, 6),
+                    "actual": round(score, 6),
+                    "difference": round(full_difference, 6),
+                    "tolerance": RECONCILE_TOLERANCE,
+                    "passed": abs(full_difference) <= RECONCILE_TOLERANCE,
+                }
+
                 inputs["reconciliation"] = {
+                    "primary_fixture_check": primary_check,
+                    "full_score_check": full_score_check,
                     "modular_sum": round(modular_sum, 4),
                     "non_modular_sum": round(non_modular_sum, 4),
                     "bonus": round(bonus_component, 4),
-                    "primary_fixture_subtotal": round(primary_fixture_computed, 4),
-                    "other_fixtures_total": round(other_fixtures_total, 4),
+                    "primary_fixture_subtotal": round(fixture_breakdown[0]["contribution"], 4),
+                    "additional_fixtures_subtotal": round(additional_fixtures_subtotal, 4),
+                    "pre_availability_total": round(expected_pre_availability, 4),
                     "availability_multiplier": multiplier,
-                    "computed_final": round(computed_final, 4),
-                    "actual_final": round(score, 4),
-                    "difference": round(difference, 4),
-                    "within_tolerance": difference <= RECONCILE_TOLERANCE,
+                    "final_score": round(score, 4),
                 }
+
+                if not primary_check["passed"] or not full_score_check["passed"]:
+                    label = f"gameweek {gameweek}" if gameweek is not None else f"{period_start} to {period_end}"
+                    name = full_name_by_game_player_id.get(game_player_id, f"game_player_id {game_player_id}")
+                    print(
+                        f"  [RECONCILIATION FAILED] {name} ({game_slug}, {label}, algorithm_version_id={algo_id}): "
+                        f"primary_check={primary_check}, full_score_check={full_score_check}"
+                    )
 
             # activity_log: only for real gameweek-anchored recomputes -
             # period-mode (Dream Team) isn't part of the automated
