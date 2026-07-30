@@ -167,10 +167,14 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
     # All canonical players, bucketed by position, for name matching.
     cur.execute("select id, full_name, position, team_id, pending_team_id from players")
     by_position: dict[str, list[tuple]] = {}
+    all_players: list[tuple] = []
     pending_team_by_id: dict[int, int] = {}
+    position_by_id: dict[int, str] = {}
     for pid, full_name, position, team_id, pending_team_id in cur.fetchall():
         by_position.setdefault(position, []).append((pid, full_name, team_id))
+        all_players.append((pid, full_name, team_id))
         pending_team_by_id[pid] = pending_team_id
+        position_by_id[pid] = position
 
     # For activity_log summaries ("moved from X to Y") - teams table is
     # tiny, cheap to load whole.
@@ -206,6 +210,26 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
             if live_compact.endswith(surname_key(name))
             or (is_mononym and compact(name).startswith(live_compact))
         ]
+
+        # Position-bucketing above is an optimisation, not an identity
+        # rule - FanTeam does reclassify a player's listed position (real
+        # cases found: Ethan Ampadu DEF->MID, Evann Guessand FWD->MID,
+        # Lamare Bogarde DEF->MID, Mats Wieffer MID->DEF, all on the same
+        # import run), and players.position is only ever set once at
+        # creation, never updated. Without this fallback, a
+        # reclassification silently produces a duplicate player+
+        # game_player row instead of updating the existing one - the
+        # zero-candidates case falls straight through to "insert new
+        # player" below with no visibility at all. Only runs when the
+        # position bucket found nothing, so the common case (position
+        # unchanged) is untouched.
+        if not candidates:
+            candidates = [
+                (pid, name, team_id)
+                for pid, name, team_id in all_players
+                if live_compact.endswith(surname_key(name))
+                or (is_mononym and compact(name).startswith(live_compact))
+            ]
 
         # An exact compact-name match beats any looser prefix/suffix
         # candidate outright (resolves e.g. "Rodri" matching both itself
@@ -255,6 +279,15 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
         if candidates:
             player_id, canonical_name, canonical_team_id = candidates[0]
             matched += 1
+            if position_by_id.get(player_id) != live_position:
+                # No debounce needed here, unlike team_id above - a
+                # position reclassification isn't the kind of payload
+                # noise that flip-flops between scrapes, it's a genuine
+                # one-off FanTeam-side change. Keeping players.position
+                # in sync is exactly what stops the next import from
+                # hitting this same "position bucket" miss again.
+                cur.execute("update players set position = %s where id = %s", (live_position, player_id))
+                position_by_id[player_id] = live_position
             if canonical_team_id != live_team_id:
                 # Debounced: confirmed live that FanTeam's own payload can
                 # genuinely alternate which realTeamId it reports for a
