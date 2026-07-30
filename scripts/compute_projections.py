@@ -752,7 +752,7 @@ def compute_module_rate_player_role(stat, historical_row, team_id, team_stat_tot
 
 
 def fetch_recent_form_rates(cur, game_id, current_gameweek, lookback=5):
-    """{player_id: {"goal": per90rate, "assist": per90rate}} from this
+    """{player_id: {"goal"?: per90rate, "assist"?: per90rate}} from this
     player's last `lookback` REAL completed gameweeks - actual_goals/
     actual_assists/actual_minutes on player_gameweek_predictions
     (migration 0044), populated only once a gameweek has actually been
@@ -764,14 +764,36 @@ def fetch_recent_form_rates(cur, game_id, current_gameweek, lookback=5):
     long average. Empty for any player with zero completed gameweeks
     captured yet - which, pre-season, is everyone - so this module
     returns None everywhere until real 2026/27 results start landing;
-    never a fabricated early-season guess. Period-mode games (no
-    gameweek calendar, e.g. Dream Team pre-season) have no concept of
-    "current gameweek" to look back from, so this returns {} for them."""
+    never a fabricated early-season guess.
+
+    "goal"/"assist" are independently PRESENT OR ABSENT per player, not
+    just possibly-zero: as of this build, scripts/attach_gameweek_results.py
+    only ever writes actual_minutes/actual_points - actual_goals/
+    actual_assists stay NULL indefinitely (no source feed carries that
+    breakdown yet - see migration 0044's docstring). Filtering only on
+    actual_minutes IS NOT NULL (as this query used to) would have meant
+    the moment real minutes start landing (FanTeam GW1, 2026-08-21), a
+    genuinely-missing goal/assist breakdown got read as SUM(NULL) = 0 -
+    a real, confirmed "this player scored nothing recently," not the
+    "we don't have this data yet" it actually is. COUNT(pgp.actual_goals)/
+    COUNT(pgp.actual_assists) (SQL COUNT already skips NULLs) now gates
+    each stat independently, so a player with real minutes but no
+    attacking breakdown correctly produces no "goal"/"assist" key at all -
+    excluded, same as every other module's missing-data case, not faked.
+    Found via the Recent Form architectural review, fixed on its own
+    ahead of that redesign - a correctness issue, not a design choice.
+
+    Period-mode games (no gameweek calendar, e.g. Dream Team pre-season)
+    have no concept of "current gameweek" to look back from, so this
+    returns {} for them."""
     if current_gameweek is None:
         return {}
     cur.execute(
         """
-        select gp.player_id, sum(pgp.actual_goals), sum(pgp.actual_assists), sum(pgp.actual_minutes)
+        select gp.player_id,
+               sum(pgp.actual_goals), count(pgp.actual_goals),
+               sum(pgp.actual_assists), count(pgp.actual_assists),
+               sum(pgp.actual_minutes)
         from player_gameweek_predictions pgp
         join game_players gp on gp.id = pgp.game_player_id
         where pgp.game_id = %s and pgp.gameweek < %s and pgp.gameweek >= %s - %s
@@ -781,11 +803,17 @@ def fetch_recent_form_rates(cur, game_id, current_gameweek, lookback=5):
         (game_id, current_gameweek, current_gameweek, lookback),
     )
     out = {}
-    for player_id, goals, assists, minutes in cur.fetchall():
+    for player_id, goals, goals_n, assists, assists_n, minutes in cur.fetchall():
         games90 = float(minutes) / 90.0 if minutes else 0.0
         if games90 <= 0:
             continue
-        out[player_id] = {"goal": float(goals or 0) / games90, "assist": float(assists or 0) / games90}
+        rates = {}
+        if goals_n > 0:
+            rates["goal"] = float(goals or 0) / games90
+        if assists_n > 0:
+            rates["assist"] = float(assists or 0) / games90
+        if rates:
+            out[player_id] = rates
     return out
 
 
@@ -793,7 +821,10 @@ def compute_module_rate_recent_form(stat, player_id, recent_form_rates):
     """This player's own per-90 rate over their last few REAL completed
     gameweeks - see fetch_recent_form_rates. None whenever no completed
     gameweek data exists yet for this player (the universal case
-    pre-season) - never a fabricated early guess."""
+    pre-season), AND None for this specific stat if this player has real
+    minutes but no real goal/assist breakdown for it yet (see
+    fetch_recent_form_rates' docstring) - never a fabricated early guess
+    either way."""
     if stat not in ("goal", "assist"):
         return None
     rates = recent_form_rates.get(player_id)
