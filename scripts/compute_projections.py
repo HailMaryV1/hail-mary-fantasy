@@ -376,16 +376,19 @@ DEFAULT_WEIGHTS_V2 = {
 }
 
 # The 3 stats with both a real fixture-level driver AND a real bookmaker
-# market to draw from (goal: SportMonks anytime-goalscorer via the
+# market to draw from (goal: SportMonks anytime-goalscorer; assist:
+# SportMonks "Player to Assist" (added 2026-07-30) - both via the
 # Bookmaker Intelligence Hub; clean_sheet_60min: real match-winner odds
 # directly). Every other STAT_COLUMNS entry keeps the exact single-formula
 # treatment it always had (historical rate x the coalesced fixture
 # factor) - modularizing a stat with no genuinely independent extra
-# signal would just add complexity with nothing new to blend in. `assist`
-# is listed here (Historical Performance + Fixture Model both apply) even
-# though Bookmaker Intelligence has no assist market ingested yet - see
-# compute_module_rate_bookmaker, which correctly returns None for it, so
-# its configured weight simply redistributes to the other two.
+# signal would just add complexity with nothing new to blend in. Whether
+# the assist market is actually offered for Premier League fixtures
+# specifically is still unconfirmed as of this build (no PL fixture has
+# been close enough to kickoff to test) - see compute_module_rate_bookmaker,
+# which correctly returns None until real (or baseline-scaled) data
+# exists, so its configured weight simply redistributes to the other two
+# in the meantime, exactly as it always has.
 MODULAR_STATS = {"goal", "assist", "clean_sheet_60min"}
 
 # Guessed raw-string -> multiplier mapping for FanTeam's pre-match status
@@ -670,12 +673,15 @@ def compute_module_rate_bookmaker(stat, fixture, player_id, hub_features):
     above), so the same raw number can never enter the blend twice.
     clean_sheet_60min uses this fixture's REAL win/draw odds directly
     (fixture_probabilities) - None if no real odds exist yet for this
-    fixture. goal uses the Bookmaker Intelligence Hub's score_probability
-    (bookmaker_player_features, migration 0064 - real observation or a
-    baseline scaled from one, see scripts/import_sportmonks_player_props.py)
-    converted from P(scores >= 1) to E[goals]. Every other stat returns
-    None - no assist/cards/saves market is ingested into the hub yet, so
-    its configured weight simply redistributes to the other modules."""
+    fixture. goal/assist use the Bookmaker Intelligence Hub's
+    score_probability/assist_probability (bookmaker_player_features,
+    migration 0064 - real observation or a baseline scaled from one, see
+    scripts/import_sportmonks_player_props.py) converted from P(event
+    >= 1) to E[event] via the same Poisson-implied conversion for both -
+    the math isn't goal-specific, just P(count >= 1) -> lambda. Every
+    other stat returns None - no cards/saves market is ingested into the
+    hub yet, so its configured weight simply redistributes to the other
+    modules."""
     if stat == "clean_sheet_60min":
         return fixture.get("real_clean_sheet_score")
     if stat == "goal":
@@ -683,6 +689,11 @@ def compute_module_rate_bookmaker(stat, fixture, player_id, hub_features):
         if not feature or feature.get("score_probability") is None:
             return None
         return anytime_prob_to_expected_goals(float(feature["score_probability"]))
+    if stat == "assist":
+        feature = hub_features.get((player_id, fixture.get("fixture_id")))
+        if not feature or feature.get("assist_probability") is None:
+            return None
+        return anytime_prob_to_expected_goals(float(feature["assist_probability"]))
     return None
 
 
@@ -832,25 +843,34 @@ def resolve_module_weights(cur, game_id):
 
 
 def fetch_hub_features(cur, fixture_ids):
-    """{(player_id, fixture_id): {score_probability, is_estimated}} from
-    the Bookmaker Intelligence Hub (bookmaker_player_features, migration
-    0064) for the given fixtures - read-only here, this script never
-    writes to the hub (see scripts/import_sportmonks_player_props.py for
-    that). Game-independent by construction: the hub has no game_id
-    column, so the same row serves whichever game is scoring right now."""
+    """{(player_id, fixture_id): {score_probability, is_estimated,
+    assist_probability, assist_is_estimated}} from the Bookmaker
+    Intelligence Hub (bookmaker_player_features, migration 0064) for the
+    given fixtures - read-only here, this script never writes to the hub
+    (see scripts/import_sportmonks_player_props.py for that).
+    Game-independent by construction: the hub has no game_id column, so
+    the same row serves whichever game is scoring right now.
+
+    is_estimated/assist_is_estimated are deliberately separate columns
+    (migration 0069) - goal and assist are independently real-or-
+    estimated-or-missing for the same row, so one shared flag couldn't
+    represent both."""
     if not fixture_ids:
         return {}
     cur.execute(
         """
-        select player_id, fixture_id, score_probability, is_estimated
+        select player_id, fixture_id, score_probability, is_estimated, assist_probability, assist_is_estimated
         from bookmaker_player_features
         where fixture_id = any(%s)
         """,
         (list(fixture_ids),),
     )
     return {
-        (player_id, fixture_id): {"score_probability": score_probability, "is_estimated": is_estimated}
-        for player_id, fixture_id, score_probability, is_estimated in cur.fetchall()
+        (player_id, fixture_id): {
+            "score_probability": score_probability, "is_estimated": is_estimated,
+            "assist_probability": assist_probability, "assist_is_estimated": assist_is_estimated,
+        }
+        for player_id, fixture_id, score_probability, is_estimated, assist_probability, assist_is_estimated in cur.fetchall()
     }
 
 
@@ -1337,6 +1357,11 @@ def bookmaker_data_source(stat, fixture, player_id, hub_features):
         if not feature or feature.get("score_probability") is None:
             return "unavailable"
         return "estimated" if feature.get("is_estimated") else "real"
+    if stat == "assist":
+        feature = hub_features.get((player_id, fixture.get("fixture_id")))
+        if not feature or feature.get("assist_probability") is None:
+            return "unavailable"
+        return "estimated" if feature.get("assist_is_estimated") else "real"
     return "unavailable"
 
 

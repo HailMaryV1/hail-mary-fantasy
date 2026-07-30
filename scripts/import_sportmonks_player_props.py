@@ -94,7 +94,16 @@ DEFAULT_PROP_WINDOW_DAYS = 10
 # (the test fixture only offered First/Last, common for lower-profile
 # games) - Premier League fixtures should offer richer markets once
 # real data exists; extend this set then rather than guessing now.
-PLAYER_PROP_MARKETS = {"Goalscorers"}
+#
+# "Player to Assist" (SportMonks market id 332, confirmed to exist in
+# this subscription's global /v3/odds/markets catalog) added 2026-07-30 -
+# NOT yet observed on any real fixture's odds response (only entitled
+# fixtures within the pricing window so far are lower-profile Carabao Cup
+# ties, which - like the Goalscorers precedent above - don't necessarily
+# carry every market a top-flight fixture would). Fails safe if the real
+# market_description string turns out to differ: zero rows match, exactly
+# like any other unrecognised market, never a fabricated probability.
+PLAYER_PROP_MARKETS = {"Goalscorers", "Player to Assist"}
 
 # Labels within PLAYER_PROP_MARKETS that don't name an actual player -
 # these show up as an "outcome" of the same market and must be filtered
@@ -314,10 +323,15 @@ def import_player_props(cur, api_key, window_days):
                 (player_id, market_key, fixture_id, probability, attack_score),
             )
 
+            market_description = row.get("market_description")
+
             # Real "Anytime" goalscorer odds go straight into the hub as a
             # REAL row - "First"/"Last" alone don't give P(scores >= 1),
-            # so only this specific label populates score_probability.
-            if label == "Anytime":
+            # so only this specific label populates score_probability. The
+            # is_estimated/source/confidence/market_observed_at columns
+            # here are - in practice - goal's own provenance (see migration
+            # 0069's comment); the assist branch below never reads them.
+            if market_description == "Goalscorers" and label == "Anytime":
                 cur.execute(
                     """
                     insert into bookmaker_player_features
@@ -333,6 +347,36 @@ def import_player_props(cur, api_key, window_days):
                     """,
                     (player_id, fixture_id, probability),
                 )
+            # "Player to Assist" is a single binary market, unlike
+            # Goalscorers - no Anytime/First/Last split, so every real row
+            # here is P(assists >= 1) directly. Writes its own
+            # assist_is_estimated/assist_source/assist_confidence/
+            # assist_market_observed_at columns (migration 0069) rather
+            # than the shared ones above, so a fixture with real assist
+            # data but no goal data yet (or vice versa) never has one
+            # market's provenance silently overwritten by the other's.
+            # The shared is_estimated/source/confidence columns still get
+            # populated here only because they're NOT NULL on a brand-new
+            # row - compute_projections.py's goal pathway is unaffected
+            # regardless of their value, since it always checks
+            # score_probability IS NULL first, not is_estimated.
+            elif market_description == "Player to Assist":
+                cur.execute(
+                    """
+                    insert into bookmaker_player_features
+                        (player_id, fixture_id, assist_probability, is_estimated, source, confidence,
+                         assist_is_estimated, assist_source, assist_confidence, assist_market_observed_at)
+                    values (%s, %s, %s, false, 'sportmonks_real', 1.0, false, 'sportmonks_real', 1.0, now())
+                    on conflict (player_id, fixture_id) do update set
+                        assist_probability = excluded.assist_probability,
+                        assist_is_estimated = false,
+                        assist_source = excluded.assist_source,
+                        assist_confidence = excluded.assist_confidence,
+                        assist_market_observed_at = excluded.assist_market_observed_at,
+                        computed_at = now()
+                    """,
+                    (player_id, fixture_id, probability),
+                )
 
         print(f"  fixture {fixture_id}: {len(rows)} player-prop rows")
 
@@ -343,12 +387,12 @@ def import_player_props(cur, api_key, window_days):
         print("(Expected this far from kickoff - bookmakers haven't posted player markets yet.)")
 
 
-def populate_estimated_hub_rows(cur):
-    """The hub's fallback half: for every player with a real observed
-    baseline, upserts an ESTIMATED bookmaker_player_features row for
-    every upcoming fixture their team plays that doesn't already have a
-    REAL one - scaled by how that fixture's own team-strength signal
-    compares to the one the baseline was observed under.
+def _upcoming_team_fixtures(cur, team_id):
+    """(fixture_id, home_team_id, home_win_prob, away_win_prob) for every
+    upcoming fixture team_id plays with a resolved (real-or-model) win
+    probability - shared by the goal and assist estimated-hub-row passes
+    below, since which fixtures exist and their win probabilities don't
+    depend on which market is being scaled.
 
     Deliberately game-independent: reads fixture_probabilities (real
     odds) COALESCEd with fixture_strength_model_probabilities (the
@@ -360,6 +404,35 @@ def populate_estimated_hub_rows(cur):
     """
     cur.execute(
         """
+        select
+            f.id as fixture_id, f.home_team_id,
+            coalesce(rp.home_win_prob, mp.home_win_prob) as home_win_prob,
+            coalesce(rp.away_win_prob, mp.away_win_prob) as away_win_prob
+        from fixtures f
+        left join lateral (
+            select home_win_prob, away_win_prob from fixture_probabilities
+            where fixture_id = f.id order by computed_at desc limit 1
+        ) rp on true
+        left join lateral (
+            select home_win_prob, away_win_prob from fixture_strength_model_probabilities
+            where fixture_id = f.id order by computed_at desc limit 1
+        ) mp on true
+        where (f.home_team_id = %s or f.away_team_id = %s) and f.kickoff_at >= now()
+          and coalesce(rp.home_win_prob, mp.home_win_prob) is not null
+        """,
+        (team_id, team_id),
+    )
+    return cur.fetchall()
+
+
+def _populate_estimated_goal_rows(cur):
+    """For every player with a real observed 'Anytime' goalscorer
+    baseline, upserts an ESTIMATED score_probability row for every
+    upcoming fixture their team plays that doesn't already have a REAL
+    one - scaled by how that fixture's own team-strength signal compares
+    to the one the baseline was observed under."""
+    cur.execute(
+        """
         select ppb.player_id, ppb.observed_probability, ppb.team_attack_score, p.team_id
         from player_prop_baselines ppb
         join players p on p.id = ppb.player_id
@@ -367,36 +440,13 @@ def populate_estimated_hub_rows(cur):
         """
     )
     baselines = cur.fetchall()
-    if not baselines:
-        return 0
-
     written = 0
     for player_id, observed_prob, baseline_attack, team_id in baselines:
         baseline_attack = float(baseline_attack)
         if baseline_attack <= 0:
             continue
 
-        cur.execute(
-            """
-            select
-                f.id as fixture_id, f.home_team_id,
-                coalesce(rp.home_win_prob, mp.home_win_prob) as home_win_prob,
-                coalesce(rp.away_win_prob, mp.away_win_prob) as away_win_prob
-            from fixtures f
-            left join lateral (
-                select home_win_prob, away_win_prob from fixture_probabilities
-                where fixture_id = f.id order by computed_at desc limit 1
-            ) rp on true
-            left join lateral (
-                select home_win_prob, away_win_prob from fixture_strength_model_probabilities
-                where fixture_id = f.id order by computed_at desc limit 1
-            ) mp on true
-            where (f.home_team_id = %s or f.away_team_id = %s) and f.kickoff_at >= now()
-              and coalesce(rp.home_win_prob, mp.home_win_prob) is not null
-            """,
-            (team_id, team_id),
-        )
-        for fixture_id, home_team_id, home_win_prob, away_win_prob in cur.fetchall():
+        for fixture_id, home_team_id, home_win_prob, away_win_prob in _upcoming_team_fixtures(cur, team_id):
             attack_score = float(home_win_prob) if team_id == home_team_id else float(away_win_prob)
 
             cur.execute(
@@ -425,6 +475,71 @@ def populate_estimated_hub_rows(cur):
             written += 1
 
     return written
+
+
+def _populate_estimated_assist_rows(cur):
+    """Mirrors _populate_estimated_goal_rows exactly, scaling
+    assist_probability from a 'Player to Assist%' baseline instead of an
+    'Anytime' goalscorer one, and gating/writing the assist_* provenance
+    columns (migration 0069) instead of the shared is_estimated/source/
+    confidence ones - so this pass never touches a fixture's goal
+    provenance, or vice versa. assist_is_estimated is nullable (unlike
+    is_estimated), so 'no row yet' (None) and 'a real value already
+    exists' (False) are distinguishable - `is False` below is deliberate,
+    not `not existing[0]`."""
+    cur.execute(
+        """
+        select ppb.player_id, ppb.observed_probability, ppb.team_attack_score, p.team_id
+        from player_prop_baselines ppb
+        join players p on p.id = ppb.player_id
+        where ppb.market ilike 'Player to Assist%%'
+        """
+    )
+    baselines = cur.fetchall()
+    written = 0
+    for player_id, observed_prob, baseline_attack, team_id in baselines:
+        baseline_attack = float(baseline_attack)
+        if baseline_attack <= 0:
+            continue
+
+        for fixture_id, home_team_id, home_win_prob, away_win_prob in _upcoming_team_fixtures(cur, team_id):
+            attack_score = float(home_win_prob) if team_id == home_team_id else float(away_win_prob)
+
+            cur.execute(
+                "select assist_is_estimated from bookmaker_player_features where player_id = %s and fixture_id = %s",
+                (player_id, fixture_id),
+            )
+            existing = cur.fetchone()
+            if existing is not None and existing[0] is False:
+                continue  # never overwrite a real observation with an estimate
+
+            scaled = max(0.01, min(0.9, float(observed_prob) * (attack_score / baseline_attack)))
+            cur.execute(
+                """
+                insert into bookmaker_player_features
+                    (player_id, fixture_id, assist_probability, is_estimated, source, confidence,
+                     assist_is_estimated, assist_source, assist_confidence, assist_market_observed_at)
+                values (%s, %s, %s, true, 'sportmonks_baseline_scaled', 0.5, true, 'sportmonks_baseline_scaled', 0.5, now())
+                on conflict (player_id, fixture_id) do update set
+                    assist_probability = excluded.assist_probability,
+                    assist_is_estimated = true,
+                    assist_source = excluded.assist_source,
+                    assist_confidence = excluded.assist_confidence,
+                    assist_market_observed_at = excluded.assist_market_observed_at,
+                    computed_at = now()
+                """,
+                (player_id, fixture_id, scaled),
+            )
+            written += 1
+
+    return written
+
+
+def populate_estimated_hub_rows(cur):
+    """The hub's fallback half - see _populate_estimated_goal_rows and
+    _populate_estimated_assist_rows for the goal/assist-specific scaling
+    logic they share the mechanics of. Returns the combined row count."""
+    return _populate_estimated_goal_rows(cur) + _populate_estimated_assist_rows(cur)
 
 
 def main():
