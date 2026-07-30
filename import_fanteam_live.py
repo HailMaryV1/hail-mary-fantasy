@@ -44,7 +44,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
@@ -55,6 +55,12 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from activity_log import log_event  # noqa: E402
 
 SEASON = "2026/27"
+
+# See the [cooldown] guard in import_players() - a second, independent
+# check on top of the "confirmed twice in a row" debounce, for players
+# whose live payload genuinely oscillates faster than that debounce alone
+# can absorb.
+TEAM_CHANGE_COOLDOWN = timedelta(hours=24)
 
 # FanTeam's live API spells some team names differently from our
 # canonical names (which came from Dream Team/FanTeam's historical
@@ -181,6 +187,19 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
     cur.execute("select id, name from teams")
     team_name_by_id = {tid: name for tid, name in cur.fetchall()}
 
+    # Most recent team_changed commit per player, for the cooldown guard
+    # below - real cases found live (Boubacar Kamara, Abdoullah Ba, Johan
+    # Manzambi) where FanTeam's payload satisfies the "same new team seen
+    # twice in a row" debounce rule repeatedly within days, genuinely
+    # oscillating rather than settling - a real transfer doesn't flip back
+    # a few days later. Game-independent (activity_log isn't scoped to
+    # one fantasy game) since a transfer is a real-world fact.
+    cur.execute(
+        "select (details->>'player_id')::bigint as player_id, max(created_at) as last_changed_at "
+        "from activity_log where event_type = 'team_changed' group by (details->>'player_id')::bigint"
+    )
+    last_team_change_by_id: dict[int, datetime] = {row[0]: row[1] for row in cur.fetchall()}
+
     matched, created, ambiguous, updated_team, status_written = 0, 0, 0, 0, 0
     seen_external_ids = set()
 
@@ -299,7 +318,31 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
                 # team has been seen on two consecutive imports - a real
                 # transfer persists into the next scrape by definition, a
                 # one-off upstream blip doesn't.
-                if pending_team_by_id.get(player_id) == live_team_id:
+                debounce_confirmed = pending_team_by_id.get(player_id) == live_team_id
+                last_changed_at = last_team_change_by_id.get(player_id)
+                # Real gap found in this same debounce: Abdoullah Ba and
+                # Johan Manzambi both satisfied "same new team twice in a
+                # row" repeatedly within a single day, genuinely
+                # oscillating between two clubs rather than settling - a
+                # real transfer doesn't flip back days later. This second
+                # guard requires the cooldown to have elapsed since the
+                # LAST commit too, not just two consecutive scrapes -
+                # catches exactly the payload instability the debounce
+                # alone didn't.
+                in_cooldown = (
+                    last_changed_at is not None
+                    and datetime.now(timezone.utc) - last_changed_at < TEAM_CHANGE_COOLDOWN
+                )
+                if debounce_confirmed and in_cooldown:
+                    print(
+                        f"  [cooldown] {canonical_name}: matched {team_name_by_id.get(live_team_id, live_team_id)} twice, "
+                        f"but a team_changed commit happened within the last {TEAM_CHANGE_COOLDOWN} - holding, not recommitting yet."
+                    )
+                    cur.execute(
+                        "update players set pending_team_id = %s, pending_team_seen_at = now() where id = %s",
+                        (live_team_id, player_id),
+                    )
+                elif debounce_confirmed:
                     cur.execute(
                         "update players set team_id = %s, pending_team_id = null, pending_team_seen_at = null where id = %s",
                         (live_team_id, player_id),
