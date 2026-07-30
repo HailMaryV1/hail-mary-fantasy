@@ -1,0 +1,802 @@
+[
+  {
+    "game_player_id": 976,
+    "player_id": 515,
+    "full_name": "A. Ramsey",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 699,
+    "player_id": 350,
+    "full_name": "Armando Broja",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 701,
+    "player_id": 351,
+    "full_name": "Ashley Barnes",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 583,
+    "player_id": 292,
+    "full_name": "Axel Tuanzebe",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 579,
+    "player_id": 290,
+    "full_name": "Bashir Humphreys",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 587,
+    "player_id": 294,
+    "full_name": "Connor Roberts",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 980,
+    "player_id": 519,
+    "full_name": "E. Agyei",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 357,
+    "player_id": 179,
+    "full_name": "Florentino",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 359,
+    "player_id": 180,
+    "full_name": "Hannibal Mejbri",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 581,
+    "player_id": 291,
+    "full_name": "Hjalmar Ekdal",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 975,
+    "player_id": 514,
+    "full_name": "J. Banel",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1018,
+    "player_id": 557,
+    "full_name": "J. Beyer",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 977,
+    "player_id": 516,
+    "full_name": "J. Brownhill",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 369,
+    "player_id": 185,
+    "full_name": "Jacob Bruun Larsen",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 367,
+    "player_id": 184,
+    "full_name": "James WardProwse",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 585,
+    "player_id": 293,
+    "full_name": "Joe Worrall",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 363,
+    "player_id": 182,
+    "full_name": "Josh Cullen",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 361,
+    "player_id": 181,
+    "full_name": "Josh Laurent",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 573,
+    "player_id": 287,
+    "full_name": "Kyle Walker",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 979,
+    "player_id": 518,
+    "full_name": "L. Koleosho",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1033,
+    "player_id": 572,
+    "full_name": "L. Tchaouna",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 355,
+    "player_id": 178,
+    "full_name": "Lesley Ugochukwu",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 577,
+    "player_id": 289,
+    "full_name": "Lucas Pires",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 697,
+    "player_id": 349,
+    "full_name": "Lyle Foster",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 978,
+    "player_id": 517,
+    "full_name": "M. Benson",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 365,
+    "player_id": 183,
+    "full_name": "Marcus Edwards",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 481,
+    "player_id": 241,
+    "full_name": "Martin Dubravka",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 483,
+    "player_id": 242,
+    "full_name": "Max Weiss",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 575,
+    "player_id": 288,
+    "full_name": "Maxime Esteve",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 371,
+    "player_id": 186,
+    "full_name": "Mike Tresor",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1017,
+    "player_id": 556,
+    "full_name": "O. Sonne",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 571,
+    "player_id": 286,
+    "full_name": "Quilindschy Hartman",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1019,
+    "player_id": 558,
+    "full_name": "S. Sambo",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 485,
+    "player_id": 243,
+    "full_name": "Vaclav Hladky",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 703,
+    "player_id": 352,
+    "full_name": "Zeki Amdouni",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 695,
+    "player_id": 348,
+    "full_name": "Zian Flemming",
+    "team_id": 6,
+    "team_name": "Burnley",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 964,
+    "player_id": 503,
+    "full_name": "A. Irving",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 797,
+    "player_id": 399,
+    "full_name": "Aaron WanBissaka",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 275,
+    "player_id": 138,
+    "full_name": "Adama Traore",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 725,
+    "player_id": 363,
+    "full_name": "Alphonse Areola",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1061,
+    "player_id": 600,
+    "full_name": "C. Marshall",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 271,
+    "player_id": 136,
+    "full_name": "Crysencio Summerville",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 969,
+    "player_id": 508,
+    "full_name": "E. Alvarez",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 791,
+    "player_id": 396,
+    "full_name": "El Hadji Diouf",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1046,
+    "player_id": 585,
+    "full_name": "Emerson",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 279,
+    "player_id": 140,
+    "full_name": "Freddie Potts",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 967,
+    "player_id": 506,
+    "full_name": "G. Earthy",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 963,
+    "player_id": 502,
+    "full_name": "G. Rodriguez",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1044,
+    "player_id": 583,
+    "full_name": "I. Julio",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1059,
+    "player_id": 598,
+    "full_name": "J. Bowen",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 801,
+    "player_id": 401,
+    "full_name": "JeanClair Todibo",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1047,
+    "player_id": 586,
+    "full_name": "K. Casey",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 966,
+    "player_id": 505,
+    "full_name": "K. Lamadrid",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 793,
+    "player_id": 397,
+    "full_name": "Konstantinos Mavropanos",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 795,
+    "player_id": 398,
+    "full_name": "Kyle WalkerPeters",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 965,
+    "player_id": 504,
+    "full_name": "L. Guilherme",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 968,
+    "player_id": 507,
+    "full_name": "L. Orford",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 962,
+    "player_id": 501,
+    "full_name": "L. Paqueta",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1062,
+    "player_id": 601,
+    "full_name": "M. Antonio",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 723,
+    "player_id": 362,
+    "full_name": "Mads Hermansen",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 805,
+    "player_id": 403,
+    "full_name": "Max Kilman",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1045,
+    "player_id": 584,
+    "full_name": "N. Aguerd",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1060,
+    "player_id": 599,
+    "full_name": "N. Fullkrug",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 803,
+    "player_id": 402,
+    "full_name": "Oliver Scarles",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 895,
+    "player_id": 448,
+    "full_name": "Pablo",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 277,
+    "player_id": 139,
+    "full_name": "Soungoutou Magassa",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 893,
+    "player_id": 447,
+    "full_name": "Taty Castellanos",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 273,
+    "player_id": 137,
+    "full_name": "Tomas Soucek",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1036,
+    "player_id": 575,
+    "full_name": "W. Foderingham",
+    "team_id": 19,
+    "team_name": "West Ham United",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 251,
+    "player_id": 126,
+    "full_name": "Adam Armstrong",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 859,
+    "player_id": 430,
+    "full_name": "Andre",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 865,
+    "player_id": 433,
+    "full_name": "Angel Gomes",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 985,
+    "player_id": 524,
+    "full_name": "B. Meupiyou",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1057,
+    "player_id": 596,
+    "full_name": "B. Traore",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 981,
+    "player_id": 520,
+    "full_name": "D. Moller Wolfe",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 319,
+    "player_id": 160,
+    "full_name": "Daniel Bentley",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 982,
+    "player_id": 521,
+    "full_name": "E. Agbadou",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 867,
+    "player_id": 434,
+    "full_name": "Enso Gonzalez",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1056,
+    "player_id": 595,
+    "full_name": "F. Lopez",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 961,
+    "player_id": 500,
+    "full_name": "G. Guedes",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 959,
+    "player_id": 498,
+    "full_name": "H. HeeChan",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 373,
+    "player_id": 187,
+    "full_name": "Hugo Bueno",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1054,
+    "player_id": 593,
+    "full_name": "J. Arias",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 381,
+    "player_id": 191,
+    "full_name": "Jackson Tchatchoua",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 861,
+    "player_id": 431,
+    "full_name": "Jeanricner Bellegarde",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 315,
+    "player_id": 158,
+    "full_name": "Jose Sa",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 983,
+    "player_id": 522,
+    "full_name": "K. Hoever",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 377,
+    "player_id": 189,
+    "full_name": "Ladislav Krejci",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1053,
+    "player_id": 592,
+    "full_name": "M. Mane",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1055,
+    "player_id": 594,
+    "full_name": "M. Munetsi",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 385,
+    "player_id": 193,
+    "full_name": "Matt Doherty",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 984,
+    "player_id": 523,
+    "full_name": "N. Semedo",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 387,
+    "player_id": 194,
+    "full_name": "Pedro Lima",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 863,
+    "player_id": 432,
+    "full_name": "Rodrigo Gomes",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 960,
+    "player_id": 499,
+    "full_name": "S. Kalajdzic",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 317,
+    "player_id": 159,
+    "full_name": "Sam Johnstone",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 375,
+    "player_id": 188,
+    "full_name": "Santiago Bueno",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 249,
+    "player_id": 125,
+    "full_name": "Tolu Arokodare",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 383,
+    "player_id": 192,
+    "full_name": "Toti Gomes",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 379,
+    "player_id": 190,
+    "full_name": "Yerson Mosquera",
+    "team_id": 20,
+    "team_name": "Wolverhampton Wanderers",
+    "is_active_before": true
+  }
+]
