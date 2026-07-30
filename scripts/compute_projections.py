@@ -778,14 +778,28 @@ def blend_module_rates(module_rates, module_weights):
     Falls back to a plain average of whatever's available if none of the
     available modules have a configured weight (a game with no
     projection_module_weights seed rows) - never crashes, never returns
-    0 while real signal exists."""
+    0 while real signal exists.
+
+    Returns (blended_rate, effective_weights) - effective_weights is
+    {module: weight_actually_used} for EVERY module key present in
+    module_rates (0.0 for one that was unavailable/excluded), always
+    summing to 1.0 across whichever modules had data. This is the
+    "effective weight after missing-module renormalisation" the Engine
+    Validation report shows alongside each module's originally
+    CONFIGURED weight - the two differ exactly when one or more modules
+    had no data this stat/fixture."""
+    all_modules = set(module_rates.keys())
     available = {module: rate for module, rate in module_rates.items() if rate is not None}
     if not available:
-        return 0.0
+        return 0.0, {m: 0.0 for m in all_modules}
     total_weight = sum(module_weights.get(module, 0.0) for module in available)
     if total_weight <= 0:
-        return sum(available.values()) / len(available)
-    return sum(module_weights.get(module, 0.0) * rate for module, rate in available.items()) / total_weight
+        n = len(available)
+        effective_weights = {m: (1.0 / n if m in available else 0.0) for m in all_modules}
+    else:
+        effective_weights = {m: (module_weights.get(m, 0.0) / total_weight if m in available else 0.0) for m in all_modules}
+    blended = sum(effective_weights[m] * rate for m, rate in available.items())
+    return blended, effective_weights
 
 
 def resolve_module_weights(cur, game_id):
@@ -1061,6 +1075,12 @@ def project_player_stats(
         "minutes_60_plus": appearance_rate * cond60_rate,
         "played_full_match": appearance_rate * cond90_rate,
     }
+    # Raw (pre-blend) module rates per modular stat - kept alongside the
+    # blended `projected` dict purely so main() can build the Engine
+    # Validation "what would this module alone have projected" scenario
+    # scores (see compute_module_scenario_contributions) without
+    # recomputing every module a second time.
+    module_rates_by_stat = {}
     for stat, col in STAT_COLUMNS.items():
         rate_scale = STAT_RATE_SCALE.get(stat, 1.0)
         if stat in MODULAR_STATS:
@@ -1071,13 +1091,189 @@ def project_player_stats(
                 "player_role": compute_module_rate_player_role(stat, historical_row, team_id, team_stat_totals, fixture, weights),
                 "recent_form": compute_module_rate_recent_form(stat, player_id, recent_form_rates),
             }
-            raw_rate = blend_module_rates(module_rates, module_weights_by_position)
+            raw_rate, effective_weights = blend_module_rates(module_rates, module_weights_by_position)
+            # Everything the Engine Validation report needs per module for
+            # this stat: the raw rate before blending (None if that
+            # module had no signal), the weight configured in
+            # projection_module_weights, and the weight actually used
+            # after renormalizing away any module(s) with no data - these
+            # two differ exactly when something's missing, which is the
+            # whole point of showing both rather than just one number.
+            module_rates_by_stat[stat] = {
+                "raw_rates": module_rates,
+                "configured_weights": dict(module_weights_by_position),
+                "effective_weights": effective_weights,
+                "final_rate": raw_rate,
+            }
             projected[stat] = raw_rate * expected_minutes_fraction * rate_scale
         else:
             raw_rate = (historical_row[col] + k * position_avg[position][col]) / (games90 + k)
             factor = factor_by_mode[STAT_FIXTURE_MODE[stat]]
             projected[stat] = raw_rate * factor * expected_minutes_fraction * rate_scale
-    return projected, expected_minutes_fraction
+    return projected, expected_minutes_fraction, module_rates_by_stat
+
+
+MODULE_NAMES = ("historical_performance", "fixture_model", "bookmaker_intelligence", "player_role", "recent_form")
+
+MODULE_DISPLAY_NAMES = {
+    "historical_performance": "Historical Performance",
+    "fixture_model": "Fixture Model",
+    "bookmaker_intelligence": "Bookmaker Intelligence",
+    "player_role": "Player Role",
+    "recent_form": "Recent Form",
+}
+
+
+def compute_module_scenario_contributions(module_rates_by_stat, projected_stats, expected_minutes_fraction, position, scoring_rules):
+    """For one fixture: 'what would this fixture's modular-stat
+    contribution have been if THIS module ALONE had decided goal/assist/
+    clean_sheet_60min, with every non-modular stat left exactly as
+    actually projected' - priced through the same game_scoring_rules as
+    the real score, so directly comparable to it (this is the Engine
+    Validation report's per-module figure - see
+    frontend/src/app/algorithm-explain/page.tsx). None for a module that
+    had no data for ANY modular stat this fixture (e.g. Recent Form
+    pre-season) - never a fabricated number."""
+    contributions = {}
+    for module in MODULE_NAMES:
+        scenario_stats = dict(projected_stats)
+        has_data = False
+        for stat in MODULAR_STATS:
+            rate = module_rates_by_stat.get(stat, {}).get("raw_rates", {}).get(module)
+            if rate is None:
+                continue
+            has_data = True
+            rate_scale = STAT_RATE_SCALE.get(stat, 1.0)
+            scenario_stats[stat] = rate * expected_minutes_fraction * rate_scale
+        if not has_data:
+            contributions[module] = None
+            continue
+        total, _ = price_projected_stats(position, scenario_stats, scoring_rules)
+        contributions[module] = total
+    return contributions
+
+
+def compute_data_confidence(module_has_data, module_weights, games90):
+    """0-100 DATA CONFIDENCE for the blended projection - deliberately
+    NOT named "confidence" or "accuracy": this reflects how much of the
+    intended signal was actually AVAILABLE (source coverage, module
+    availability, historical sample size), never how likely the
+    projection is to be correct. It cannot know that - only real
+    projected-vs-actual results (the future Performance Lab redesign)
+    can calibrate genuine predictive confidence. This is:
+      - what fraction of this position's CONFIGURED module weight was
+        satisfied by a real value across this gameweek's fixture(s)
+        (module_has_data; a module with no data anywhere contributes 0,
+        same "excluded, not faked" rule blend_module_rates follows), then
+      - damped when the player's own historical sample is thin (a new
+        signing's Historical Performance/Player Role numbers are real
+        but rest on very little evidence)."""
+    if not module_weights:
+        return 0
+    total_weight = sum(module_weights.values())
+    if total_weight <= 0:
+        return 0
+    available_weight = sum(weight for module, weight in module_weights.items() if module_has_data.get(module))
+    coverage = available_weight / total_weight
+    sample_factor = 1.0 if games90 >= 5 else max(0.4, 0.4 + 0.12 * games90)
+    return round(100 * max(0.0, min(1.0, coverage * sample_factor)))
+
+
+def data_confidence_label(score):
+    if score >= 70:
+        return "High"
+    if score >= 40:
+        return "Medium"
+    return "Low"
+
+
+def build_module_detail_report(module_rates_by_stat, position, scoring_rules, expected_minutes_fraction, player_id, fixture, hub_features):
+    """The Engine Validation report's core per-stat, per-module table -
+    see frontend/src/lib/engineExplainability.ts, the shared TS layer
+    that reads this. For each modular stat: the final blended rate, and
+    per module the raw (pre-blend) rate, its CONFIGURED weight
+    (projection_module_weights), the EFFECTIVE weight actually used after
+    renormalizing away any module(s) with no data, and the resulting
+    WEIGHTED POINT CONTRIBUTION (effective_weight x raw_rate x expected
+    minutes x rate scale x this stat's real point value) - these
+    necessarily sum back to the stat's own contribution to the final
+    score, unlike the scenario totals in compute_module_scenario_
+    contributions (which include unrelated non-modular points and so
+    are NOT additive across modules - a different, complementary view,
+    never to be labelled "contribution" on its own for that reason)."""
+    report = {}
+    for stat in MODULAR_STATS:
+        detail = module_rates_by_stat.get(stat)
+        if not detail:
+            continue
+        rate_scale = STAT_RATE_SCALE.get(stat, 1.0)
+        points_each = scoring_rules.get(("all", stat), scoring_rules.get((position, stat)))
+        modules = {}
+        for module in MODULE_NAMES:
+            raw_rate = detail["raw_rates"].get(module)
+            effective_weight = detail["effective_weights"].get(module, 0.0)
+            configured_weight = detail["configured_weights"].get(module, 0.0)
+            if raw_rate is None or points_each is None:
+                weighted_point_contribution = None
+            else:
+                weighted_point_contribution = round(raw_rate * effective_weight * expected_minutes_fraction * rate_scale * points_each, 4)
+            modules[module] = {
+                "raw_rate": round(raw_rate, 4) if raw_rate is not None else None,
+                "configured_weight": round(configured_weight, 4),
+                "effective_weight": round(effective_weight, 4),
+                "weighted_point_contribution": weighted_point_contribution,
+            }
+        report[stat] = {
+            "final_rate": round(detail["final_rate"], 4),
+            "points_each": points_each,
+            "modules": modules,
+            "bookmaker_data_source": bookmaker_data_source(stat, fixture, player_id, hub_features),
+        }
+    return report
+
+
+def build_player_role_detail(team_id, historical_row, team_stat_totals):
+    """The real numbers behind Player Role's goal/assist share for
+    GK/DEF/MID/FWD alike, so the Engine Validation report can show
+    exactly why it raised or lowered a projection (e.g. Haaland's real
+    27/88 = 31% team goal share) instead of just the resulting rate.
+    None fields when the team has no historical output at all for that
+    stat - never a fabricated share."""
+    team = team_stat_totals.get(team_id) or {}
+    player_goals = historical_row["goals"]
+    player_assists = historical_row["assists"]
+    team_goal_total = team.get("goal_total", 0.0)
+    team_assist_total = team.get("assist_total", 0.0)
+    return {
+        "player_goal_total": player_goals,
+        "player_assist_total": player_assists,
+        "team_goal_total": round(team_goal_total, 2),
+        "team_assist_total": round(team_assist_total, 2),
+        "team_goal_share": round(player_goals / team_goal_total, 4) if team_goal_total > 0 else None,
+        "team_assist_share": round(player_assists / team_assist_total, 4) if team_assist_total > 0 else None,
+        "team_goal_per90": round(team.get("goal_per90", 0.0), 4),
+        "team_assist_per90": round(team.get("assist_per90", 0.0), 4),
+    }
+
+
+def bookmaker_data_source(stat, fixture, player_id, hub_features):
+    """'real' | 'estimated' | 'unavailable' - whether Bookmaker
+    Intelligence's number for this stat/player/fixture is a direct
+    market observation, a baseline scaled from one, or nothing at all.
+    Mirrors compute_module_rate_bookmaker's own real-vs-estimated-vs-None
+    logic exactly, but returns the LABEL rather than the rate - kept as
+    a separate function (not folded into compute_module_rate_bookmaker)
+    so that function's return type stays a plain rate-or-None everywhere
+    else it's used, and this transparency detail only gets computed
+    where the Engine Validation report actually needs it."""
+    if stat == "clean_sheet_60min":
+        return "real" if fixture.get("real_clean_sheet_score") is not None else "unavailable"
+    if stat == "goal":
+        feature = hub_features.get((player_id, fixture.get("fixture_id")))
+        if not feature or feature.get("score_probability") is None:
+            return "unavailable"
+        return "estimated" if feature.get("is_estimated") else "real"
+    return "unavailable"
 
 
 def price_projected_stats(position, projected_stats, scoring_rules):
@@ -1413,7 +1609,7 @@ def main():
                     "attack_score": runtime_weights["neutral_attack"],
                     "clean_sheet_score": runtime_weights["neutral_clean_sheet"],
                 }
-                neutral_stats, neutral_minutes_fraction = project_player_stats(
+                neutral_stats, neutral_minutes_fraction, _ = project_player_stats(
                     position, player_id, team_id, historical_row, neutral_fixture, runtime_weights, position_avg_rates,
                     position_involvement, hub_features, team_stat_totals, recent_form_rates,
                 )
@@ -1426,11 +1622,27 @@ def main():
 
                 score = 0.0
                 fixture_breakdown = []
-                for fx in player_fixtures:
-                    projected_stats, expected_minutes_fraction = project_player_stats(
+                module_scenario_totals = {module: None for module in MODULE_NAMES}
+                module_has_data = {module: False for module in MODULE_NAMES}
+                # Engine Validation's full per-module detail table (see
+                # build_module_detail_report) is only captured for the
+                # PRIMARY fixture (fixtures[0]) - same established
+                # double-gameweek simplification this file already uses
+                # for predicted_minutes/fixture_factor above; the
+                # aggregate module_scenario_totals below still correctly
+                # sums every fixture.
+                primary_module_detail = None
+                primary_expected_minutes_fraction = None
+                for fixture_index, fx in enumerate(player_fixtures):
+                    projected_stats, expected_minutes_fraction, module_rates_by_stat = project_player_stats(
                         position, player_id, team_id, historical_row, fx, runtime_weights, position_avg_rates,
                         position_involvement, hub_features, team_stat_totals, recent_form_rates,
                     )
+                    if fixture_index == 0:
+                        primary_module_detail = build_module_detail_report(
+                            module_rates_by_stat, position, scoring_rules, expected_minutes_fraction, player_id, fx, hub_features
+                        )
+                        primary_expected_minutes_fraction = expected_minutes_fraction
                     contribution, priced = price_projected_stats(position, projected_stats, scoring_rules)
                     bonus_points = compute_bonus_points(
                         position, historical_row, position_avg_rates, pass_completion_position_avg, runtime_weights, expected_minutes_fraction
@@ -1451,6 +1663,26 @@ def main():
                         # hail_mary_score itself still correctly sums both fixtures.
                         "predicted_minutes": round(expected_minutes_fraction * 90, 1),
                     })
+
+                    # Engine Validation report data (see
+                    # frontend/src/app/algorithm-explain/page.tsx) - "what
+                    # would this fixture have scored if only module X had
+                    # decided the modular stats" - same bonus_points added
+                    # to every module's scenario (it's non-modular, so
+                    # constant across all of them) for a fair, directly
+                    # comparable total against the real blended score.
+                    scenario_contributions = compute_module_scenario_contributions(
+                        module_rates_by_stat, projected_stats, expected_minutes_fraction, position, scoring_rules
+                    )
+                    for module, value in scenario_contributions.items():
+                        if value is None:
+                            continue
+                        module_has_data[module] = True
+                        module_scenario_totals[module] = (module_scenario_totals[module] or 0.0) + value + bonus_points
+
+                data_confidence_score = compute_data_confidence(
+                    module_has_data, module_weights_by_position.get(position, {}), historical_row["minutes_played"] / 90.0
+                )
                 inputs = {
                     "points_per_90": round(points_per_90, 3),
                     "neutral_attack_used": round(runtime_weights["neutral_attack"], 4),
@@ -1461,6 +1693,40 @@ def main():
                     "games90": round(historical_row["minutes_played"] / 90.0, 2),
                     "fixtures": fixture_breakdown,
                     "explanation": build_explanation(neutral_priced),
+                    # Engine Validation report (frontend/src/lib/
+                    # engineExplainability.ts) - the primary fixture's full
+                    # per-stat, per-module breakdown (raw rate, configured
+                    # vs effective weight, weighted point contribution -
+                    # see build_module_detail_report), the real numbers
+                    # behind Player Role specifically (team goal/assist
+                    # share - see build_player_role_detail), the
+                    # expected-minutes factor already used above, and
+                    # Data Confidence (source coverage/sample size, NOT
+                    # predictive accuracy - see compute_data_confidence).
+                    # Explicit scope label so the frontend never silently
+                    # implies module_detail covers the whole scoring
+                    # period - it's ALWAYS just the primary (first)
+                    # fixture; fixture_count > 1 means the final score
+                    # includes further fixtures this breakdown doesn't
+                    # decompose (a genuine double gameweek - none exist
+                    # in the data as of this build, but this stays honest
+                    # the moment one does).
+                    "module_detail_scope": {"is_primary_fixture_only": True, "fixture_count": len(player_fixtures)},
+                    "module_detail": primary_module_detail,
+                    "player_role_detail": build_player_role_detail(team_id, historical_row, team_stat_totals),
+                    "expected_minutes_fraction": round(primary_expected_minutes_fraction, 4) if primary_expected_minutes_fraction is not None else None,
+                    "data_confidence": {"score": data_confidence_score, "label": data_confidence_label(data_confidence_score)},
+                    # Per-module "what if this module alone decided"
+                    # SCENARIO totals (None where a module had no data at
+                    # all this gameweek) - includes unrelated non-modular
+                    # points (saves/cards/bonus/etc), so these are NOT
+                    # additive across modules and must never be labelled
+                    # "contribution" on their own - see module_detail's
+                    # weighted_point_contribution for the additive view.
+                    "module_scenarios": {
+                        module: (round(value, 3) if value is not None else None)
+                        for module, value in module_scenario_totals.items()
+                    },
                 }
             else:
                 games_played = historical_row["minutes_played"] / 90.0
@@ -1479,11 +1745,59 @@ def main():
                     "fixtures": fixture_breakdown,
                 }
 
+            raw_score_before_multiplier = score
             lineup, status = player_status.get(game_player_id, (None, None))
             multiplier = status_multiplier(lineup, status)
             if multiplier != 1.0:
                 score *= multiplier
             inputs["status"] = {"lineup": lineup, "status": status, "multiplier": multiplier}
+
+            # Reconciliation check (Engine Validation report) - proves the
+            # Primary Fixture Breakdown's per-module numbers actually sum
+            # to the real final score, rather than just trusting that the
+            # decomposition is correct. modular_sum is independently
+            # re-derived from module_detail's weighted_point_contribution
+            # figures (a different code path than the one that produced
+            # fixture_breakdown's own "contribution"), so a genuine future
+            # bug in either path shows up here as a non-reconciling
+            # projection - flagged, never silently hidden.
+            # other_fixtures_total only matters for a genuine double
+            # gameweek (none exist in the data as of this build) - the
+            # primary fixture is the ONLY one with a module breakdown
+            # (see module_detail above), so this line item is what keeps
+            # the reconciliation honest rather than silently comparing
+            # against just one fixture's worth of the real total.
+            if use_v2 and primary_module_detail and fixture_breakdown:
+                RECONCILE_TOLERANCE = 0.05
+                modular_sum = sum(
+                    (m.get("weighted_point_contribution") or 0.0)
+                    for stat_detail in primary_module_detail.values()
+                    for m in stat_detail["modules"].values()
+                )
+                primary_fixture = fixture_breakdown[0]
+                non_modular_sum = sum(
+                    item["contribution"]
+                    for stat, item in primary_fixture["stats"].items()
+                    if stat not in MODULAR_STATS and stat != "bonus_points"
+                )
+                bonus_component = primary_fixture["stats"].get("bonus_points", {}).get("contribution", 0.0)
+                primary_fixture_computed = modular_sum + non_modular_sum + bonus_component
+                primary_fixture_actual = primary_fixture["contribution"]
+                other_fixtures_total = raw_score_before_multiplier - primary_fixture_actual
+                computed_final = (primary_fixture_computed + other_fixtures_total) * multiplier
+                difference = abs(computed_final - score)
+                inputs["reconciliation"] = {
+                    "modular_sum": round(modular_sum, 4),
+                    "non_modular_sum": round(non_modular_sum, 4),
+                    "bonus": round(bonus_component, 4),
+                    "primary_fixture_subtotal": round(primary_fixture_computed, 4),
+                    "other_fixtures_total": round(other_fixtures_total, 4),
+                    "availability_multiplier": multiplier,
+                    "computed_final": round(computed_final, 4),
+                    "actual_final": round(score, 4),
+                    "difference": round(difference, 4),
+                    "within_tolerance": difference <= RECONCILE_TOLERANCE,
+                }
 
             # activity_log: only for real gameweek-anchored recomputes -
             # period-mode (Dream Team) isn't part of the automated
