@@ -20,6 +20,7 @@ export default function GameSecondaryNav({ gameSlug, gameDisplayName }: { gameSl
   // links to /fixtures once the top-level NavBar was cut down to games).
   if (features.fixtures) links.push({ label: "Fixtures", href: `/fixtures?game=${gameSlug}` });
   if (features.activity) links.push({ label: "Activity", href: "/activity" });
+  if (features.engineExplain) links.push({ label: "Engine Validation", href: `/algorithm-explain?game=${gameSlug}` });
 
   return (
     <nav aria-label={`${gameDisplayName} navigation`} className="flex flex-wrap gap-1 border-b border-navy-800 pb-2 text-sm font-medium">

@@ -20,12 +20,18 @@ export type GameFeatureSet = {
   // wired up (scripts/capture_gameweek_predictions.py only scans games
   // with a published gameweek calendar it's actually being run against).
   hailMaryForm: boolean;
+  // Engine Validation (/algorithm-explain) reads the modular projection
+  // breakdown compute_projections.py now writes into projections.inputs
+  // for every game with a real game_scoring_rules matrix (v2-decomposed) -
+  // both FanTeam and Dream Team, unlike every other feature above which
+  // needs a live in-season data source Dream Team doesn't have yet.
+  engineExplain: boolean;
 };
 
 export const GAME_FEATURES: Record<string, GameFeatureSet> = {
-  fanteam: { rankings: true, fixtures: true, watchlist: true, activity: true, askMary: true, performanceLab: true, hailMaryForm: true },
-  dreamteam: { rankings: true, fixtures: true, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false },
-  "nfl-fanteam": { rankings: true, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false },
+  fanteam: { rankings: true, fixtures: true, watchlist: true, activity: true, askMary: true, performanceLab: true, hailMaryForm: true, engineExplain: true },
+  dreamteam: { rankings: true, fixtures: true, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: true },
+  "nfl-fanteam": { rankings: true, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: false },
 };
 
 export const NO_FEATURES: GameFeatureSet = {
@@ -36,6 +42,7 @@ export const NO_FEATURES: GameFeatureSet = {
   askMary: false,
   performanceLab: false,
   hailMaryForm: false,
+  engineExplain: false,
 };
 
 export function featuresForGame(slug: string): GameFeatureSet {
