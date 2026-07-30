@@ -723,52 +723,6 @@ def compute_module_rate_bookmaker(stat, fixture, player_id, hub_features):
     return None
 
 
-def compute_module_rate_player_role(stat, historical_row, team_id, team_stat_totals, fixture, weights):
-    """This player's share of their OWN TEAM's real historical goal/assist
-    output, applied to that team's own model-fixture-adjusted expected
-    output - "is this player disproportionately involved in how THIS team
-    scores," independent of the player's own raw volume (useful for a
-    role change, a system change, or a player undervalued by a thin
-    personal sample but clearly the focal point of their team's attack).
-    Never touches real odds - same model-only fixture factor as Historical
-    Performance/Fixture Model, so this is a 4th consumer of the model
-    table, never a 2nd consumer of Bookmaker Intelligence's real data.
-    Only meaningful for goal/assist; None otherwise, or when the team has
-    no historical output at all for this stat to compute a share from
-    (division by zero avoided, not a fabricated share).
-
-    KNOWN LIMITATION (V1, by design - not fixed here): a transferred
-    player's historical goals/assists still count toward whichever club
-    team_id currently points to, which may not be the club they actually
-    earned them at (real case found by the audit: scripts/
-    audit_player_role.py - Alejandro Garnacho's Chelsea-era output
-    counted toward Aston Villa's total). Deliberately left unpatched -
-    Player Role V1's production weight is already 0 (migration 0067), so
-    changing its own calculation now would only make it a worse frozen
-    baseline for Performance Lab's future V1-vs-V2 comparison, not a
-    better production signal. See fetch_transferred_player_ids and
-    build_player_role_detail's transfer_attribution_uncertain flag - the
-    Engine Validation report surfaces this as a caveat on the real
-    (imperfect) number rather than hiding it, and V2 is expected to
-    replace this mechanism rather than patch it."""
-    if stat not in ("goal", "assist"):
-        return None
-    team = team_stat_totals.get(team_id)
-    if not team:
-        return None
-    total_key = f"{stat}_total"
-    per90_key = f"{stat}_per90"
-    team_total = team[total_key]
-    if team_total <= 0:
-        return None
-    player_total = historical_row[STAT_COLUMNS[stat]]
-    share = player_total / team_total
-    factor = stat_factor_from_scores(stat, fixture.get("model_attack_score"), fixture.get("model_clean_sheet_score"), weights)
-    if factor is None:
-        factor = 1.0
-    return share * team[per90_key] * factor
-
-
 RECENT_FORM_STATS = ("goal", "assist")
 
 # Calibration hypotheses, per the Recent Form architectural review - none
@@ -1528,9 +1482,6 @@ def compute_opportunity(historical_row, position, pos_inv, weights, lineup, stat
     return expected_minutes_fraction, opportunity_detail
 
 
-MIN_ROSTER_FOR_TEAM_TOTALS = 8
-
-
 def fetch_transferred_player_ids(cur):
     """Every player_id with at least one team_changed activity_log event
     on record (see import_fanteam_live.py's log_event(cur, "team_changed",
@@ -1540,58 +1491,15 @@ def fetch_transferred_player_ids(cur):
     scoped to one fantasy game) since a transfer is a real-world fact,
     not a per-game one.
 
-    Purely diagnostic as of this build - flags build_player_role_detail's
-    transfer_attribution_uncertain field (surfaced on the Engine
-    Validation page) without changing what Player Role V1 actually
-    computes. Deliberately NOT wired into compute_team_stat_totals or
-    compute_module_rate_player_role below: V1's production weight is
-    already 0 (migration 0067), so patching its calculation now would
-    only make it a worse frozen baseline for Performance Lab's future
-    V1-vs-V2 comparison - see the KNOWN LIMITATION note on
-    compute_module_rate_player_role."""
+    Feeds is_transferred into compute_opportunity() (see main()), which
+    doubles the shrinkage strength (k_effective) toward the position
+    average for a transferred player - their pre-transfer historical
+    minutes pattern is less trustworthy evidence of their NEW club's
+    rotation/starting pattern. (Previously also fed Player Role V1's
+    transfer_attribution_uncertain flag - removed along with that module;
+    this function's Opportunity Model usage is unaffected.)"""
     cur.execute("select distinct (details->>'player_id')::bigint from activity_log where event_type = 'team_changed'")
     return {row[0] for row in cur.fetchall()}
-
-
-def compute_team_stat_totals(players, historical_rows, team_id_by_player_id):
-    """{team_id: {"goal_total", "assist_total", "goal_per90", "assist_per90"}} -
-    the REAL, unshrunk sum of every rostered player's historical goals/
-    assists for that team (and the team-wide per-90 rate), used by the
-    Player Role module below. Deliberately not shrunk toward a position
-    prior like compute_shrunk_rates' position_avg - Player Role needs the
-    team's actual real total to compute a meaningful share, not a
-    blended prior."""
-    totals = {}
-    for _, _, player_id in players:
-        team_id = team_id_by_player_id.get(player_id)
-        row = historical_rows.get(player_id)
-        if team_id is None or not row or row["minutes_played"] <= 0:
-            continue
-        entry = totals.setdefault(team_id, {"goal": 0.0, "assist": 0.0, "games90": 0.0, "player_count": 0})
-        entry["goal"] += row["goals"]
-        entry["assist"] += row["assists"]
-        entry["games90"] += row["minutes_played"] / 90.0
-        entry["player_count"] += 1
-    return {
-        team_id: {
-            "goal_total": v["goal"],
-            "assist_total": v["assist"],
-            "goal_per90": v["goal"] / v["games90"] if v["games90"] > 0 else 0.0,
-            "assist_per90": v["assist"] / v["games90"] if v["games90"] > 0 else 0.0,
-        }
-        for team_id, v in totals.items()
-        # A real top-flight squad has 20+ contributing players by season
-        # end - MIN_ROSTER_FOR_TEAM_TOTALS is a generous floor well below
-        # that, only catching genuinely incomplete rosters (real case
-        # found by the audit: Dream Team's Hull City/Ipswich Town, 1
-        # contributing player each, off-season stale-roster artefacts -
-        # see scripts/deactivate_relegated_dreamteam_players.py). Below
-        # this floor, "team total" isn't measuring a team, and Player
-        # Role correctly returns None for that team's players (team_id
-        # simply won't be a key in this dict) rather than compute a share
-        # against 1-2 players' worth of "team" output.
-        if v["player_count"] >= MIN_ROSTER_FOR_TEAM_TOTALS
-    }
 
 
 # Rough Premier League-wide norms, used only as a last resort when a game
@@ -1622,8 +1530,8 @@ def _implied_involvement(raw_pt1, raw_pt60, raw_pt90, minutes_played):
 
 
 def project_player_stats(
-    position, player_id, team_id, historical_row, fixture, weights, position_avg, position_involvement,
-    hub_features, team_stat_totals, recent_form_rates, lineup, status, is_transferred, is_congested,
+    position, player_id, historical_row, fixture, weights, position_avg, position_involvement,
+    hub_features, recent_form_rates, lineup, status, is_transferred, is_congested,
 ):
     """Per-stat projected count for one player's one fixture (v2-decomposed).
     Returns (projected, expected_minutes_fraction, module_rates_by_stat,
@@ -1642,10 +1550,10 @@ def project_player_stats(
     already documents elsewhere in this file.
 
     goal/assist/clean_sheet_60min (MODULAR_STATS) are blended from up to
-    5 independent modules (historical/fixture-model/bookmaker/player-role/
-    recent-form - see compute_module_rate_* and blend_module_rates above)
-    instead of the single historical-rate x coalesced-fixture-factor formula every other stat
-    below still uses unchanged."""
+    4 independent modules (historical/fixture-model/bookmaker/recent-form -
+    see compute_module_rate_* and blend_module_rates above) instead of the
+    single historical-rate x coalesced-fixture-factor formula every other
+    stat below still uses unchanged."""
     k = weights["shrinkage_games"]
     neutral_attack = weights["neutral_attack"]
     neutral_clean_sheet = weights["neutral_clean_sheet"]
@@ -1684,7 +1592,6 @@ def project_player_stats(
                 "historical_performance": compute_module_rate_historical(stat, historical_row, position, position_avg, fixture, weights),
                 "fixture_model": compute_module_rate_fixture_model(stat, position, position_avg, fixture, weights),
                 "bookmaker_intelligence": compute_module_rate_bookmaker(stat, fixture, player_id, hub_features),
-                "player_role": compute_module_rate_player_role(stat, historical_row, team_id, team_stat_totals, fixture, weights),
                 "recent_form": compute_module_rate_recent_form(stat, player_id, recent_form_rates),
             }
             raw_rate, effective_weights = blend_module_rates(module_rates, module_weights_by_position)
@@ -1709,13 +1616,12 @@ def project_player_stats(
     return projected, expected_minutes_fraction, module_rates_by_stat, opportunity_detail
 
 
-MODULE_NAMES = ("historical_performance", "fixture_model", "bookmaker_intelligence", "player_role", "recent_form")
+MODULE_NAMES = ("historical_performance", "fixture_model", "bookmaker_intelligence", "recent_form")
 
 MODULE_DISPLAY_NAMES = {
     "historical_performance": "Historical Performance",
     "fixture_model": "Fixture Model",
     "bookmaker_intelligence": "Bookmaker Intelligence",
-    "player_role": "Player Role",
     "recent_form": "Recent Form",
 }
 
@@ -1762,8 +1668,8 @@ def compute_data_confidence(module_has_data, module_weights, games90):
         (module_has_data; a module with no data anywhere contributes 0,
         same "excluded, not faked" rule blend_module_rates follows), then
       - damped when the player's own historical sample is thin (a new
-        signing's Historical Performance/Player Role numbers are real
-        but rest on very little evidence)."""
+        signing's Historical Performance number is real but rests on
+        very little evidence)."""
     if not module_weights:
         return 0
     total_weight = sum(module_weights.values())
@@ -1826,42 +1732,6 @@ def build_module_detail_report(module_rates_by_stat, position, scoring_rules, ex
             "bookmaker_data_source": bookmaker_data_source(stat, fixture, player_id, hub_features),
         }
     return report
-
-
-def build_player_role_detail(team_id, historical_row, team_stat_totals, player_id, transferred_player_ids):
-    """The real numbers behind Player Role's goal/assist share for
-    GK/DEF/MID/FWD alike, so the Engine Validation report can show
-    exactly why it raised or lowered a projection (e.g. Haaland's real
-    27/88 = 31% team goal share) instead of just the resulting rate.
-    None fields when the team has no historical output at all for that
-    stat - never a fabricated share.
-
-    transfer_attribution_uncertain flags (doesn't hide) a player with a
-    recorded team_changed event: the share shown is still V1's real,
-    unpatched number (their goals/assists still count toward whichever
-    club team_id currently points to - see compute_module_rate_
-    player_role's KNOWN LIMITATION note), just with an explicit caveat
-    that it may not reflect which club they actually earned it at.
-    Deliberately not hidden/nulled - V1's production weight is already 0
-    (migration 0067), so this stays a faithful, reproducible view of what
-    V1 actually computes, for Performance Lab's future V1-vs-V2
-    comparison, rather than a quietly-patched one."""
-    team = team_stat_totals.get(team_id) or {}
-    player_goals = historical_row["goals"]
-    player_assists = historical_row["assists"]
-    team_goal_total = team.get("goal_total", 0.0)
-    team_assist_total = team.get("assist_total", 0.0)
-    return {
-        "player_goal_total": player_goals,
-        "player_assist_total": player_assists,
-        "team_goal_total": round(team_goal_total, 2),
-        "team_assist_total": round(team_assist_total, 2),
-        "team_goal_share": round(player_goals / team_goal_total, 4) if team_goal_total > 0 else None,
-        "team_assist_share": round(player_assists / team_assist_total, 4) if team_assist_total > 0 else None,
-        "team_goal_per90": round(team.get("goal_per90", 0.0), 4),
-        "team_assist_per90": round(team.get("assist_per90", 0.0), 4),
-        "transfer_attribution_uncertain": player_id in transferred_player_ids,
-    }
 
 
 def bookmaker_data_source(stat, fixture, player_id, hub_features):
@@ -2024,7 +1894,7 @@ def main():
         dict_cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         dict_cur.execute(
             """
-            select gp.id as game_player_id, p.position, gp.player_id, p.full_name, p.team_id,
+            select gp.id as game_player_id, p.position, gp.player_id, p.full_name,
                    coalesce(gps.total_points, 0) as total_points, coalesce(gps.minutes_played, 0) as minutes_played,
                    coalesce(gps.goals, 0) as goals, coalesce(gps.assists, 0) as assists,
                    coalesce(gps.clean_sheets, 0) as clean_sheets, coalesce(gps.saves, 0) as saves,
@@ -2048,7 +1918,6 @@ def main():
         raw_players = dict_cur.fetchall()
         dict_cur.close()
         players = [(r["game_player_id"], r["position"], r["player_id"]) for r in raw_players]
-        team_id_by_player_id = {r["player_id"]: r["team_id"] for r in raw_players}
         full_name_by_game_player_id = {r["game_player_id"]: r["full_name"] for r in raw_players}
 
         # Dream Team's raw_stats uses different key names than FanTeam's
@@ -2143,11 +2012,9 @@ def main():
         # rates' own position_avg dict just below.
         position_avg_pp90 = {pos: (pts / games if games > 0 else 0.0) for pos, (pts, games) in position_totals.items()}
         position_avg_rates = compute_shrunk_rates(players, historical_by_player_id)
-        # Diagnostic-only (see fetch_transferred_player_ids) - flags
-        # build_player_role_detail's transfer_attribution_uncertain field
-        # without changing what Player Role V1 itself computes.
+        # Feeds is_transferred into compute_opportunity() below - see
+        # fetch_transferred_player_ids.
         transferred_player_ids = fetch_transferred_player_ids(cur) if use_v2 else set()
-        team_stat_totals = compute_team_stat_totals(players, historical_by_player_id, team_id_by_player_id) if use_v2 else {}
         # Only meaningful for v2 (weights["season_games"] doesn't exist on
         # v1's DEFAULT_WEIGHTS) - v1 never calls project_player_stats.
         position_involvement = (
@@ -2219,7 +2086,6 @@ def main():
             player_fixtures = fixtures_by_player.get(player_id, [])
             if not player_fixtures:
                 continue
-            team_id = team_id_by_player_id.get(player_id)
             historical_row = historical_by_player_id[player_id]
             # Fetched once per player, before the v1/v2 branch, so the
             # Opportunity Model can consume real live team news for the
@@ -2245,8 +2111,8 @@ def main():
                 # fixture's team news, same "neutral" spirit as the
                 # attack/clean_sheet factors above.
                 neutral_stats, neutral_minutes_fraction, _, _ = project_player_stats(
-                    position, player_id, team_id, historical_row, neutral_fixture, runtime_weights, position_avg_rates,
-                    position_involvement, hub_features, team_stat_totals, recent_form_rates,
+                    position, player_id, historical_row, neutral_fixture, runtime_weights, position_avg_rates,
+                    position_involvement, hub_features, recent_form_rates,
                     None, None, is_transferred, False,
                 )
                 points_per_90, neutral_priced = price_projected_stats(position, neutral_stats, scoring_rules)
@@ -2279,8 +2145,8 @@ def main():
                     fixture_status = status if fixture_index == 0 else None
                     fixture_is_congested = rotation_congestion.get(fx["fixture_id"], False)
                     projected_stats, expected_minutes_fraction, module_rates_by_stat, opportunity_detail = project_player_stats(
-                        position, player_id, team_id, historical_row, fx, runtime_weights, position_avg_rates,
-                        position_involvement, hub_features, team_stat_totals, recent_form_rates,
+                        position, player_id, historical_row, fx, runtime_weights, position_avg_rates,
+                        position_involvement, hub_features, recent_form_rates,
                         fixture_lineup, fixture_status, is_transferred, fixture_is_congested,
                     )
                     if fixture_index == 0:
@@ -2343,12 +2209,10 @@ def main():
                     # engineExplainability.ts) - the primary fixture's full
                     # per-stat, per-module breakdown (raw rate, configured
                     # vs effective weight, weighted point contribution -
-                    # see build_module_detail_report), the real numbers
-                    # behind Player Role specifically (team goal/assist
-                    # share - see build_player_role_detail), the
-                    # expected-minutes factor already used above, and
-                    # Data Confidence (source coverage/sample size, NOT
-                    # predictive accuracy - see compute_data_confidence).
+                    # see build_module_detail_report), the expected-minutes
+                    # factor already used above, and Data Confidence (source
+                    # coverage/sample size, NOT predictive accuracy - see
+                    # compute_data_confidence).
                     # Explicit scope label so the frontend never silently
                     # implies module_detail covers the whole scoring
                     # period - it's ALWAYS just the primary (first)
@@ -2374,7 +2238,6 @@ def main():
                     # every fixture that gameweek, so this is simply the
                     # player's detail, not a "primary fixture" figure.
                     "recent_form_detail": build_recent_form_detail(recent_form_rates, player_id),
-                    "player_role_detail": build_player_role_detail(team_id, historical_row, team_stat_totals, player_id, transferred_player_ids),
                     "expected_minutes_fraction": round(primary_expected_minutes_fraction, 4) if primary_expected_minutes_fraction is not None else None,
                     "data_confidence": {"score": data_confidence_score, "label": data_confidence_label(data_confidence_score)},
                     # Per-module "what if this module alone decided"

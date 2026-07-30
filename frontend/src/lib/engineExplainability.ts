@@ -1,5 +1,5 @@
 // Reads the modular projection engine's own breakdown (see
-// scripts/compute_projections.py - module_detail, player_role_detail,
+// scripts/compute_projections.py - module_detail, opportunity_detail,
 // data_confidence, module_scenarios, reconciliation, all persisted into
 // projections.inputs by that script, exposed via player_projection_summary
 // - migration 0066) into a typed shape any page can render. Built as a
@@ -14,7 +14,6 @@ export const MODULE_NAMES = [
   "historical_performance",
   "fixture_model",
   "bookmaker_intelligence",
-  "player_role",
   "recent_form",
 ] as const;
 export type ModuleName = (typeof MODULE_NAMES)[number];
@@ -23,50 +22,7 @@ export const MODULE_DISPLAY_NAMES: Record<ModuleName, string> = {
   historical_performance: "Historical Performance",
   fixture_model: "Fixture Model",
   bookmaker_intelligence: "Bookmaker Intelligence",
-  player_role: "Player Role",
   recent_form: "Recent Form",
-};
-
-// Player Role V1's own audit (scripts/audit_player_role.py) found it
-// mathematically consistent but not measuring the intended concept: a
-// one-directional suppression concentrated on elite attackers, not a
-// weighting or outlier problem. Its production weight is 0 (migration
-// 0067) - it still computes and stores a real raw_rate every run (see
-// module_detail below) so it stays visible here and usable as a dormant
-// comparison signal for the eventual V2, it just no longer moves any
-// final score, optimiser choice, captaincy call or Ask Mary strategy.
-// This is a STATIC status map, not derived from configured_weight,
-// because "why is the weight 0" is a design decision worth stating
-// explicitly rather than inferring from a number that could be 0 for
-// other reasons (e.g. no data this fixture).
-export type ModuleStatus = {
-  status: "Production" | "Experimental";
-  productionInfluence: "Enabled" | "Disabled";
-  askMaryInfluence: "Enabled" | "Disabled";
-  performanceLabTracking: "Enabled" | "Disabled";
-  explainabilityVisibility: "Enabled" | "Disabled";
-};
-
-const PRODUCTION_MODULE_STATUS: ModuleStatus = {
-  status: "Production",
-  productionInfluence: "Enabled",
-  askMaryInfluence: "Enabled",
-  performanceLabTracking: "Enabled",
-  explainabilityVisibility: "Enabled",
-};
-
-export const MODULE_STATUS: Record<ModuleName, ModuleStatus> = {
-  historical_performance: PRODUCTION_MODULE_STATUS,
-  fixture_model: PRODUCTION_MODULE_STATUS,
-  bookmaker_intelligence: PRODUCTION_MODULE_STATUS,
-  recent_form: PRODUCTION_MODULE_STATUS,
-  player_role: {
-    status: "Experimental",
-    productionInfluence: "Disabled",
-    askMaryInfluence: "Disabled",
-    performanceLabTracking: "Enabled",
-    explainabilityVisibility: "Enabled",
-  },
 };
 
 export const MODULAR_STATS = ["goal", "assist", "clean_sheet_60min"] as const;
@@ -99,23 +55,6 @@ export type StatDetail = {
 };
 
 export type ModuleDetailScope = { isPrimaryFixtureOnly: boolean; fixtureCount: number };
-
-export type PlayerRoleDetail = {
-  playerGoalTotal: number;
-  playerAssistTotal: number;
-  teamGoalTotal: number | null;
-  teamAssistTotal: number | null;
-  teamGoalShare: number | null;
-  teamAssistShare: number | null;
-  teamGoalPer90: number | null;
-  teamAssistPer90: number | null;
-  // True for a player with a recorded club transfer - their own
-  // historical goals/assists are excluded from every team total (both as
-  // numerator and denominator) since we no longer know which club they
-  // actually belong to. See compute_team_stat_totals/
-  // compute_module_rate_player_role in compute_projections.py.
-  transferAttributionUncertain: boolean;
-};
 
 export type DataConfidence = { score: number; label: "High" | "Medium" | "Low" };
 
@@ -242,7 +181,6 @@ export type EngineExplanation = {
   moduleDetailScope: ModuleDetailScope;
   moduleDetail: Partial<Record<ModularStat, StatDetail>> | null;
   moduleScenarios: ModuleScenarios;
-  playerRoleDetail: PlayerRoleDetail | null;
   dataConfidence: DataConfidence;
   reconciliation: Reconciliation | null;
 };
@@ -278,11 +216,6 @@ type RawInputs = {
     raw_rate: number | null; configured_weight: number; effective_weight: number; weighted_point_contribution: number | null;
   }>; bookmaker_data_source: BookmakerDataSource }> | null;
   module_scenarios?: Record<string, number | null>;
-  player_role_detail?: {
-    player_goal_total: number; player_assist_total: number; team_goal_total: number | null; team_assist_total: number | null;
-    team_goal_share: number | null; team_assist_share: number | null; team_goal_per90: number | null; team_assist_per90: number | null;
-    transfer_attribution_uncertain?: boolean;
-  } | null;
   data_confidence?: { score: number; label: "High" | "Medium" | "Low" };
   reconciliation?: {
     primary_fixture_check: { expected: number; actual: number; difference: number; tolerance: number; passed: boolean };
@@ -401,19 +334,6 @@ export function parseEngineExplanation(gameSlug: string, row: SummaryRow): Engin
       : { isPrimaryFixtureOnly: true, fixtureCount: 1 },
     moduleDetail: parseModuleDetail(inputs.module_detail),
     moduleScenarios: (inputs.module_scenarios ?? {}) as ModuleScenarios,
-    playerRoleDetail: inputs.player_role_detail
-      ? {
-          playerGoalTotal: inputs.player_role_detail.player_goal_total,
-          playerAssistTotal: inputs.player_role_detail.player_assist_total,
-          teamGoalTotal: inputs.player_role_detail.team_goal_total,
-          teamAssistTotal: inputs.player_role_detail.team_assist_total,
-          teamGoalShare: inputs.player_role_detail.team_goal_share,
-          teamAssistShare: inputs.player_role_detail.team_assist_share,
-          teamGoalPer90: inputs.player_role_detail.team_goal_per90,
-          teamAssistPer90: inputs.player_role_detail.team_assist_per90,
-          transferAttributionUncertain: inputs.player_role_detail.transfer_attribution_uncertain ?? false,
-        }
-      : null,
     dataConfidence: inputs.data_confidence ?? { score: 0, label: "Low" },
     reconciliation: inputs.reconciliation
       ? {
