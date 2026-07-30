@@ -103,12 +103,18 @@ export type ModuleDetailScope = { isPrimaryFixtureOnly: boolean; fixtureCount: n
 export type PlayerRoleDetail = {
   playerGoalTotal: number;
   playerAssistTotal: number;
-  teamGoalTotal: number;
-  teamAssistTotal: number;
+  teamGoalTotal: number | null;
+  teamAssistTotal: number | null;
   teamGoalShare: number | null;
   teamAssistShare: number | null;
-  teamGoalPer90: number;
-  teamAssistPer90: number;
+  teamGoalPer90: number | null;
+  teamAssistPer90: number | null;
+  // True for a player with a recorded club transfer - their own
+  // historical goals/assists are excluded from every team total (both as
+  // numerator and denominator) since we no longer know which club they
+  // actually belong to. See compute_team_stat_totals/
+  // compute_module_rate_player_role in compute_projections.py.
+  transferAttributionUncertain: boolean;
 };
 
 export type DataConfidence = { score: number; label: "High" | "Medium" | "Low" };
@@ -178,8 +184,9 @@ type RawInputs = {
   }>; bookmaker_data_source: BookmakerDataSource }> | null;
   module_scenarios?: Record<string, number | null>;
   player_role_detail?: {
-    player_goal_total: number; player_assist_total: number; team_goal_total: number; team_assist_total: number;
-    team_goal_share: number | null; team_assist_share: number | null; team_goal_per90: number; team_assist_per90: number;
+    player_goal_total: number; player_assist_total: number; team_goal_total: number | null; team_assist_total: number | null;
+    team_goal_share: number | null; team_assist_share: number | null; team_goal_per90: number | null; team_assist_per90: number | null;
+    transfer_attribution_uncertain?: boolean;
   } | null;
   data_confidence?: { score: number; label: "High" | "Medium" | "Low" };
   reconciliation?: {
@@ -259,6 +266,7 @@ export function parseEngineExplanation(gameSlug: string, row: SummaryRow): Engin
           teamAssistShare: inputs.player_role_detail.team_assist_share,
           teamGoalPer90: inputs.player_role_detail.team_goal_per90,
           teamAssistPer90: inputs.player_role_detail.team_assist_per90,
+          transferAttributionUncertain: inputs.player_role_detail.transfer_attribution_uncertain ?? false,
         }
       : null,
     dataConfidence: inputs.data_confidence ?? { score: 0, label: "Low" },

@@ -193,6 +193,14 @@ export default function EngineExplanationCard({ data }: { data: EngineExplanatio
             is 0: it no longer affects the final score, optimiser, captaincy or Ask Mary. It keeps computing and
             storing real numbers below so it stays comparable against a future V2.
           </p>
+          {data.playerRoleDetail.transferAttributionUncertain && (
+            <p className="mt-3 rounded-lg border border-amber-800/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-300">
+              This player has a recorded club transfer. The numbers below are V1&apos;s real, unpatched calculation -
+              still counted toward whichever club they&apos;re currently listed at, which may not be who they earned
+              this history with (see the audit&apos;s transfer-attribution finding). Shown as-is, not hidden or
+              corrected, so V1 stays reproducible for a future comparison against V2.
+            </p>
+          )}
           <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm text-navy-200 sm:grid-cols-4">
             <div>
               <p className="text-[10px] uppercase tracking-wide text-navy-500">Team Goal Share</p>
@@ -210,11 +218,11 @@ export default function EngineExplanationCard({ data }: { data: EngineExplanatio
             </div>
             <div>
               <p className="text-[10px] uppercase tracking-wide text-navy-500">Team Goals / 90</p>
-              <p className="font-medium">{data.playerRoleDetail.teamGoalPer90.toFixed(3)}</p>
+              <p className="font-medium">{data.playerRoleDetail.teamGoalPer90?.toFixed(3) ?? "N/A"}</p>
             </div>
             <div>
               <p className="text-[10px] uppercase tracking-wide text-navy-500">Team Assists / 90</p>
-              <p className="font-medium">{data.playerRoleDetail.teamAssistPer90.toFixed(3)}</p>
+              <p className="font-medium">{data.playerRoleDetail.teamAssistPer90?.toFixed(3) ?? "N/A"}</p>
             </div>
           </div>
           <p className="mt-2 text-xs text-navy-400">
