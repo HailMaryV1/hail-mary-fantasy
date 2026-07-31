@@ -23,6 +23,13 @@ export type TeamGameweekRatio = {
   teamName: string;
   gameweek: number;
   ratio: number | null;
+  // Attack/clean-sheet tracked separately alongside the combined ratio -
+  // additive, existing consumers reading only `.ratio` are unaffected.
+  // Lets a caller (see detectFixtureRuns' `metric` option) ask "is this
+  // team's ATTACKING outlook favourable" separately from "is their
+  // DEFENSIVE outlook favourable," rather than only the blended view.
+  attackRatio: number | null;
+  cleanSheetRatio: number | null;
 };
 
 export type FixtureRun = {
@@ -94,30 +101,46 @@ export function computeTeamGameweekRatios(rows: FixtureDifficultyRow[]): TeamGam
 
     for (const gw of gameweeks) {
       const bucket = gwMap.get(gw)!;
-      const ratios: number[] = [];
-      if (bucket.attack.length > 0 && baselineAttack) {
-        ratios.push((bucket.attack.reduce((a, b) => a + b, 0) / bucket.attack.length) / baselineAttack);
-      }
-      if (bucket.cleanSheet.length > 0 && baselineCleanSheet) {
-        ratios.push((bucket.cleanSheet.reduce((a, b) => a + b, 0) / bucket.cleanSheet.length) / baselineCleanSheet);
-      }
+      const attackRatio =
+        bucket.attack.length > 0 && baselineAttack ? (bucket.attack.reduce((a, b) => a + b, 0) / bucket.attack.length) / baselineAttack : null;
+      const cleanSheetRatio =
+        bucket.cleanSheet.length > 0 && baselineCleanSheet
+          ? (bucket.cleanSheet.reduce((a, b) => a + b, 0) / bucket.cleanSheet.length) / baselineCleanSheet
+          : null;
+      const ratios = [attackRatio, cleanSheetRatio].filter((r): r is number => r != null);
       const ratio = ratios.length === 0 ? null : ratios.reduce((a, b) => a + b, 0) / ratios.length;
-      result.push({ teamName, gameweek: gw, ratio });
+      result.push({ teamName, gameweek: gw, ratio, attackRatio, cleanSheetRatio });
     }
   }
 
   return result;
 }
 
+export type FixtureRunMetric = "combined" | "attack" | "cleanSheet";
+
 /**
  * Scans every team's ordered gameweek sequence for maximal contiguous
- * stretches (3+) of the same good/bad classification. A double-gameweek
- * (2+ input rows sharing a team+gameweek) is averaged into one point
- * before classifying, so a run always describes real gameweek span, not
- * raw fixture count. A missing gameweek in the sequence, a classification
+ * stretches of the same good/bad classification. A double-gameweek (2+
+ * input rows sharing a team+gameweek) is averaged into one point before
+ * classifying, so a run always describes real gameweek span, not raw
+ * fixture count. A missing gameweek in the sequence, a classification
  * change, or a gameweek with no odds posted yet (neutral) all break a run.
+ *
+ * `options.metric` picks which of computeTeamGameweekRatios' three ratios
+ * to scan (default "combined" - every existing caller passes no options
+ * at all, so behaviour is byte-for-byte unchanged for them).
+ * `options.minLength` overrides the minimum run length (default
+ * MIN_RUN_LENGTH, 3) - kept as the default for every existing caller
+ * deliberately; only the new fixture-block feature
+ * (frontend/src/lib/fixtureBlocks.ts) passes a lower minLength, so
+ * nothing already depending on the 3-gameweek threshold is affected.
  */
-export function detectFixtureRuns(rows: FixtureDifficultyRow[]): FixtureRun[] {
+export function detectFixtureRuns(
+  rows: FixtureDifficultyRow[],
+  options?: { metric?: FixtureRunMetric; minLength?: number }
+): FixtureRun[] {
+  const metric = options?.metric ?? "combined";
+  const minLength = options?.minLength ?? MIN_RUN_LENGTH;
   const ratios = computeTeamGameweekRatios(rows);
 
   const byTeam = new Map<string, TeamGameweekRatio[]>();
@@ -133,11 +156,10 @@ export function detectFixtureRuns(rows: FixtureDifficultyRow[]): FixtureRun[] {
     const points = teamRatios
       .slice()
       .sort((a, b) => a.gameweek - b.gameweek)
-      .map((r) => ({
-        gameweek: r.gameweek,
-        classification: r.ratio == null ? ("neutral" as Classification) : classifyRatio(r.ratio),
-        ratio: r.ratio,
-      }));
+      .map((r) => {
+        const ratio = metric === "attack" ? r.attackRatio : metric === "cleanSheet" ? r.cleanSheetRatio : r.ratio;
+        return { gameweek: r.gameweek, classification: ratio == null ? ("neutral" as Classification) : classifyRatio(ratio), ratio };
+      });
 
     let streakStart = 0;
     for (let i = 1; i <= points.length; i++) {
@@ -149,7 +171,7 @@ export function detectFixtureRuns(rows: FixtureDifficultyRow[]): FixtureRun[] {
       if (brokeStreak) {
         const streak = points.slice(streakStart, i);
         const kind = streak[0].classification;
-        if ((kind === "good" || kind === "bad") && streak.length >= MIN_RUN_LENGTH) {
+        if ((kind === "good" || kind === "bad") && streak.length >= minLength) {
           const streakRatios = streak.map((p) => p.ratio).filter((r): r is number => r != null);
           runs.push({
             teamName,
