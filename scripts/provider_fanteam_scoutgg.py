@@ -175,6 +175,42 @@ def _click_shadow_text(page, text):
     )
 
 
+def _click_shadow_prefix(page, prefix):
+    """Clicks the smallest (shortest-text) element anywhere in the page -
+    including nested shadow roots - whose trimmed text STARTS WITH
+    `prefix` (case-insensitive). Needed for My Entries' tab buttons
+    ("Upcoming"/"Running"/"Ended"), which are custom <ft-tab> elements
+    whose real textContent also concatenates a count and a Buy-in total
+    with no separator (confirmed live: "Upcoming1£1.00Buy-in") - never
+    a bare leaf match like _click_shadow_text's "MY ENTRIES" case, so
+    that stricter exact/leaf-only matcher can't find them at all. Picks
+    the shortest matching text (rather than a large ancestor container)
+    to click something close to the real button; click events bubble/
+    compose across shadow boundaries, so clicking an inner element still
+    reaches whatever listens for the tab click. Returns True if
+    something was clicked."""
+    return page.evaluate(
+        """
+        (prefix) => {
+          let best = null;
+          function walk(root) {
+            for (const el of root.querySelectorAll('*')) {
+              if (el.shadowRoot) walk(el.shadowRoot);
+              const t = (el.textContent || '').trim();
+              if (t.length > 0 && t.length < 60 && t.toUpperCase().startsWith(prefix)) {
+                if (!best || t.length < best.text.length) best = {el, text: t};
+              }
+            }
+          }
+          walk(document);
+          if (best) { best.el.click(); return true; }
+          return false;
+        }
+        """,
+        prefix.upper(),
+    )
+
+
 def _expand_all_entry_rows(page):
     """Clicks every "expando" toggle on the My Entries table (confirmed
     live token capture: each entry row's real team ID only appears in the
@@ -216,38 +252,91 @@ def _flatten_shadow_hrefs(page, must_include):
     )
 
 
+GAME_TYPE_TO_SPORT = {
+    "football": "football",  # confirmed live 2026-07-31 against real tournament 1131483
+    "golf": "golf",  # confirmed live via scraper_fanteam_golf.py's own gameType check
+    # NFL's real gameType string hasn't been seen live yet - add it here
+    # once a real NFL tournament_id is confirmed (same "extend once
+    # confirmed" precedent as sync_provider_squads.py's override dict).
+}
+
+
+def fetch_tournament_meta(tournament_id):
+    """(name, sport) for a real tournament, straight from FanTeam's own
+    tournament API - no auth, no browser. Confirmed live: GET
+    {GAME_BASE}/tournaments/{id}/players?round=editable returns
+    {"tournament": {"name": ..., "gameType": ..., ...}} - the exact
+    endpoint scraper_fanteam_golf.py already uses for golf (it checks
+    gameType == "golf" itself), generalised here to classify ANY
+    discovered tournament_id by real provider data instead of a
+    hardcoded per-ID list. gameType is mapped through GAME_TYPE_TO_SPORT;
+    an unrecognised/missing gameType, or a request that fails outright,
+    returns (None, None) so the caller can skip persisting an unreliable
+    record rather than guess - see sync_provider_squads.py's
+    FANTEAM_TOURNAMENT_GAME_SLUG for the explicit-override fallback that
+    exists for exactly this case."""
+    status, body = _http_json(f"{GAME_BASE}/tournaments/{tournament_id}/players?round=editable")
+    if status != 200 or not body:
+        return None, None
+    tournament = body.get("tournament") or {}
+    name = tournament.get("name")
+    sport = GAME_TYPE_TO_SPORT.get(tournament.get("gameType"))
+    if not name or not sport:
+        return None, None
+    return name, sport
+
+
+ENTRY_TABS = (("Upcoming", "upcoming"), ("Running", "running"))
+
+
 def discover_my_teams(page):
-    """[{"fantasy_team_id": str, "tournament_id": str}, ...] - every real
-    entry visible on FanTeam's own "My Entries" page, reached by clicking
-    the real "MY ENTRIES" nav link (see _click_shadow_text's docstring
-    for why not a guessed URL). Replaces list_my_teams's REST approach
-    entirely - that endpoint is confirmed broken for this real account
-    even with fully correct auth (see list_my_teams' docstring). No JSON
-    API involved: each row is expanded (_expand_all_entry_rows) and its
-    real tournament_id/team_id are read straight off a real <a href>
-    matching /fantasy/edit/{tournamentId}/{teamId} - confirmed live
-    against the real account's real entry (team 133545691, tournament
-    1131483, "ciccio12" #51333 shown on screen next to it, ruling out an
-    account mismatch). `page` must already have a valid ftToken in
-    localStorage and be freshly reloaded so the app's nav reflects the
-    logged-in state (see open_authenticated_page)."""
+    """[{"fantasy_team_id": str, "tournament_id": str, "status": str}, ...]
+    - every real entry visible on FanTeam's own "My Entries" page across
+    BOTH the "Upcoming" and "Running" tabs (never "Ended" - excluded by
+    construction, this loop never visits that tab), reached by clicking
+    the real "MY ENTRIES" nav link then each real tab label in turn (see
+    _click_shadow_text's docstring for why not a guessed URL). Replaces
+    list_my_teams's REST approach entirely - that endpoint is confirmed
+    broken for this real account even with fully correct auth (see
+    list_my_teams' docstring). No JSON API involved for discovery itself:
+    each row is expanded (_expand_all_entry_rows) and its real
+    tournament_id/team_id are read straight off a real <a href> matching
+    /fantasy/edit/{tournamentId}/{teamId} - confirmed live against the
+    real account's real entry (team 133545691, tournament 1131483,
+    "ciccio12" #51333 shown on screen next to it, ruling out an account
+    mismatch). Status comes for free from which tab an entry was found
+    under - no separate parsing needed. A tab that can't be found (e.g.
+    a real account with zero Running entries right now) is skipped, not
+    fatal - only raises if NEITHER tab yields anything at all. `page`
+    must already have a valid ftToken in localStorage and be freshly
+    reloaded so the app's nav reflects the logged-in state (see
+    open_authenticated_page)."""
     if not _click_shadow_text(page, "MY ENTRIES"):
         raise RuntimeError("Couldn't find the 'MY ENTRIES' nav link on fanteam.com - page layout may have changed.")
     page.wait_for_timeout(2000)
-    _expand_all_entry_rows(page)
-    page.wait_for_timeout(800)
 
-    pairs = set()
-    for href in _flatten_shadow_hrefs(page, "/fantasy/edit/"):
-        m = re.search(r"/fantasy/edit/(\d+)/(\d+)", href)
-        if m:
-            pairs.add((m.group(1), m.group(2)))
-    if not pairs:
+    entries = {}
+    for tab_label, status in ENTRY_TABS:
+        if not _click_shadow_prefix(page, tab_label):
+            print(f"  [warn] couldn't find the {tab_label!r} tab on My Entries - skipping.")
+            continue
+        page.wait_for_timeout(1500)
+        _expand_all_entry_rows(page)
+        page.wait_for_timeout(800)
+        for href in _flatten_shadow_hrefs(page, "/fantasy/edit/"):
+            m = re.search(r"/fantasy/edit/(\d+)/(\d+)", href)
+            if m:
+                entries[(m.group(1), m.group(2))] = status
+
+    if not entries:
         raise RuntimeError(
-            "No real entries found on FanTeam's My Entries page - either the account genuinely has none right "
-            "now, or the page layout changed. Not guessing either way."
+            "No real entries found on FanTeam's My Entries page (checked Upcoming + Running) - either the "
+            "account genuinely has none right now, or the page layout changed. Not guessing either way."
         )
-    return [{"tournament_id": t, "fantasy_team_id": team} for t, team in sorted(pairs)]
+    return [
+        {"tournament_id": t, "fantasy_team_id": team, "status": status}
+        for (t, team), status in sorted(entries.items())
+    ]
 
 
 def _flatten_shadow_text(page):

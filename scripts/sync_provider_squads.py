@@ -59,14 +59,28 @@ from name_matching import compact, surname_key
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Sport/game classification of a FanTeam tournament_id is a one-time,
-# human config decision, not something the API tells us - same
-# established pattern as scraper_fanteam.py's own hardcoded TOURNAMENT_ID
-# and scraper_fanteam_golf.py's tournament_id argument. Extend this
-# mapping (not runtime-guessed) whenever a new real entry is confirmed.
+# Real classification now comes from FanTeam's own tournament API (see
+# provider_fanteam_scoutgg.fetch_tournament_meta - gameType/name read
+# straight off the response, confirmed live) - a NEW EPL contest no
+# longer needs a manual code change to be picked up. This dict is kept
+# only as an EXPLICIT OVERRIDE / safety fallback for a tournament_id
+# fetch_tournament_meta can't classify (request failure, or a gameType
+# value not yet in GAME_TYPE_TO_SPORT) - not the primary gate anymore.
 FANTEAM_TOURNAMENT_GAME_SLUG = {
     "1131483": "fanteam",  # EPL Fantasy Season Game [Micro] - real, verified 2026-07-30
 }
+
+# Which Hail Mary game a classified sport lands a synced squad in. Only
+# football is wired to an active squad-sync target today - a
+# reliably-classified Golf/NFL competition still gets its
+# provider_competitions row (honest bookkeeping, and sets up their own
+# future "My Teams" pages for free) but no squad, until this page's
+# equivalents for those sports exist.
+SPORT_TO_GAME_SLUG = {
+    "football": "fanteam",
+}
+
+SEASON = "2026/27"
 
 # Cloud FF is a single ongoing season game, not tournament-based like
 # FanTeam - there's exactly one real team per account, so this constant
@@ -141,17 +155,54 @@ def match_player(cur, game_id, provider_name, price, position=None):
     return None
 
 
-def get_or_create_squad_link(cur, user_id, provider, game_slug, tournament_id, team_id, squad_name):
+def get_or_create_competition(cur, provider, external_competition_id, name, sport, status):
+    """Upserts on (provider, external_competition_id) - a competition is
+    shared across every squad entered into it (e.g. several separate
+    teams in the same weekly contest), so this must never
+    duplicate-create one per squad. Always bumps last_seen_at/updated_at
+    on every call so a later cleanup pass can tell a competition that's
+    stopped being discovered (most likely moved to Ended, which sync
+    never visits) from one still genuinely active. Returns the
+    competition's id."""
+    cur.execute(
+        """
+        insert into provider_competitions
+            (provider, external_competition_id, competition_name, sport, season, status, last_seen_at, updated_at)
+        values (%s, %s, %s, %s, %s, %s, now(), now())
+        on conflict (provider, external_competition_id) do update
+        set competition_name = excluded.competition_name,
+            sport = excluded.sport,
+            season = excluded.season,
+            status = excluded.status,
+            last_seen_at = now(),
+            updated_at = now()
+        returning id
+        """,
+        (provider, external_competition_id, name, sport, SEASON, status),
+    )
+    return cur.fetchone()["id"]
+
+
+def get_or_create_squad_link(cur, user_id, provider, game_slug, tournament_id, team_id, squad_name, competition_id=None):
     """Idempotent: an existing link for this (provider, external_team_id)
     is always reused, never duplicated - the unique constraint in
     migration 0071 is the real backstop, this is just the friendly path
-    that avoids hitting it."""
+    that avoids hitting it. `competition_id` is refreshed on every call
+    (cheap, idempotent) rather than only set-once, so a link created
+    before classification succeeded (e.g. via the explicit-override
+    fallback, with no competition row yet) picks one up automatically
+    once its tournament classifies cleanly on a later sync."""
     cur.execute(
         "select id, squad_id from provider_squad_links where provider = %s and external_team_id = %s",
         (provider, team_id),
     )
     row = cur.fetchone()
     if row:
+        if competition_id is not None:
+            cur.execute(
+                "update provider_squad_links set competition_id = %s, updated_at = now() where id = %s",
+                (competition_id, row["id"]),
+            )
         return row["squad_id"], row["id"]
 
     cur.execute("select id from fantasy_games where slug = %s", (game_slug,))
@@ -167,11 +218,11 @@ def get_or_create_squad_link(cur, user_id, provider, game_slug, tournament_id, t
     squad_id = cur.fetchone()["id"]
     cur.execute(
         """
-        insert into provider_squad_links (squad_id, provider, external_tournament_id, external_team_id)
-        values (%s, %s, %s, %s)
+        insert into provider_squad_links (squad_id, provider, external_tournament_id, external_team_id, competition_id)
+        values (%s, %s, %s, %s, %s)
         returning id
         """,
-        (squad_id, provider, tournament_id, team_id),
+        (squad_id, provider, tournament_id, team_id, competition_id),
     )
     link_id = cur.fetchone()["id"]
     return squad_id, link_id
@@ -302,15 +353,46 @@ def sync_fanteam(cur, user_id, credential_row, requested_only=False):
         try:
             for team in teams:
                 tournament_id = team["tournament_id"]
-                game_slug = FANTEAM_TOURNAMENT_GAME_SLUG.get(tournament_id)
-                if not game_slug:
-                    print(f"  [skip] tournament {tournament_id} not in FANTEAM_TOURNAMENT_GAME_SLUG - add it once its sport is confirmed.")
-                    continue
+                status = team["status"]
+
+                name, sport = fanteam.fetch_tournament_meta(tournament_id)
+                competition_id = None
+                if name and sport:
+                    competition_id = get_or_create_competition(cur, "fanteam_scoutgg", tournament_id, name, sport, status)
+                    game_slug = SPORT_TO_GAME_SLUG.get(sport)
+                    if not game_slug:
+                        print(f"  [skip] tournament {tournament_id} ({name!r}): sport={sport!r} - not Football, no squad created on this page.")
+                        continue
+                else:
+                    # Real classification failed (request error, or a
+                    # gameType not yet in GAME_TYPE_TO_SPORT) - fall back
+                    # to the explicit override. No competition row gets
+                    # written here (name/sport genuinely aren't known
+                    # reliably) - the squad link's competition_id stays
+                    # null until a later sync classifies it cleanly.
+                    game_slug = FANTEAM_TOURNAMENT_GAME_SLUG.get(tournament_id)
+                    if not game_slug:
+                        print(f"  [skip] tournament {tournament_id}: provider classification failed and no override - not syncing.")
+                        continue
+                    print(f"  [warn] tournament {tournament_id}: provider classification failed - using explicit override -> {game_slug}")
 
                 cur.execute("select id from fantasy_games where slug = %s", (game_slug,))
                 game_id = cur.fetchone()["id"]
+                # FanTeam has no editable/visible custom name for an
+                # existing entry anywhere we can read (confirmed live:
+                # no text input on the squad edit page, and My Entries
+                # shows only the raw numeric team id, "#133545691", for
+                # this real account's entry) - so there's no real name
+                # to prefer. FanTeam's OWN display convention for an
+                # unnamed entry is exactly this pattern (confirmed live
+                # via this account's real profile - username "ciccio12",
+                # id 51333 - matching the "ciccio12 #51333" example
+                # already documented in provider_fanteam_scoutgg.py) -
+                # not an invented label, FanTeam's real one.
+                default_name = f"{profile.get('username') or username} #{team['fantasy_team_id']}"
                 squad_id, link_id = get_or_create_squad_link(
-                    cur, user_id, "fanteam_scoutgg", game_slug, tournament_id, team["fantasy_team_id"], f"FanTeam {game_slug}"
+                    cur, user_id, "fanteam_scoutgg", game_slug, tournament_id, team["fantasy_team_id"], default_name,
+                    competition_id=competition_id,
                 )
                 try:
                     parsed = fanteam.fetch_squad(page, tournament_id, team["fantasy_team_id"])
