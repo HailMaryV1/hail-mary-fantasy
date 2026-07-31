@@ -331,7 +331,7 @@ export default async function AskMaryPage({
 
         <aside className="flex flex-col gap-4">
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Players to Watch</h2>
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Emerging Targets</h2>
             {monitorList.length === 0 ? (
               <p className="mt-2 text-xs text-navy-400">No new fixture-swing targets within your planning window right now.</p>
             ) : (
