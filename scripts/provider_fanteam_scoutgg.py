@@ -14,7 +14,12 @@ Two real mechanisms, confirmed live against the user's actual account on
 
 1. Login + "which teams do I have" - a plain, fast JSON REST API.
      POST https://fanteam-scott.api.scoutgg.net/api/users/login
-       {"email": ..., "password": ...} -> {"token": <JWT, ~3h>, "refreshToken": ...}
+       {"username": ..., "password": ...} -> {"token": <JWT, ~3h>, "refreshToken": ...}
+     FanTeam accounts are username-based, not email-based - confirmed
+     live via the server's own error (a real account's real username
+     sent under an "email" key got HTTP 400 {"error": "Username
+     required"}), not assumed from a discovery capture like everything
+     else in this file.
      GET  https://fanteam-game.api.scoutgg.net/tournaments/@me
        (Authorization: Bearer <token>) -> {"fantasyTeams": [{"id", "tournamentId", ...}, ...]}
    No confirmed silent-refresh endpoint was found during discovery (the
@@ -88,10 +93,14 @@ def _http_json(url, method="GET", headers=None, body=None, timeout=20):
             return e.code, None
 
 
-def login(email, password):
+def login(username, password):
     """(access_token, refresh_token, profile) or raises. Real endpoint,
-    confirmed live - see module docstring."""
-    status, body = _http_json(LOGIN_URL, method="POST", body={"email": email, "password": password})
+    confirmed live - see module docstring. The field is genuinely named
+    "username" (confirmed live: a real login attempt with the account's
+    real FanTeam username in an "email" field got HTTP 400 {"error":
+    "Username required"} - FanTeam accounts are username-based, not
+    email-based, unlike most of this project's other integrations)."""
+    status, body = _http_json(LOGIN_URL, method="POST", body={"username": username, "password": password})
     if status != 200 or not body or "token" not in body:
         raise RuntimeError(f"FanTeam login failed: HTTP {status} {body}")
     return body["token"], body.get("refreshToken"), body.get("profile")

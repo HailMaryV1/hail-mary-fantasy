@@ -59,11 +59,12 @@ def bootstrap_fanteam(cur, user_id):
     import provider_fanteam_scoutgg as fanteam
 
     print("FanTeam (covers FanTeam Football, Golf and NFL - one Scout Gaming account).")
-    email = input("FanTeam email: ").strip()
+    print("FanTeam accounts are username-based, not email-based.")
+    username = input("FanTeam username: ").strip()
     password = getpass.getpass("FanTeam password (not shown): ")
 
     print("Verifying against the real login endpoint ...")
-    access_token, refresh_token, profile = fanteam.login(email, password)
+    access_token, refresh_token, profile = fanteam.login(username, password)
     print(f"  Logged in as {profile.get('username') if profile else '(unknown)'} - credentials are real and working.")
 
     cur.execute(
@@ -78,7 +79,7 @@ def bootstrap_fanteam(cur, user_id):
           last_refresh_error = null,
           updated_at = now()
         """,
-        (user_id, provider_secrets.encrypt(email), provider_secrets.encrypt(password)),
+        (user_id, provider_secrets.encrypt(username), provider_secrets.encrypt(password)),
     )
     print("Stored (encrypted) - run scripts/sync_provider_squads.py --provider fanteam_scoutgg to import your real squads.")
 

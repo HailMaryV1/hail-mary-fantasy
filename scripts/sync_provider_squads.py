@@ -220,9 +220,9 @@ def sync_fanteam(cur, user_id, credential_row, requested_only=False):
             print("  [skip] no sync_requested_at pending - not logging in.")
             return
 
-    email = provider_secrets.decrypt(credential_row["encrypted_username"])
+    username = provider_secrets.decrypt(credential_row["encrypted_username"])
     password = provider_secrets.decrypt(credential_row["encrypted_password"])
-    access_token, refresh_token, profile = fanteam.login(email, password)
+    access_token, refresh_token, profile = fanteam.login(username, password)
     cur.execute(
         "update provider_credentials set last_refreshed_at = now(), last_refresh_error = null where id = %s",
         (credential_row["id"],),
