@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { STRATEGIES, type Strategy } from "@/lib/recommendationScoring";
+import type { Strategy } from "@/lib/recommendationScoring";
 import { runAskMaryAnalysis, CAPTAIN_HORIZONS } from "@/lib/askMaryEngine";
 import GameweekPlanRow from "./GameweekPlanRow";
 import FavouredMoveCard from "./FavouredMoveCard";
@@ -19,9 +19,9 @@ type SquadPlayerForSummary = { game_player_id: number; game_players: { price: nu
 export default async function AskMaryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ squad?: string; horizon?: string; strategy?: string }>;
+  searchParams: Promise<{ squad?: string; horizon?: string }>;
 }) {
-  const { squad: squadParam, horizon: horizonParam, strategy: strategyParam } = await searchParams;
+  const { squad: squadParam, horizon: horizonParam } = await searchParams;
 
   const supabase = await createAuthServerClient();
   const {
@@ -96,29 +96,28 @@ export default async function AskMaryPage({
     CAPTAIN_HORIZONS.find((h) => h.key === horizonParam) ??
     CAPTAIN_HORIZONS.find((h) => h.gameweeks === selectedSquad.preferred_captain_horizon) ??
     CAPTAIN_HORIZONS[2];
-  const activeStrategy = (STRATEGIES.find((s) => s.key === strategyParam)?.key ??
-    selectedSquad.preferred_strategy ??
-    "balanced") as Strategy;
+  // Strategy is no longer user-selectable - always balanced. Kept as a
+  // literal (not removed from the analysis call) because
+  // predictions.strategy is NOT NULL with no default, so every archived
+  // recommendation still needs a real value to write.
+  const activeStrategy: Strategy = "balanced";
 
-  // Persist whenever the resolved settings actually differ from what's
-  // stored - covers both "user just clicked a pill" (URL param present)
-  // and nothing else, since prefetch is disabled on every settings Link
-  // below (prefetch={false}) so this only runs on a real navigation, not
-  // on hover. Confirmed real bug this was fixing: MaryRecommendationsPanel
-  // and saveTeamForGameweek both independently hardcoded "balanced"/1
-  // gameweek regardless of what a user had actually chosen here.
-  if (activeStrategy !== selectedSquad.preferred_strategy || captainHorizon.gameweeks !== selectedSquad.preferred_captain_horizon) {
+  // Persist whenever the resolved captain horizon actually differs from
+  // what's stored - covers "user just clicked a pill" (URL param
+  // present), since prefetch is disabled on every settings Link below
+  // (prefetch={false}) so this only runs on a real navigation, not on
+  // hover.
+  if (captainHorizon.gameweeks !== selectedSquad.preferred_captain_horizon) {
     await supabase
       .from("squads")
-      .update({ preferred_strategy: activeStrategy, preferred_captain_horizon: captainHorizon.gameweeks })
+      .update({ preferred_captain_horizon: captainHorizon.gameweeks })
       .eq("id", selectedSquad.id);
   }
 
-  function askMaryUrl(overrides: Partial<{ squad: number; horizon: string; strategy: string }>) {
+  function askMaryUrl(overrides: Partial<{ squad: number; horizon: string }>) {
     const params = new URLSearchParams();
     params.set("squad", String(overrides.squad ?? selectedSquad.id));
     params.set("horizon", overrides.horizon ?? captainHorizon.key);
-    params.set("strategy", overrides.strategy ?? activeStrategy);
     return `/ask-mary?${params.toString()}`;
   }
 
@@ -192,23 +191,6 @@ export default async function AskMaryPage({
                 }`}
               >
                 {h.label}
-              </Link>
-            ))}
-          </div>
-        </div>
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-navy-500">Strategy</p>
-          <div className="mt-1 flex flex-wrap gap-1 rounded-lg bg-navy-950 p-1">
-            {STRATEGIES.map((s) => (
-              <Link
-                key={s.key}
-                href={askMaryUrl({ strategy: s.key })}
-                prefetch={false}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                  s.key === activeStrategy ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
-                }`}
-              >
-                {s.label}
               </Link>
             ))}
           </div>
