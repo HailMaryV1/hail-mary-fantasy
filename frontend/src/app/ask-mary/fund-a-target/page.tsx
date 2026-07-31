@@ -1,0 +1,168 @@
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { createAuthServerClient } from "@/lib/supabaseServerClient";
+import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
+import { fetchPlayerOptions } from "@/lib/engineExplainability";
+import TargetPicker from "../TargetPicker";
+import FavouredMoveCard from "../FavouredMoveCard";
+import GameSecondaryNav from "../../GameSecondaryNav";
+
+// Same reasoning as ask-mary/page.tsx - the analysis depends on live
+// squad/budget state, not something Next's fetch cache should serve stale.
+export const dynamic = "force-dynamic";
+
+/**
+ * "Fund a Target" - the user-driven counterpart to Mary's own
+ * auto-discovered "Prepare for a Target" favoured move. You pick a
+ * specific player yourself instead of Mary ranking one from the pool;
+ * everything else (the funding search, transfer legality, Apply
+ * Transfer) is the exact same machinery, not a reimplementation - see
+ * askMaryEngine.ts's findFundingPathForTarget.
+ *
+ * Deliberately scoped to "can I afford this now via one legal
+ * downgrade" - not a multi-gameweek target-directed plan. That's a
+ * genuinely different, larger feature ("Build a Route"), out of scope
+ * here.
+ */
+export default async function FundATargetPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ squad?: string; player?: string }>;
+}) {
+  const { squad: squadParam, player: playerParam } = await searchParams;
+
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name").eq("slug", "fanteam").single();
+  if (!fanteamGameRow) {
+    return (
+      <div className="min-h-screen bg-navy-950 px-6 py-10">
+        <main className="mx-auto max-w-2xl">
+          <h1 className="text-2xl font-semibold text-white">Fund a Target</h1>
+          <p className="mt-4 text-sm text-red-400">FanTeam isn&apos;t configured on this platform yet.</p>
+        </main>
+      </div>
+    );
+  }
+  const fanteamGame = fanteamGameRow;
+
+  const { data: squadsRaw } = await supabase
+    .from("squads")
+    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, is_scratch")
+    .eq("user_id", user.id)
+    .eq("game_id", fanteamGame.id)
+    .order("created_at", { ascending: false });
+
+  const header = (
+    <div>
+      <div className="mb-4">
+        <GameSecondaryNav gameSlug="fanteam" gameDisplayName={fanteamGame.display_name} />
+      </div>
+      <h1 className="text-2xl font-semibold text-white">Fund a Target</h1>
+      <p className="mt-1 text-sm text-navy-300">
+        Pick any player and see whether a single legal sale elsewhere in your squad can afford them right now.
+      </p>
+      <Link href="/ask-mary" className="mt-2 inline-block text-xs font-medium text-sky-400 hover:text-sky-300">
+        ← Back to Ask Mary
+      </Link>
+    </div>
+  );
+
+  if (!squadsRaw || squadsRaw.length === 0) {
+    return (
+      <div className="min-h-screen bg-navy-950 px-6 py-10">
+        <main className="mx-auto max-w-2xl">
+          {header}
+          <p className="mt-8 text-sm text-navy-300">You don&apos;t have a FanTeam squad yet.</p>
+        </main>
+      </div>
+    );
+  }
+
+  const selectedSquad = squadsRaw.find((s) => s.id === Number(squadParam)) ?? squadsRaw[0];
+
+  const { data: squadPlayersRaw } = await supabase.from("squad_players").select("game_player_id").eq("squad_id", selectedSquad.id);
+  const ownedIds = new Set((squadPlayersRaw ?? []).map((p) => p.game_player_id));
+
+  const allOptions = await fetchPlayerOptions(supabase, "fanteam");
+  const targetOptions = allOptions.filter((p) => !ownedIds.has(p.gamePlayerId));
+
+  const targetGamePlayerId = playerParam ? Number(playerParam) : null;
+  const targetOption = targetGamePlayerId != null ? targetOptions.find((p) => p.gamePlayerId === targetGamePlayerId) ?? null : null;
+
+  const analysis =
+    targetOption != null
+      ? await runAskMaryAnalysis(supabase, selectedSquad, fanteamGame, "balanced", undefined, targetOption.gamePlayerId)
+      : null;
+
+  return (
+    <div className="min-h-screen bg-navy-950 px-6 py-10">
+      <main className="mx-auto max-w-2xl">
+        {header}
+
+        {squadsRaw.length > 1 && (
+          <div className="mt-4 flex flex-wrap gap-1 rounded-lg bg-navy-900 p-1">
+            {squadsRaw.map((s) => (
+              <Link
+                key={s.id}
+                href={`/ask-mary/fund-a-target?squad=${s.id}${targetGamePlayerId != null ? `&player=${targetGamePlayerId}` : ""}`}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                  s.id === selectedSquad.id ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
+                }`}
+              >
+                {s.name}
+                {s.is_scratch && <span className="ml-1 text-navy-500">(test)</span>}
+              </Link>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-4">
+          <TargetPicker players={targetOptions} squadId={selectedSquad.id} selectedId={targetOption?.gamePlayerId ?? null} />
+        </div>
+
+        {targetGamePlayerId != null && !targetOption && (
+          <p className="mt-4 text-sm text-amber-400">Couldn&apos;t find that player - they may already be in this squad.</p>
+        )}
+
+        {targetOption && !analysis && (
+          <p className="mt-4 text-sm text-red-400">Couldn&apos;t run the analysis for this squad - try again shortly.</p>
+        )}
+
+        {targetOption && analysis && (
+          <div className="mt-6">
+            {analysis.targetPlan ? (
+              <>
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-emerald-400">Fund now</h2>
+                <p className="mt-1 text-xs text-navy-500">
+                  A single legal sale elsewhere in your squad frees enough cash for {targetOption.fullName} right now.
+                </p>
+                <div className="mt-2">
+                  <FavouredMoveCard move={analysis.targetPlan} squadId={selectedSquad.id} gameSlug="fanteam" />
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-amber-400">No single-swap path found</h2>
+                <div className="mt-2 rounded-xl border border-navy-700 bg-navy-900 p-4">
+                  <p className="text-sm text-navy-200">
+                    {targetOption.fullName} costs £{targetOption.price.toFixed(1)}m and you have £{analysis.budgetRemaining.toFixed(1)}m
+                    in the bank - about £{Math.max(0, targetOption.price - analysis.budgetRemaining).toFixed(1)}m short. Mary couldn&apos;t
+                    find a single legal sale elsewhere in your squad that frees enough cash without a same-position clash.
+                  </p>
+                  <p className="mt-2 text-xs text-navy-400">
+                    A path might still exist through more than one sale, but that kind of multi-step search isn&apos;t built yet.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}

@@ -185,6 +185,12 @@ export type AskMaryAnalysis = {
   planningGameweek: number | null;
   gameweekPlan: GameweekPlanStep[];
   favouredMoves: FavouredMove[];
+  // Only set when the caller passes explicitTargetGamePlayerId - the
+  // "Fund a Target" workflow's result for that one player, or null if
+  // they weren't found in the pool or no funding path exists yet. Same
+  // shape as a favouredMoves entry (kind: "prepare_for_target") so it
+  // renders through the existing FavouredMoveCard unchanged.
+  targetPlan: FavouredMove | null;
   bestCaptain: CaptaincyPick | null;
   viceCaptain: CaptaincyPick | null;
   health: SquadHealthReport;
@@ -224,7 +230,11 @@ export async function runAskMaryAnalysis(
   },
   fanteamGame: { id: number; display_name: string },
   activeStrategy: Strategy,
-  recordPredictionsFn?: (records: PredictionRecord[]) => Promise<{ error?: string } | { recorded: number }>
+  recordPredictionsFn?: (records: PredictionRecord[]) => Promise<{ error?: string } | { recorded: number }>,
+  // "Fund a Target" - when set, also computes targetPlan for this one
+  // specific player (see buildTargetPlan below). Never affects
+  // gameweekPlan/favouredMoves/captain - purely additive.
+  explicitTargetGamePlayerId?: number
 ): Promise<AskMaryAnalysis | null> {
   // Captain/vice-captain is no longer horizon-selectable - always the
   // next gameweek only. Kept as a named local (not inlined at every call
@@ -1099,21 +1109,120 @@ export async function runAskMaryAnalysis(
     return { move: best.move, gain: best.gain, cost };
   }
 
+  // The reusable core of "prepare for / fund a target": given ONE
+  // specific target (already known, not ranked/discovered here), find
+  // the cheapest-in-points-lost legal single downgrade elsewhere in the
+  // squad that frees enough cash to afford them. Only ever returns a
+  // result when a real downgrade genuinely frees enough cash - never a
+  // wishful target with no legal path to it. Shared by both
+  // findPrepareForTargetMove (auto-discovers a target from the pool
+  // below) and the user-driven "Fund a Target" workflow
+  // (explicitTargetGamePlayerId), which calls this directly with a
+  // player the user picked themselves - same search, same legality
+  // engine, not two implementations.
+  function findFundingPathForTarget(
+    target: { gamePlayerId: number; fullName: string; teamName: string; price: number; position: "GK" | "DEF" | "MID" | "FWD" },
+    workingSquad: WorkingSquadPlayer[]
+  ): FavouredMove | null {
+    if (planningGameweek == null) return null;
+    const requiredCash = target.price - budgetRemaining;
+    if (requiredCash <= 0) return null; // already affordable outright - nothing to "fund"
+
+    const quickWinScoreMap = stepScoreMaps[0] ?? new Map();
+    const currentXITotal = optimalXITotal(workingSquad, quickWinScoreMap);
+    let best: { sell: WorkingSquadPlayer; buy: TransferCandidate; freed: number; pointCost: number } | null = null;
+
+    for (const sell of workingSquad) {
+      if (sell.position === target.position) continue; // that slot is reserved for the target, not for freeing cash
+      const sellScore = avgFor(quickWinScoreMap, sell.game_player_id);
+      const cheaperCandidates: TransferCandidate[] = (pool ?? [])
+        .filter((p) => p.position === sell.position && p.game_player_id !== sell.game_player_id && !squadIds.has(p.game_player_id) && Number(p.price) < sell.price)
+        .map((p) => ({
+          gamePlayerId: p.game_player_id,
+          fullName: p.full_name,
+          teamId: p.team_id,
+          teamName: p.team_name,
+          price: Number(p.price),
+          position: p.position,
+          score: avgFor(quickWinScoreMap, p.game_player_id),
+        }));
+      const legal = findLegalReplacementsForOutgoing(
+        cheaperCandidates,
+        {
+          gamePlayerId: sell.game_player_id,
+          fullName: sell.full_name,
+          teamId: sell.team_id,
+          teamName: sell.team_name,
+          price: sell.price,
+          score: sellScore,
+          position: sell.position,
+        },
+        squadIds,
+        budgetRemaining,
+        clubCounts,
+        rules.max_per_club
+      );
+      for (const match of legal) {
+        const freed = sell.price - match.candidate.price;
+        if (freed < requiredCash) continue;
+        const squadAfter = workingSquad.filter((p) => p.game_player_id !== sell.game_player_id).concat(toWorkingSquadPlayer(match.candidate));
+        const pointCost = currentXITotal - optimalXITotal(squadAfter, quickWinScoreMap);
+        if (!best || pointCost < best.pointCost) best = { sell, buy: match.candidate, freed, pointCost };
+      }
+    }
+    if (!best) return null; // this target isn't reachable via a single downgrade
+
+    const legScore = scoreMoveCandidates(
+      [buildLegInput(best.sell, best.buy, avgFor(quickWinScoreMap, best.sell.game_player_id), -best.pointCost).input],
+      activeStrategy
+    )[0];
+    const leg: BundleTransfer = {
+      outGamePlayerId: best.sell.game_player_id,
+      outName: best.sell.full_name,
+      outTeam: best.sell.team_name,
+      outPrice: best.sell.price,
+      inGamePlayerId: best.buy.gamePlayerId,
+      inName: best.buy.fullName,
+      inTeam: best.buy.teamName,
+      inPrice: best.buy.price,
+      position: best.sell.position,
+      pointsGain: Math.round(-best.pointCost * 10) / 10,
+      costPoints: 0,
+      risk: legScore.risk,
+      confidence: legScore.confidence,
+      overall: legScore.overall,
+      reasons: legScore.reasons,
+      warnings: legScore.warnings,
+    };
+    const weakestInTargetPosition = workingSquad
+      .filter((p) => p.position === target.position)
+      .map((p) => ({ p, score: avgFor(fiveGwMap, p.game_player_id) }))
+      .sort((a, b) => a.score - b.score)[0]?.p;
+    const writeup = `${leg.outName} → ${leg.inName} frees £${best.freed.toFixed(1)}m this week (costs ${Math.abs(leg.pointsGain).toFixed(1)} pts off your starting XI). That puts ${target.fullName} within reach${
+      weakestInTargetPosition ? ` - the likely swap for ${weakestInTargetPosition.full_name} once you've got a free transfer to spend on it` : ""
+    }.`;
+
+    return {
+      kind: "prepare_for_target",
+      label: "Prepare for a Target",
+      transfers: [leg],
+      hold: false,
+      horizonGameweeks: 5,
+      projectedGainOverHorizon: Math.round(-best.pointCost * 10) / 10,
+      writeup,
+      targetPlayer: { gamePlayerId: target.gamePlayerId, fullName: target.fullName, teamName: target.teamName, price: target.price },
+    };
+  }
+
   /**
    * "Prepare for a Target" - the 5th favoured move, and the only one that
-   * looks beyond what's legally affordable right now. The other options
-   * can only ever suggest a transfer that clears its own cost THIS
-   * gameweek; this one instead asks "is there a genuinely elite player
-   * just out of reach, and is there a small downgrade elsewhere that would
-   * free enough cash to reach them?" - described as a two-step idea (do
-   * the downgrade now, bring the target in once a free transfer's
-   * available), not itself a committed step of gameweekPlan. Only ever
-   * returned when a real downgrade genuinely frees enough cash - never a
-   * wishful target with no legal path to it.
+   * looks beyond what's legally affordable right now. Auto-discovers a
+   * target: ranks the top 15 currently-unaffordable pool players by
+   * 5-GW score, then tries findFundingPathForTarget against each in
+   * order until one is genuinely reachable via a single downgrade.
    */
   function findPrepareForTargetMove(workingSquad: WorkingSquadPlayer[]): FavouredMove | null {
     if (planningGameweek == null) return null;
-    const quickWinScoreMap = stepScoreMaps[0] ?? new Map();
 
     const targetCandidates = (pool ?? [])
       .filter((p) => !squadIds.has(p.game_player_id))
@@ -1130,92 +1239,9 @@ export async function runAskMaryAnalysis(
       .sort((a, b) => b.score - a.score)
       .slice(0, 15);
 
-    const currentXITotal = optimalXITotal(workingSquad, quickWinScoreMap);
-
     for (const target of targetCandidates) {
-      const requiredCash = target.price - budgetRemaining;
-      let best: { sell: WorkingSquadPlayer; buy: TransferCandidate; freed: number; pointCost: number } | null = null;
-
-      for (const sell of workingSquad) {
-        if (sell.position === target.position) continue; // that slot is reserved for the target, not for freeing cash
-        const sellScore = avgFor(quickWinScoreMap, sell.game_player_id);
-        const cheaperCandidates: TransferCandidate[] = (pool ?? [])
-          .filter((p) => p.position === sell.position && p.game_player_id !== sell.game_player_id && !squadIds.has(p.game_player_id) && Number(p.price) < sell.price)
-          .map((p) => ({
-            gamePlayerId: p.game_player_id,
-            fullName: p.full_name,
-            teamId: p.team_id,
-            teamName: p.team_name,
-            price: Number(p.price),
-            position: p.position,
-            score: avgFor(quickWinScoreMap, p.game_player_id),
-          }));
-        const legal = findLegalReplacementsForOutgoing(
-          cheaperCandidates,
-          {
-            gamePlayerId: sell.game_player_id,
-            fullName: sell.full_name,
-            teamId: sell.team_id,
-            teamName: sell.team_name,
-            price: sell.price,
-            score: sellScore,
-            position: sell.position,
-          },
-          squadIds,
-          budgetRemaining,
-          clubCounts,
-          rules.max_per_club
-        );
-        for (const match of legal) {
-          const freed = sell.price - match.candidate.price;
-          if (freed < requiredCash) continue;
-          const squadAfter = workingSquad.filter((p) => p.game_player_id !== sell.game_player_id).concat(toWorkingSquadPlayer(match.candidate));
-          const pointCost = currentXITotal - optimalXITotal(squadAfter, quickWinScoreMap);
-          if (!best || pointCost < best.pointCost) best = { sell, buy: match.candidate, freed, pointCost };
-        }
-      }
-      if (!best) continue; // this target isn't reachable via a single downgrade - try the next-best target
-
-      const legScore = scoreMoveCandidates(
-        [buildLegInput(best.sell, best.buy, avgFor(quickWinScoreMap, best.sell.game_player_id), -best.pointCost).input],
-        activeStrategy
-      )[0];
-      const leg: BundleTransfer = {
-        outGamePlayerId: best.sell.game_player_id,
-        outName: best.sell.full_name,
-        outTeam: best.sell.team_name,
-        outPrice: best.sell.price,
-        inGamePlayerId: best.buy.gamePlayerId,
-        inName: best.buy.fullName,
-        inTeam: best.buy.teamName,
-        inPrice: best.buy.price,
-        position: best.sell.position,
-        pointsGain: Math.round(-best.pointCost * 10) / 10,
-        costPoints: 0,
-        risk: legScore.risk,
-        confidence: legScore.confidence,
-        overall: legScore.overall,
-        reasons: legScore.reasons,
-        warnings: legScore.warnings,
-      };
-      const weakestInTargetPosition = workingSquad
-        .filter((p) => p.position === target.position)
-        .map((p) => ({ p, score: avgFor(fiveGwMap, p.game_player_id) }))
-        .sort((a, b) => a.score - b.score)[0]?.p;
-      const writeup = `${leg.outName} → ${leg.inName} frees £${best.freed.toFixed(1)}m this week (costs ${Math.abs(leg.pointsGain).toFixed(1)} pts off your starting XI). That puts ${target.fullName} within reach${
-        weakestInTargetPosition ? ` - the likely swap for ${weakestInTargetPosition.full_name} once you've got a free transfer to spend on it` : ""
-      }.`;
-
-      return {
-        kind: "prepare_for_target",
-        label: "Prepare for a Target",
-        transfers: [leg],
-        hold: false,
-        horizonGameweeks: 5,
-        projectedGainOverHorizon: Math.round(-best.pointCost * 10) / 10,
-        writeup,
-        targetPlayer: { gamePlayerId: target.gamePlayerId, fullName: target.fullName, teamName: target.teamName, price: target.price },
-      };
+      const result = findFundingPathForTarget(target, workingSquad);
+      if (result) return result;
     }
     return null;
   }
@@ -1326,8 +1352,40 @@ export async function runAskMaryAnalysis(
     return moves;
   }
 
+  // "Fund a Target" - the user-driven counterpart to
+  // findPrepareForTargetMove above: instead of Mary auto-discovering a
+  // target from the top of the pool, the caller names one explicitly
+  // (a player they picked themselves). Reuses findFundingPathForTarget
+  // directly - same search, same legality engine, no separate
+  // implementation. Returns null (not an error) when the named player
+  // can't be found in this game's pool, or when no funding path exists -
+  // the caller decides how to present "not reachable right now."
+  function buildTargetPlan(explicitTargetGamePlayerId: number): FavouredMove | null {
+    const targetRow = (pool ?? []).find((p) => p.game_player_id === explicitTargetGamePlayerId);
+    if (!targetRow || squadIds.has(targetRow.game_player_id)) return null;
+    const workingSquad: WorkingSquadPlayer[] = squadPlayers.map((p) => ({
+      game_player_id: p.game_player_id,
+      full_name: p.full_name,
+      position: p.position,
+      team_id: p.team_id,
+      team_name: p.team_name,
+      price: p.price,
+    }));
+    return findFundingPathForTarget(
+      {
+        gamePlayerId: targetRow.game_player_id,
+        fullName: targetRow.full_name,
+        teamName: targetRow.team_name,
+        price: Number(targetRow.price),
+        position: targetRow.position,
+      },
+      workingSquad
+    );
+  }
+
   const gameweekPlan = buildGameweekPlan();
   const favouredMoves = buildFavouredMoves();
+  const targetPlan = explicitTargetGamePlayerId != null ? buildTargetPlan(explicitTargetGamePlayerId) : null;
 
   const positionAverages: Record<string, number> = {};
   for (const pos of ["GK", "DEF", "MID", "FWD"]) {
@@ -1532,6 +1590,7 @@ export async function runAskMaryAnalysis(
     planningGameweek,
     gameweekPlan,
     favouredMoves,
+    targetPlan,
     bestCaptain,
     viceCaptain,
     health,

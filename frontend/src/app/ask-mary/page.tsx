@@ -283,7 +283,12 @@ export default async function AskMaryPage({
 
             {favouredMoves.length > 0 && (
               <div>
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Favoured Moves</h2>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Favoured Moves</h2>
+                  <Link href={`/ask-mary/fund-a-target?squad=${selectedSquad.id}`} className="text-xs font-medium text-sky-400 hover:text-sky-300">
+                    Fund a Target →
+                  </Link>
+                </div>
                 <p className="mt-1 text-xs text-navy-500">
                   Independent options for right now, viewed through different lenses - pick whichever fits how you want to
                   play this gameweek. These aren&apos;t steps of each other.
