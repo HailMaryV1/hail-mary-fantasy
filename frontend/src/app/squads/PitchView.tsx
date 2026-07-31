@@ -22,6 +22,14 @@ export type PitchPlayer = {
   // bench player - null for starters, the reserve GK (always exactly
   // one, nothing to order), and any game with no bench concept at all.
   benchOrder?: number | null;
+  // Real captain/vice-captain, straight from squads.captain_game_player_id/
+  // vice_captain_game_player_id - shown as a plain pill on the chip
+  // itself rather than a separate editable picker for provider-synced
+  // squads (FanTeam), where captaincy comes from the real FanTeam team
+  // and any manual change here would just be overwritten by the next
+  // sync anyway.
+  isCaptain?: boolean;
+  isViceCaptain?: boolean;
 };
 
 type Formation = { gk: number; def: number; mid: number; fwd: number };
@@ -79,7 +87,7 @@ export default function PitchView({
         <button
           onClick={() => isClickable && onSelect(player, zone)}
           disabled={!isClickable}
-          className={`flex w-14 flex-col items-center rounded-lg px-1 py-1.5 text-center transition-opacity sm:w-20 md:w-24 ${
+          className={`relative flex w-14 flex-col items-center rounded-lg px-1 py-1.5 text-center transition-opacity sm:w-20 md:w-24 ${
             isSelected
               ? "bg-navy-900 ring-2 ring-sky-400"
               : isClickable
@@ -87,6 +95,16 @@ export default function PitchView({
                 : "cursor-not-allowed bg-navy-900/40 opacity-40"
           }`}
         >
+          {(player.isCaptain || player.isViceCaptain) && (
+            <span
+              title={player.isCaptain ? "Captain" : "Vice-captain"}
+              className={`absolute left-0.5 top-0.5 rounded px-1 py-0.5 text-[9px] font-bold leading-none ${
+                player.isCaptain ? "bg-amber-500 text-navy-950" : "bg-navy-700 text-white"
+              }`}
+            >
+              {player.isCaptain ? "C" : "VC"}
+            </span>
+          )}
           <Kit teamName={player.team_name} size="lg" />
           <span className="w-full min-w-0 truncate text-[10px] font-medium text-white sm:text-xs" title={player.full_name}>
             {shortenPlayerName(player.full_name)}

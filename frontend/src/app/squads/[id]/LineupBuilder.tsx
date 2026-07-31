@@ -26,6 +26,8 @@ type Player = {
   lineup?: string | null;
   status?: string | null;
   formStatus?: FormStatus | null;
+  is_captain?: boolean;
+  is_vice_captain?: boolean;
 };
 
 type Formation = {
@@ -586,8 +588,13 @@ export default function LineupBuilder({
       </p>
 
       <PitchView
-        starting={startingPlayers}
-        bench={benchPlayers.map((p) => ({ ...p, benchOrder: p.position === "GK" ? null : benchOrderIds.indexOf(p.game_player_id) + 1 || null }))}
+        starting={startingPlayers.map((p) => ({ ...p, isCaptain: p.is_captain, isViceCaptain: p.is_vice_captain }))}
+        bench={benchPlayers.map((p) => ({
+          ...p,
+          isCaptain: p.is_captain,
+          isViceCaptain: p.is_vice_captain,
+          benchOrder: p.position === "GK" ? null : benchOrderIds.indexOf(p.game_player_id) + 1 || null,
+        }))}
         selectedId={selectedForSwapId}
         swappableIds={swappableIds}
         onSelect={handlePitchSelect}

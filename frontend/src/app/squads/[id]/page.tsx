@@ -159,6 +159,8 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
     lineup: poolByGamePlayerId.get(sp.game_player_id)?.lineup ?? null,
     status: poolByGamePlayerId.get(sp.game_player_id)?.status ?? null,
     formStatus: formByGamePlayerId.get(sp.game_player_id)?.status ?? null,
+    is_captain: sp.game_player_id === squad.captain_game_player_id,
+    is_vice_captain: sp.game_player_id === squad.vice_captain_game_player_id,
   }));
 
   const budgetRemaining = Number(rules.budget) - players.reduce((sum, p) => sum + p.price, 0);
@@ -480,19 +482,29 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
             />
           </div>
 
-          <div className="mt-10">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Captain</h2>
-            <div className="mt-2">
-              <CaptainPicker
-                squadId={squad.id}
-                starters={starters}
-                currentCaptainId={squad.captain_game_player_id}
-                currentViceCaptainId={squad.vice_captain_game_player_id}
-                recommendedCaptain={analysis?.bestCaptain ? { game_player_id: analysis.bestCaptain.game_player_id, full_name: analysis.bestCaptain.full_name } : null}
-                recommendedVice={analysis?.viceCaptain ? { game_player_id: analysis.viceCaptain.game_player_id, full_name: analysis.viceCaptain.full_name } : null}
-              />
+          {/* FanTeam squads get their captain/vice-captain straight from
+              the real FanTeam entry (see apply_squad's is_captain/
+              is_vice_captain detection) - shown as C/VC pills directly
+              on the pitch chips above, not a separate editable picker,
+              since FanTeam is the source of truth and any change made
+              here would just be overwritten by the next sync anyway.
+              Dream Team/Cloud FF have no real captain sync yet, so they
+              still need manual selection. */}
+          {providerLink?.provider !== "fanteam_scoutgg" && (
+            <div className="mt-10">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Captain</h2>
+              <div className="mt-2">
+                <CaptainPicker
+                  squadId={squad.id}
+                  starters={starters}
+                  currentCaptainId={squad.captain_game_player_id}
+                  currentViceCaptainId={squad.vice_captain_game_player_id}
+                  recommendedCaptain={analysis?.bestCaptain ? { game_player_id: analysis.bestCaptain.game_player_id, full_name: analysis.bestCaptain.full_name } : null}
+                  recommendedVice={analysis?.viceCaptain ? { game_player_id: analysis.viceCaptain.game_player_id, full_name: analysis.viceCaptain.full_name } : null}
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           {game.slug === "fanteam" && (
             <div className="mt-10">
