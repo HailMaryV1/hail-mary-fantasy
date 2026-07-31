@@ -23,9 +23,11 @@ const KIND_TONE: Record<FavouredMove["kind"], string> = {
 /**
  * One of Ask Mary's "5 favoured moves" - a genuinely independent
  * alternative to pick from, not a step in a committed sequence (see
- * GameweekPlanRow for that). Reuses applyRecommendation directly since a
- * favoured move's single transfer leg is exactly what that action already
- * expects - no new server action needed for this feature.
+ * GameweekPlanRow for that). Reuses applyRecommendation directly, sending
+ * every leg in move.transfers as one bundle - almost always just 1 leg,
+ * but "Fund a Target" can produce 2 (a mandatory same-position swap for
+ * the target, plus one further downgrade elsewhere to close any
+ * remaining gap) - see askMaryEngine.ts's findFundingPathForTarget.
  */
 export default function FavouredMoveCard({ move, squadId, gameSlug }: { move: FavouredMove; squadId: number; gameSlug: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -33,15 +35,15 @@ export default function FavouredMoveCard({ move, squadId, gameSlug }: { move: Fa
   const [error, setError] = useState<string | null>(null);
   const [applied, setApplied] = useState(false);
 
-  const leg = move.transfers[0];
+  const legs = move.transfers;
 
   function handleApply() {
-    if (!leg) return;
+    if (legs.length === 0) return;
     setError(null);
     startTransition(async () => {
       const result = await applyRecommendation({
         squadId,
-        transfers: [{ outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId }],
+        transfers: legs.map((leg) => ({ outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId })),
       });
       if (result?.error) setError(result.error);
       else setApplied(true);
@@ -52,6 +54,9 @@ export default function FavouredMoveCard({ move, squadId, gameSlug }: { move: Fa
     <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
       <div className="flex flex-wrap items-center gap-2">
         <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${KIND_TONE[move.kind]}`}>{move.label}</span>
+        {legs.length > 1 && (
+          <span className="rounded-full bg-navy-800 px-2 py-0.5 text-xs font-semibold text-navy-300">{legs.length} transfers</span>
+        )}
         {!move.hold && (
           <span
             className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
@@ -64,18 +69,23 @@ export default function FavouredMoveCard({ move, squadId, gameSlug }: { move: Fa
         )}
       </div>
 
-      {leg ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-navy-400">{leg.position} ·</span>
-          <span className="text-white">{leg.outName}</span>
-          <span className="text-navy-500">(£{leg.outPrice.toFixed(1)}m)</span>
-          <span className="text-navy-500">→</span>
-          <span className="inline-flex items-center font-medium text-white">
-            {leg.inName}
-            <FormPill status={leg.inFormStatus} />
-          </span>
-          <span className="text-navy-500">(£{leg.inPrice.toFixed(1)}m)</span>
-          <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${RISK_TONE[leg.risk]}`}>{leg.risk} risk</span>
+      {legs.length > 0 ? (
+        <div className="mt-2 flex flex-col gap-1.5">
+          {legs.map((leg, i) => (
+            <div key={`${leg.outGamePlayerId}-${leg.inGamePlayerId}`} className="flex flex-wrap items-center gap-2 text-sm">
+              {legs.length > 1 && <span className="text-[10px] font-medium uppercase tracking-wide text-navy-500">#{i + 1}</span>}
+              <span className="text-navy-400">{leg.position} ·</span>
+              <span className="text-white">{leg.outName}</span>
+              <span className="text-navy-500">(£{leg.outPrice.toFixed(1)}m)</span>
+              <span className="text-navy-500">→</span>
+              <span className="inline-flex items-center font-medium text-white">
+                {leg.inName}
+                <FormPill status={leg.inFormStatus} />
+              </span>
+              <span className="text-navy-500">(£{leg.inPrice.toFixed(1)}m)</span>
+              <span className={`ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${RISK_TONE[leg.risk]}`}>{leg.risk} risk</span>
+            </div>
+          ))}
         </div>
       ) : (
         <p className="mt-2 text-sm text-navy-200">Make no transfers this gameweek.</p>
@@ -89,39 +99,48 @@ export default function FavouredMoveCard({ move, squadId, gameSlug }: { move: Fa
         </p>
       )}
 
-      {leg && (
+      {legs.length > 0 && (
         <>
           <button onClick={() => setExpanded((e) => !e)} className="mt-2 text-xs font-medium text-sky-400 hover:text-sky-300">
             {expanded ? "Hide detail" : "Why Mary suggests this"}
           </button>
           {expanded && (
-            <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <p className="text-[10px] font-medium uppercase tracking-wide text-emerald-400">Reasons</p>
-                <ul className="mt-1 list-inside list-disc text-xs text-navy-300">
-                  {leg.reasons.map((r) => (
-                    <li key={r.code}>{r.text}</li>
-                  ))}
-                </ul>
-              </div>
-              {leg.warnings.length > 0 && (
-                <div>
-                  <p className="text-[10px] font-medium uppercase tracking-wide text-amber-400">Risks</p>
-                  <ul className="mt-1 list-inside list-disc text-xs text-navy-300">
-                    {leg.warnings.map((w) => (
-                      <li key={w.code}>{w.text}</li>
-                    ))}
-                  </ul>
+            <div className="mt-2 flex flex-col gap-3">
+              {legs.map((leg, i) => (
+                <div key={`${leg.outGamePlayerId}-${leg.inGamePlayerId}-detail`} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {legs.length > 1 && (
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500 sm:col-span-2">
+                      Transfer {i + 1}: {leg.outName} → {leg.inName}
+                    </p>
+                  )}
+                  <div>
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-emerald-400">Reasons</p>
+                    <ul className="mt-1 list-inside list-disc text-xs text-navy-300">
+                      {leg.reasons.map((r) => (
+                        <li key={r.code}>{r.text}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  {leg.warnings.length > 0 && (
+                    <div>
+                      <p className="text-[10px] font-medium uppercase tracking-wide text-amber-400">Risks</p>
+                      <ul className="mt-1 list-inside list-disc text-xs text-navy-300">
+                        {leg.warnings.map((w) => (
+                          <li key={w.code}>{w.text}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <div className="flex gap-3 sm:col-span-2">
+                    <Link href={`/algorithm-explain?game=${gameSlug}&player=${leg.outGamePlayerId}`} className="text-[10px] font-medium text-sky-400 hover:text-sky-300">
+                      Engine Validation: {leg.outName} →
+                    </Link>
+                    <Link href={`/algorithm-explain?game=${gameSlug}&player=${leg.inGamePlayerId}`} className="text-[10px] font-medium text-sky-400 hover:text-sky-300">
+                      Engine Validation: {leg.inName} →
+                    </Link>
+                  </div>
                 </div>
-              )}
-              <div className="flex gap-3 sm:col-span-2">
-                <Link href={`/algorithm-explain?game=${gameSlug}&player=${leg.outGamePlayerId}`} className="text-[10px] font-medium text-sky-400 hover:text-sky-300">
-                  Engine Validation: {leg.outName} →
-                </Link>
-                <Link href={`/algorithm-explain?game=${gameSlug}&player=${leg.inGamePlayerId}`} className="text-[10px] font-medium text-sky-400 hover:text-sky-300">
-                  Engine Validation: {leg.inName} →
-                </Link>
-              </div>
+              ))}
             </div>
           )}
         </>
@@ -129,13 +148,13 @@ export default function FavouredMoveCard({ move, squadId, gameSlug }: { move: Fa
 
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
 
-      {leg && !applied && (
+      {legs.length > 0 && !applied && (
         <button
           onClick={handleApply}
           disabled={isPending}
           className="mt-3 rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-medium text-navy-950 hover:bg-sky-400 disabled:opacity-40"
         >
-          {isPending ? "Applying..." : "Apply this move"}
+          {isPending ? "Applying..." : legs.length > 1 ? `Apply these ${legs.length} transfers` : "Apply this move"}
         </button>
       )}
       {applied && <p className="mt-3 text-xs font-medium text-emerald-400">Applied to your squad.</p>}

@@ -64,7 +64,8 @@ export default async function FundATargetPage({
       </div>
       <h1 className="text-2xl font-semibold text-white">Fund a Target</h1>
       <p className="mt-1 text-sm text-navy-300">
-        Pick any player and see whether a single legal sale elsewhere in your squad can afford them right now.
+        Pick any player and see whether a same-position swap - plus, if needed, one further legal sale elsewhere - can afford
+        them right now.
       </p>
       <Link href="/ask-mary" className="mt-2 inline-block text-xs font-medium text-sky-400 hover:text-sky-300">
         ← Back to Ask Mary
@@ -135,27 +136,45 @@ export default async function FundATargetPage({
 
         {targetOption && analysis && (
           <div className="mt-6">
-            {analysis.targetPlan ? (
+            {analysis.targetPlan?.move ? (
               <>
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-emerald-400">Fund now</h2>
                 <p className="mt-1 text-xs text-navy-500">
-                  A single legal sale elsewhere in your squad frees enough cash for {targetOption.fullName} right now.
+                  {analysis.targetPlan.move.transfers.length > 1
+                    ? `A same-position swap for ${targetOption.fullName}, plus one further legal sale elsewhere in your squad, together fund them right now.`
+                    : `${targetOption.fullName} directly replaces one of your own squad in the same position - already affordable, no further sale needed.`}
                 </p>
                 <div className="mt-2">
-                  <FavouredMoveCard move={analysis.targetPlan} squadId={selectedSquad.id} gameSlug="fanteam" />
+                  <FavouredMoveCard move={analysis.targetPlan.move} squadId={selectedSquad.id} gameSlug="fanteam" />
                 </div>
               </>
             ) : (
               <>
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-amber-400">No single-swap path found</h2>
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-amber-400">No two-transfer funding route found</h2>
                 <div className="mt-2 rounded-xl border border-navy-700 bg-navy-900 p-4">
                   <p className="text-sm text-navy-200">
-                    {targetOption.fullName} costs £{targetOption.price.toFixed(1)}m and you have £{analysis.budgetRemaining.toFixed(1)}m
-                    in the bank - about £{Math.max(0, targetOption.price - analysis.budgetRemaining).toFixed(1)}m short. Mary couldn&apos;t
-                    find a single legal sale elsewhere in your squad that frees enough cash without a same-position clash.
+                    {targetOption.fullName} costs £{targetOption.price.toFixed(1)}m. Mary tested replacing one of your own{" "}
+                    {targetOption.position}s with {targetOption.fullName} directly - using that player&apos;s sale value plus your
+                    £{analysis.budgetRemaining.toFixed(1)}m in the bank - and, where that alone fell short, one further legal downgrade
+                    elsewhere to close the gap. Neither closes it right now.
                   </p>
+                  {analysis.targetPlan?.closestShortfall ? (
+                    <p className="mt-2 text-sm text-navy-200">
+                      Closest attempt: selling {analysis.targetPlan.closestShortfall.primaryOutName} to bring in{" "}
+                      {targetOption.fullName}
+                      {analysis.targetPlan.closestShortfall.secondaryOutName && analysis.targetPlan.closestShortfall.secondaryInName
+                        ? `, plus ${analysis.targetPlan.closestShortfall.secondaryOutName} → ${analysis.targetPlan.closestShortfall.secondaryInName}`
+                        : ""}{" "}
+                      - still about £{analysis.targetPlan.closestShortfall.amount.toFixed(1)}m short.
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-sm text-navy-200">
+                      Mary couldn&apos;t find any legal same-position replacement to try for this target - check your squad&apos;s club
+                      limits at {targetOption.teamName}.
+                    </p>
+                  )}
                   <p className="mt-2 text-xs text-navy-400">
-                    A path might still exist through more than one sale, but that kind of multi-step search isn&apos;t built yet.
+                    A path might still exist through more than two transfers, but that kind of multi-step search isn&apos;t built yet.
                   </p>
                 </div>
               </>

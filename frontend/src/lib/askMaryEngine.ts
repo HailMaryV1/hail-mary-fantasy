@@ -118,6 +118,25 @@ export type FavouredMove = {
   targetPlayer?: { gamePlayerId: number; fullName: string; teamName: string; price: number };
 };
 
+/** How much more cash the closest route Mary tried for a target would still need. */
+export type TargetFundingShortfall = {
+  amount: number;
+  primaryOutName: string;
+  // Set only when a second downgrade was actually tried for this route -
+  // null means the same-position swap alone was the closest attempt.
+  secondaryOutName: string | null;
+  secondaryInName: string | null;
+};
+
+export type TargetPlanResult = {
+  move: FavouredMove | null;
+  // Set only when move is null - the closest route Mary actually found
+  // (a same-position swap, optionally plus one further legal downgrade
+  // elsewhere), so "not reachable" can show a real number instead of the
+  // target's full price.
+  closestShortfall: TargetFundingShortfall | null;
+};
+
 type PoolRow = {
   game_player_id: number;
   full_name: string;
@@ -186,11 +205,13 @@ export type AskMaryAnalysis = {
   gameweekPlan: GameweekPlanStep[];
   favouredMoves: FavouredMove[];
   // Only set when the caller passes explicitTargetGamePlayerId - the
-  // "Fund a Target" workflow's result for that one player, or null if
-  // they weren't found in the pool or no funding path exists yet. Same
-  // shape as a favouredMoves entry (kind: "prepare_for_target") so it
-  // renders through the existing FavouredMoveCard unchanged.
-  targetPlan: FavouredMove | null;
+  // "Fund a Target" workflow's result for that one player. Null overall
+  // means the player wasn't found in the pool (or is already owned);
+  // otherwise `move` is the same shape as a favouredMoves entry (kind:
+  // "prepare_for_target") so it renders through the existing
+  // FavouredMoveCard unchanged, or null with closestShortfall set when no
+  // route was found - see TargetPlanResult.
+  targetPlan: TargetPlanResult | null;
   bestCaptain: CaptaincyPick | null;
   viceCaptain: CaptaincyPick | null;
   health: SquadHealthReport;
@@ -1110,107 +1131,293 @@ export async function runAskMaryAnalysis(
   }
 
   // The reusable core of "prepare for / fund a target": given ONE
-  // specific target (already known, not ranked/discovered here), find
-  // the cheapest-in-points-lost legal single downgrade elsewhere in the
-  // squad that frees enough cash to afford them. Only ever returns a
-  // result when a real downgrade genuinely frees enough cash - never a
-  // wishful target with no legal path to it. Shared by both
-  // findPrepareForTargetMove (auto-discovers a target from the pool
-  // below) and the user-driven "Fund a Target" workflow
+  // specific target (already known, not ranked/discovered here), searches
+  // for every real, immediately-appliable route onto the squad: (1) the
+  // target directly replaces one of the squad's own players in the SAME
+  // position - the only kind of swap the squad's fixed position quotas
+  // allow, so this is mandatory, not optional, and its sale value is real
+  // cash toward the price; (2) if that alone isn't enough, ONE further
+  // legal downgrade elsewhere in the squad to close the remaining gap.
+  // Both legs are validated sequentially through the same
+  // findLegalReplacementsForOutgoing legality engine every other transfer
+  // surface in this app uses - leg 2 is checked against the squad/budget/
+  // club-count state AFTER leg 1, the same way applyRecommendation itself
+  // validates a bundle - PLUS a final holistic club-count check across
+  // both legs together (routeClubCountsLegal below), since a leg's own
+  // pairwise check only ever validates its own incoming player's club,
+  // not a third player's (e.g. selling a DIFFERENT club's player to fund
+  // a target whose own club is already at cap must still be rejected -
+  // only a same-club secondary sale can legally cure that, and this is
+  // how a legitimate one gets found rather than a false positive).
+  // Every fully-legal route found is scored with the same weighted
+  // recommendation model every other Ask Mary move is judged by
+  // (scoreMoveCandidates), and the highest-scoring one wins - not just
+  // whichever was found first, and not just whichever costs the fewest
+  // realized points, so this reflects projection gain, opportunity,
+  // price efficiency and the active strategy weighting together, same as
+  // every other move in this file. When nothing closes the gap, also
+  // reports the closest legal attempt found (see TargetFundingShortfall)
+  // so the caller can show a truthful number instead of guessing. Shared
+  // by both findPrepareForTargetMove (auto-discovers a target from the
+  // pool below) and the user-driven "Fund a Target" workflow
   // (explicitTargetGamePlayerId), which calls this directly with a
   // player the user picked themselves - same search, same legality
   // engine, not two implementations.
   function findFundingPathForTarget(
-    target: { gamePlayerId: number; fullName: string; teamName: string; price: number; position: "GK" | "DEF" | "MID" | "FWD" },
+    target: { gamePlayerId: number; fullName: string; teamId: number; teamName: string; price: number; position: "GK" | "DEF" | "MID" | "FWD" },
     workingSquad: WorkingSquadPlayer[]
-  ): FavouredMove | null {
-    if (planningGameweek == null) return null;
-    const requiredCash = target.price - budgetRemaining;
-    if (requiredCash <= 0) return null; // already affordable outright - nothing to "fund"
+  ): TargetPlanResult {
+    const notReachable: TargetPlanResult = { move: null, closestShortfall: null };
+    if (planningGameweek == null) return notReachable;
 
     const quickWinScoreMap = stepScoreMaps[0] ?? new Map();
     const currentXITotal = optimalXITotal(workingSquad, quickWinScoreMap);
-    let best: { sell: WorkingSquadPlayer; buy: TransferCandidate; freed: number; pointCost: number } | null = null;
 
-    for (const sell of workingSquad) {
-      if (sell.position === target.position) continue; // that slot is reserved for the target, not for freeing cash
-      const sellScore = avgFor(quickWinScoreMap, sell.game_player_id);
-      const cheaperCandidates: TransferCandidate[] = (pool ?? [])
-        .filter((p) => p.position === sell.position && p.game_player_id !== sell.game_player_id && !squadIds.has(p.game_player_id) && Number(p.price) < sell.price)
-        .map((p) => ({
-          gamePlayerId: p.game_player_id,
-          fullName: p.full_name,
-          teamId: p.team_id,
-          teamName: p.team_name,
-          price: Number(p.price),
-          position: p.position,
-          score: avgFor(quickWinScoreMap, p.game_player_id),
-        }));
-      const legal = findLegalReplacementsForOutgoing(
-        cheaperCandidates,
-        {
-          gamePlayerId: sell.game_player_id,
-          fullName: sell.full_name,
-          teamId: sell.team_id,
-          teamName: sell.team_name,
-          price: sell.price,
-          score: sellScore,
-          position: sell.position,
-        },
-        squadIds,
-        budgetRemaining,
-        clubCounts,
-        rules.max_per_club
-      );
-      for (const match of legal) {
-        const freed = sell.price - match.candidate.price;
-        if (freed < requiredCash) continue;
-        const squadAfter = workingSquad.filter((p) => p.game_player_id !== sell.game_player_id).concat(toWorkingSquadPlayer(match.candidate));
-        const pointCost = currentXITotal - optimalXITotal(squadAfter, quickWinScoreMap);
-        if (!best || pointCost < best.pointCost) best = { sell, buy: match.candidate, freed, pointCost };
+    const targetCandidate: TransferCandidate = {
+      gamePlayerId: target.gamePlayerId,
+      fullName: target.fullName,
+      teamId: target.teamId,
+      teamName: target.teamName,
+      price: target.price,
+      position: target.position,
+      score: avgFor(quickWinScoreMap, target.gamePlayerId),
+    };
+
+    function toCandidate(p: WorkingSquadPlayer): TransferCandidate {
+      return {
+        gamePlayerId: p.game_player_id,
+        fullName: p.full_name,
+        teamId: p.team_id,
+        teamName: p.team_name,
+        price: p.price,
+        position: p.position,
+        score: avgFor(quickWinScoreMap, p.game_player_id),
+      };
+    }
+
+    // Holistic final check across the WHOLE route (not incremental map
+    // bookkeeping) - every club's final count, computed fresh from the
+    // real starting clubCounts, must respect the cap. Catches the case a
+    // single-leg pairwise check structurally can't: a third club (the
+    // target's) breaching its cap because of what a DIFFERENT leg's own
+    // check never looks at.
+    function routeClubCountsLegal(removed: { team_id: number }[], added: { teamId: number }[]): boolean {
+      if (rules.max_per_club == null) return true;
+      const counts = new Map(clubCounts);
+      for (const r of removed) counts.set(r.team_id, (counts.get(r.team_id) ?? 0) - 1);
+      for (const a of added) counts.set(a.teamId, (counts.get(a.teamId) ?? 0) + 1);
+      for (const c of counts.values()) if (c > rules.max_per_club) return false;
+      return true;
+    }
+
+    type RouteCandidate = {
+      primaryOut: WorkingSquadPlayer;
+      secondaryOut: WorkingSquadPlayer | null;
+      secondaryIn: TransferCandidate | null;
+      pointCost: number;
+      // Sequential attribution (same principle as findBestPairBundle) -
+      // primaryGain is measured against the squad before either leg,
+      // secondaryGain (if present) against the squad primaryGain already
+      // left behind, so each leg's expectedPointsGain fed into
+      // scoreMoveCandidates below is the real starting-XI-aware value,
+      // not a raw score delta that could overstate a bench-only swap.
+      primaryGain: number;
+      secondaryGain: number | null;
+    };
+    const routeCandidates: RouteCandidate[] = [];
+    let closestGap = Infinity;
+    let closest: { primaryOut: WorkingSquadPlayer; secondaryOut: WorkingSquadPlayer | null; secondaryIn: TransferCandidate | null } | null = null;
+
+    for (const primaryOut of workingSquad.filter((p) => p.position === target.position)) {
+      const primaryMatches = findLegalReplacementsForOutgoing([targetCandidate], toCandidate(primaryOut), squadIds, budgetRemaining, clubCounts, rules.max_per_club);
+
+      const squadAfterPrimaryOnly = workingSquad.filter((p) => p.game_player_id !== primaryOut.game_player_id).concat(toWorkingSquadPlayer(targetCandidate));
+      const xiAfterPrimaryOnly = optimalXITotal(squadAfterPrimaryOnly, quickWinScoreMap);
+      const primaryGain = xiAfterPrimaryOnly - currentXITotal;
+
+      if (primaryMatches.length > 0 && routeClubCountsLegal([primaryOut], [targetCandidate])) {
+        // Reachable via this one same-position swap alone.
+        routeCandidates.push({ primaryOut, secondaryOut: null, secondaryIn: null, pointCost: -primaryGain, primaryGain, secondaryGain: null });
+        continue;
+      }
+
+      const budgetAfterPrimary = budgetRemaining + primaryOut.price - target.price;
+      if (budgetAfterPrimary >= 0) continue; // not a cash gap - a club-limit block only a same-club secondary sale below could cure
+
+      if (-budgetAfterPrimary < closestGap) {
+        closestGap = -budgetAfterPrimary;
+        closest = { primaryOut, secondaryOut: null, secondaryIn: null };
+      }
+
+      const squadIdsAfterPrimary = new Set(squadIds);
+      squadIdsAfterPrimary.delete(primaryOut.game_player_id);
+      squadIdsAfterPrimary.add(target.gamePlayerId);
+      const clubCountsAfterPrimary = new Map(clubCounts);
+      clubCountsAfterPrimary.set(primaryOut.team_id, (clubCountsAfterPrimary.get(primaryOut.team_id) ?? 0) - 1);
+      clubCountsAfterPrimary.set(target.teamId, (clubCountsAfterPrimary.get(target.teamId) ?? 0) + 1);
+
+      for (const secondaryOut of workingSquad) {
+        if (secondaryOut.game_player_id === primaryOut.game_player_id) continue;
+        if (secondaryOut.position === target.position) continue; // that slot's already spoken for by primaryOut/target
+
+        const secondaryPool: TransferCandidate[] = (pool ?? [])
+          .filter((p) => p.position === secondaryOut.position && p.game_player_id !== secondaryOut.game_player_id && !squadIdsAfterPrimary.has(p.game_player_id))
+          .map((p) => ({
+            gamePlayerId: p.game_player_id,
+            fullName: p.full_name,
+            teamId: p.team_id,
+            teamName: p.team_name,
+            price: Number(p.price),
+            position: p.position,
+            score: avgFor(quickWinScoreMap, p.game_player_id),
+          }));
+
+        const affordable = findLegalReplacementsForOutgoing(secondaryPool, toCandidate(secondaryOut), squadIdsAfterPrimary, budgetAfterPrimary, clubCountsAfterPrimary, rules.max_per_club);
+
+        for (const match of affordable) {
+          if (!routeClubCountsLegal([primaryOut, secondaryOut], [targetCandidate, match.candidate])) continue;
+          const squadAfterBoth = squadAfterPrimaryOnly.filter((p) => p.game_player_id !== secondaryOut.game_player_id).concat(toWorkingSquadPlayer(match.candidate));
+          const xiAfterBoth = optimalXITotal(squadAfterBoth, quickWinScoreMap);
+          const secondaryGain = xiAfterBoth - xiAfterPrimaryOnly;
+          const pointCost = currentXITotal - xiAfterBoth;
+          routeCandidates.push({ primaryOut, secondaryOut, secondaryIn: match.candidate, pointCost, primaryGain, secondaryGain });
+        }
+
+        if (affordable.length === 0) {
+          // Nothing at the real budget closes it - check the cheapest
+          // legal (position/club-limit) candidate regardless of price,
+          // purely to report an honest "still short by £X" figure.
+          const anyLegal = findLegalReplacementsForOutgoing(secondaryPool, toCandidate(secondaryOut), squadIdsAfterPrimary, Infinity, clubCountsAfterPrimary, rules.max_per_club).filter((m) =>
+            routeClubCountsLegal([primaryOut, secondaryOut], [targetCandidate, m.candidate])
+          );
+          if (anyLegal.length > 0) {
+            const cheapest = anyLegal.reduce((a, b) => (b.candidate.price < a.candidate.price ? b : a));
+            const freed = secondaryOut.price - cheapest.candidate.price;
+            const gap = -(budgetAfterPrimary + freed);
+            if (gap > 0 && gap < closestGap) {
+              closestGap = gap;
+              closest = { primaryOut, secondaryOut, secondaryIn: cheapest.candidate };
+            }
+          }
+        }
       }
     }
-    if (!best) return null; // this target isn't reachable via a single downgrade
 
-    const legScore = scoreMoveCandidates(
-      [buildLegInput(best.sell, best.buy, avgFor(quickWinScoreMap, best.sell.game_player_id), -best.pointCost).input],
-      activeStrategy
-    )[0];
-    const leg: BundleTransfer = {
-      outGamePlayerId: best.sell.game_player_id,
-      outName: best.sell.full_name,
-      outTeam: best.sell.team_name,
-      outPrice: best.sell.price,
-      inGamePlayerId: best.buy.gamePlayerId,
-      inName: best.buy.fullName,
-      inTeam: best.buy.teamName,
-      inPrice: best.buy.price,
-      position: best.sell.position,
-      pointsGain: Math.round(-best.pointCost * 10) / 10,
-      costPoints: 0,
-      risk: legScore.risk,
-      confidence: legScore.confidence,
-      overall: legScore.overall,
-      reasons: legScore.reasons,
-      warnings: legScore.warnings,
-    };
-    const weakestInTargetPosition = workingSquad
-      .filter((p) => p.position === target.position)
-      .map((p) => ({ p, score: avgFor(fiveGwMap, p.game_player_id) }))
-      .sort((a, b) => a.score - b.score)[0]?.p;
-    const writeup = `${leg.outName} → ${leg.inName} frees £${best.freed.toFixed(1)}m this week (costs ${Math.abs(leg.pointsGain).toFixed(1)} pts off your starting XI). That puts ${target.fullName} within reach${
-      weakestInTargetPosition ? ` - the likely swap for ${weakestInTargetPosition.full_name} once you've got a free transfer to spend on it` : ""
-    }.`;
+    if (routeCandidates.length === 0) {
+      if (!closest) return notReachable;
+      return {
+        move: null,
+        closestShortfall: {
+          amount: Math.round(closestGap * 10) / 10,
+          primaryOutName: closest.primaryOut.full_name,
+          secondaryOutName: closest.secondaryOut?.full_name ?? null,
+          secondaryInName: closest.secondaryIn?.fullName ?? null,
+        },
+      };
+    }
+
+    // Score every fully-legal route with the same recommendation model
+    // used everywhere else (not raw point cost alone) so the winner
+    // reflects projection gain, opportunity, price efficiency and the
+    // active strategy - and pick the highest-scoring one, not just the
+    // first found. Every leg from every candidate is scored together in
+    // ONE batch (not per-route) - scoreMoveCandidates min-max normalizes
+    // within whatever batch it's given, so scoring routes separately
+    // would make their scores incomparable to each other.
+    const legBundles = routeCandidates.map((route) => ({
+      primary: buildLegInput(route.primaryOut, targetCandidate, avgFor(quickWinScoreMap, route.primaryOut.game_player_id), route.primaryGain),
+      secondary:
+        route.secondaryOut && route.secondaryIn
+          ? buildLegInput(route.secondaryOut, route.secondaryIn, avgFor(quickWinScoreMap, route.secondaryOut.game_player_id), route.secondaryGain ?? undefined)
+          : null,
+    }));
+    const allLegInputs = legBundles.flatMap((b) => (b.secondary ? [b.primary.input, b.secondary.input] : [b.primary.input]));
+    const allLegScores = scoreMoveCandidates(allLegInputs, activeStrategy);
+
+    let scoreCursor = 0;
+    const routeLegScores = legBundles.map((bundle) => {
+      const primary = allLegScores[scoreCursor++];
+      const secondary = bundle.secondary ? allLegScores[scoreCursor++] : null;
+      return { primary, secondary };
+    });
+
+    let bestRouteIdx = 0;
+    let bestRouteScore = -Infinity;
+    for (let i = 0; i < routeCandidates.length; i++) {
+      const { primary, secondary } = routeLegScores[i];
+      const routeScore = secondary ? (primary.overall + secondary.overall) / 2 : primary.overall;
+      if (routeScore > bestRouteScore) {
+        bestRouteScore = routeScore;
+        bestRouteIdx = i;
+      }
+    }
+
+    const best = routeCandidates[bestRouteIdx];
+    const bestBundle = legBundles[bestRouteIdx];
+    const bestScores = routeLegScores[bestRouteIdx];
+
+    const transfers: BundleTransfer[] = [
+      {
+        outGamePlayerId: bestBundle.primary.input.outGamePlayerId,
+        outName: bestBundle.primary.input.outName,
+        outTeam: bestBundle.primary.input.outTeam,
+        outPrice: bestBundle.primary.outPlayer.price,
+        inGamePlayerId: bestBundle.primary.input.inGamePlayerId,
+        inName: bestBundle.primary.input.inName,
+        inTeam: bestBundle.primary.input.inTeam,
+        inPrice: bestBundle.primary.inCandidate.price,
+        position: bestBundle.primary.input.position,
+        pointsGain: Math.round(bestBundle.primary.input.expectedPointsGain * 10) / 10,
+        costPoints: 0,
+        risk: bestScores.primary.risk,
+        confidence: bestScores.primary.confidence,
+        overall: bestScores.primary.overall,
+        reasons: bestScores.primary.reasons,
+        warnings: bestScores.primary.warnings,
+      },
+    ];
+    if (bestBundle.secondary && bestScores.secondary) {
+      transfers.push({
+        outGamePlayerId: bestBundle.secondary.input.outGamePlayerId,
+        outName: bestBundle.secondary.input.outName,
+        outTeam: bestBundle.secondary.input.outTeam,
+        outPrice: bestBundle.secondary.outPlayer.price,
+        inGamePlayerId: bestBundle.secondary.input.inGamePlayerId,
+        inName: bestBundle.secondary.input.inName,
+        inTeam: bestBundle.secondary.input.inTeam,
+        inPrice: bestBundle.secondary.inCandidate.price,
+        position: bestBundle.secondary.input.position,
+        pointsGain: Math.round(bestBundle.secondary.input.expectedPointsGain * 10) / 10,
+        costPoints: 0,
+        risk: bestScores.secondary.risk,
+        confidence: bestScores.secondary.confidence,
+        overall: bestScores.secondary.overall,
+        reasons: bestScores.secondary.reasons,
+        warnings: bestScores.secondary.warnings,
+      });
+    }
+
+    const totalGain = Math.round(-best.pointCost * 10) / 10;
+    let writeup: string;
+    if (best.secondaryOut && best.secondaryIn) {
+      const gapClosed = best.secondaryOut.price - best.secondaryIn.price;
+      writeup = `${best.primaryOut.full_name} → ${target.fullName} needs an extra £${gapClosed.toFixed(1)}m, freed by also selling ${best.secondaryOut.full_name} → ${best.secondaryIn.fullName}. ${totalGain >= 0 ? "+" : ""}${totalGain.toFixed(1)} pts to your starting XI this week.`;
+    } else {
+      writeup = `${target.fullName} directly replaces ${best.primaryOut.full_name} (£${best.primaryOut.price.toFixed(1)}m) - already affordable with your current budget, no further sale needed. ${totalGain >= 0 ? "+" : ""}${totalGain.toFixed(1)} pts to your starting XI this week.`;
+    }
 
     return {
-      kind: "prepare_for_target",
-      label: "Prepare for a Target",
-      transfers: [leg],
-      hold: false,
-      horizonGameweeks: 5,
-      projectedGainOverHorizon: Math.round(-best.pointCost * 10) / 10,
-      writeup,
-      targetPlayer: { gamePlayerId: target.gamePlayerId, fullName: target.fullName, teamName: target.teamName, price: target.price },
+      move: {
+        kind: "prepare_for_target",
+        label: "Prepare for a Target",
+        transfers,
+        hold: false,
+        horizonGameweeks: 5,
+        projectedGainOverHorizon: totalGain,
+        writeup,
+        targetPlayer: { gamePlayerId: target.gamePlayerId, fullName: target.fullName, teamName: target.teamName, price: target.price },
+      },
+      closestShortfall: null,
     };
   }
 
@@ -1241,7 +1448,7 @@ export async function runAskMaryAnalysis(
 
     for (const target of targetCandidates) {
       const result = findFundingPathForTarget(target, workingSquad);
-      if (result) return result;
+      if (result.move) return result.move;
     }
     return null;
   }
@@ -1360,7 +1567,7 @@ export async function runAskMaryAnalysis(
   // implementation. Returns null (not an error) when the named player
   // can't be found in this game's pool, or when no funding path exists -
   // the caller decides how to present "not reachable right now."
-  function buildTargetPlan(explicitTargetGamePlayerId: number): FavouredMove | null {
+  function buildTargetPlan(explicitTargetGamePlayerId: number): TargetPlanResult | null {
     const targetRow = (pool ?? []).find((p) => p.game_player_id === explicitTargetGamePlayerId);
     if (!targetRow || squadIds.has(targetRow.game_player_id)) return null;
     const workingSquad: WorkingSquadPlayer[] = squadPlayers.map((p) => ({
@@ -1375,6 +1582,7 @@ export async function runAskMaryAnalysis(
       {
         gamePlayerId: targetRow.game_player_id,
         fullName: targetRow.full_name,
+        teamId: targetRow.team_id,
         teamName: targetRow.team_name,
         price: Number(targetRow.price),
         position: targetRow.position,
