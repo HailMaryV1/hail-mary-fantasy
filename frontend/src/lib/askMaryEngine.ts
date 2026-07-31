@@ -24,17 +24,6 @@ import { toPredictionRow, type PredictionRecord } from "@/lib/predictionArchive"
 // auth-aware Supabase client type, not a loose structural stand-in.
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
-// Only used for the Captain & Vice-Captain horizon selector now - the
-// transfer plan itself is a sequential per-gameweek walk (see
-// GAMEWEEK_PLAN_LENGTH below), not one of these fixed windows.
-export const CAPTAIN_HORIZONS = [
-  { key: "1", label: "Next Gameweek", gameweeks: 1 },
-  { key: "3", label: "Next 3 Gameweeks", gameweeks: 3 },
-  { key: "5", label: "Next 5 Gameweeks", gameweeks: 5 },
-] as const;
-
-export type CaptainHorizon = (typeof CAPTAIN_HORIZONS)[number];
-
 // How many gameweeks ahead the sequential plan looks - GW1/GW2/GW3
 // relative to whatever `planningGameweek` currently resolves to, not
 // fixed calendar gameweeks (see buildGameweekPlan).
@@ -196,7 +185,6 @@ export type AskMaryAnalysis = {
   planningGameweek: number | null;
   gameweekPlan: GameweekPlanStep[];
   favouredMoves: FavouredMove[];
-  captainHorizonGameweeks: number;
   bestCaptain: CaptaincyPick | null;
   viceCaptain: CaptaincyPick | null;
   health: SquadHealthReport;
@@ -236,9 +224,14 @@ export async function runAskMaryAnalysis(
   },
   fanteamGame: { id: number; display_name: string },
   activeStrategy: Strategy,
-  captainHorizonGameweeks: number,
   recordPredictionsFn?: (records: PredictionRecord[]) => Promise<{ error?: string } | { recorded: number }>
 ): Promise<AskMaryAnalysis | null> {
+  // Captain/vice-captain is no longer horizon-selectable - always the
+  // next gameweek only. Kept as a named local (not inlined at every call
+  // site below) since it still feeds getHorizonMap and the archived
+  // prediction's planning_horizon column.
+  const captainHorizonGameweeks = 1;
+
   const { data: rulesRow } = await supabase
     .from("game_squad_rules")
     .select("budget, max_per_club, squad_size, starting_size")
@@ -1539,7 +1532,6 @@ export async function runAskMaryAnalysis(
     planningGameweek,
     gameweekPlan,
     favouredMoves,
-    captainHorizonGameweeks,
     bestCaptain,
     viceCaptain,
     health,

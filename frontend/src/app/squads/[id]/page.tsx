@@ -427,12 +427,13 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
 
   // Computed exactly once here (not a second time inside
   // MaryRecommendationsPanel, which used to re-run this same engine call
-  // independently, hardcoded regardless of the squad's actual
-  // preferred_captain_horizon) - both CaptainPicker's "Recommended"
-  // banner and MaryRecommendationsPanel below read off this ONE result,
-  // so they can no longer disagree with each other the way CaptainPicker's
-  // own starters[0]/[1] guess used to vs. Ask Mary's real captain pick.
-  // Strategy is no longer user-selectable - always "balanced".
+  // independently) - both CaptainPicker's "Recommended" banner and
+  // MaryRecommendationsPanel below read off this ONE result, so they can
+  // no longer disagree with each other the way CaptainPicker's own
+  // starters[0]/[1] guess used to vs. Ask Mary's real captain pick.
+  // Strategy is no longer user-selectable - always "balanced". Captain
+  // horizon is no longer user-selectable either - runAskMaryAnalysis
+  // always scores next-gameweek-only now.
   const analysis =
     game.slug === "fanteam"
       ? await runAskMaryAnalysis(
@@ -445,8 +446,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
             wildcard_2_used_gameweek: squad.wildcard_2_used_gameweek,
           },
           { id: game.id, display_name: game.display_name },
-          "balanced" as Strategy,
-          squad.preferred_captain_horizon
+          "balanced" as Strategy
         )
       : null;
 

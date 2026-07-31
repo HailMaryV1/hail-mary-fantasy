@@ -589,12 +589,9 @@ export async function saveTeamForGameweek(args: SaveLineupArgs) {
   // exist purely to test an alternative route, and Performance Lab's
   // grading should only ever reflect real decisions on real teams.
   if (squadRow && game?.slug === "fanteam" && !squadRow.is_scratch) {
-    // Strategy is no longer user-selectable - always "balanced" (see
-    // ask-mary/page.tsx). Archives at this squad's OWN
-    // preferred_captain_horizon (set from whatever the user last chose
-    // on /ask-mary) - was previously hardcoded regardless, meaning the
-    // Performance Lab history this feeds could silently record a
-    // horizon the user never actually saw or chose.
+    // Strategy is no longer user-selectable - always "balanced". Captain
+    // horizon is no longer user-selectable either - runAskMaryAnalysis
+    // itself always scores next-gameweek-only now (see askMaryEngine.ts).
     await runAskMaryAnalysis(
       supabase,
       {
@@ -606,7 +603,6 @@ export async function saveTeamForGameweek(args: SaveLineupArgs) {
       },
       { id: game.id, display_name: game.display_name },
       "balanced" as Strategy,
-      squadRow.preferred_captain_horizon,
       recordPredictions
     ).catch(() => null);
   }

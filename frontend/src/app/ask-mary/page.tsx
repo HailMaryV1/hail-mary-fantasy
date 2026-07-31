@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import type { Strategy } from "@/lib/recommendationScoring";
-import { runAskMaryAnalysis, CAPTAIN_HORIZONS } from "@/lib/askMaryEngine";
+import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
 import GameweekPlanRow from "./GameweekPlanRow";
 import FavouredMoveCard from "./FavouredMoveCard";
 import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
@@ -19,9 +19,9 @@ type SquadPlayerForSummary = { game_player_id: number; game_players: { price: nu
 export default async function AskMaryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ squad?: string; horizon?: string }>;
+  searchParams: Promise<{ squad?: string }>;
 }) {
-  const { squad: squadParam, horizon: horizonParam } = await searchParams;
+  const { squad: squadParam } = await searchParams;
 
   const supabase = await createAuthServerClient();
   const {
@@ -85,39 +85,15 @@ export default async function AskMaryPage({
 
   const selectedSquad = squadsRaw.find((s) => s.id === Number(squadParam)) ?? squadsRaw[0];
 
-  // Drives the Captain & Vice-Captain pick only - Mary's Recommendations
-  // is always the sequential GW1/GW2/GW3 plan regardless of this setting,
-  // so this control's job is just "which horizon to captain by." Falls
-  // back to this squad's own last-chosen preference (not a fixed
-  // constant) when the URL doesn't specify one, so landing on /ask-mary
-  // via a bare link ("View Full Analysis") picks up wherever you left
-  // off rather than silently resetting to a default.
-  const captainHorizon =
-    CAPTAIN_HORIZONS.find((h) => h.key === horizonParam) ??
-    CAPTAIN_HORIZONS.find((h) => h.gameweeks === selectedSquad.preferred_captain_horizon) ??
-    CAPTAIN_HORIZONS[2];
   // Strategy is no longer user-selectable - always balanced. Kept as a
   // literal (not removed from the analysis call) because
   // predictions.strategy is NOT NULL with no default, so every archived
   // recommendation still needs a real value to write.
   const activeStrategy: Strategy = "balanced";
 
-  // Persist whenever the resolved captain horizon actually differs from
-  // what's stored - covers "user just clicked a pill" (URL param
-  // present), since prefetch is disabled on every settings Link below
-  // (prefetch={false}) so this only runs on a real navigation, not on
-  // hover.
-  if (captainHorizon.gameweeks !== selectedSquad.preferred_captain_horizon) {
-    await supabase
-      .from("squads")
-      .update({ preferred_captain_horizon: captainHorizon.gameweeks })
-      .eq("id", selectedSquad.id);
-  }
-
-  function askMaryUrl(overrides: Partial<{ squad: number; horizon: string }>) {
+  function askMaryUrl(overrides: Partial<{ squad: number }>) {
     const params = new URLSearchParams();
     params.set("squad", String(overrides.squad ?? selectedSquad.id));
-    params.set("horizon", overrides.horizon ?? captainHorizon.key);
     return `/ask-mary?${params.toString()}`;
   }
 
@@ -174,31 +150,6 @@ export default async function AskMaryPage({
     </div>
   );
 
-  const settingsPanel = (
-    <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Analysis Settings</h2>
-      <div className="mt-3 flex flex-col gap-3">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-navy-500">Captain planning horizon</p>
-          <div className="mt-1 flex flex-wrap gap-1 rounded-lg bg-navy-950 p-1">
-            {CAPTAIN_HORIZONS.map((h) => (
-              <Link
-                key={h.key}
-                href={askMaryUrl({ horizon: h.key })}
-                prefetch={false}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                  h.key === captainHorizon.key ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
-                }`}
-              >
-                {h.label}
-              </Link>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
   function renderSquadSummary(budgetRemaining: number, playerCount: number, freeTransfers: number) {
     return (
       <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
@@ -242,7 +193,7 @@ export default async function AskMaryPage({
   // squads/actions.ts's saveTeamForGameweek and migration 0043's
   // docstring) - that's the one point "what Mary suggested" is being
   // compared against a squad that's actually final, not mid-tinkering.
-  const analysis = await runAskMaryAnalysis(supabase, selectedSquad, fanteamGame, activeStrategy, captainHorizon.gameweeks);
+  const analysis = await runAskMaryAnalysis(supabase, selectedSquad, fanteamGame, activeStrategy);
 
   if (!analysis) {
     return (
@@ -257,6 +208,14 @@ export default async function AskMaryPage({
 
   const { bestCaptain, viceCaptain, health, gameweekPlan, favouredMoves, monitorList, hasCalendar, seasonStarted } = analysis;
 
+  // Captain/vice-captain only ever considers players already flagged
+  // is_starting (askMaryEngine.ts's captaincyPool) - but a starting XI
+  // with fewer than the required count isn't distinguished from a full
+  // one, so the pick could silently come from a partial lineup. Surface
+  // that plainly rather than presenting the pick as final.
+  const startingCount = analysis.squadPlayers.filter((p) => p.is_starting).length;
+  const startingXIComplete = startingCount === analysis.rules.starting_size;
+
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto grid max-w-6xl grid-cols-1 gap-6 lg:grid-cols-[1fr_320px]">
@@ -265,7 +224,6 @@ export default async function AskMaryPage({
           {squadSelector}
 
           <div className="mt-4 flex flex-col gap-4">
-            {settingsPanel}
             {renderSquadSummary(analysis.budgetRemaining, analysis.squadPlayers.length, selectedSquad.free_transfers)}
 
             {!hasCalendar && (
@@ -349,14 +307,21 @@ export default async function AskMaryPage({
                 )}
 
                 <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-                  <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain - {captainHorizon.label}</h3>
+                  <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain (Next Gameweek)</h3>
                   {!bestCaptain ? (
                     <p className="mt-2 text-sm text-navy-400">Set a starting XI to get captaincy advice.</p>
                   ) : (
-                    <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                      <CaptainOption label="Captain" player={bestCaptain} />
-                      <CaptainOption label="Vice-Captain" player={viceCaptain} />
-                    </div>
+                    <>
+                      {!startingXIComplete && (
+                        <p className="mt-2 text-xs text-amber-400">
+                          Starting XI isn&apos;t fully set ({startingCount}/{analysis.rules.starting_size}) - this pick may change once it is.
+                        </p>
+                      )}
+                      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <CaptainOption label="Captain" player={bestCaptain} />
+                        <CaptainOption label="Vice-Captain" player={viceCaptain} />
+                      </div>
+                    </>
                   )}
                 </div>
               </div>
