@@ -477,14 +477,46 @@ def open_authenticated_page(playwright, access_token):
     return browser, page
 
 
+def _goto_and_capture_private_name(page, tournament_id, fantasy_team_id):
+    """Navigates to the squad edit page AND returns its real, provider-
+    owned custom team name (FanTeam's own "Edit private name" pencil-icon
+    feature) - None if the entry has no custom name set. NOT scraped
+    from the DOM - the edit page's own JS makes a real GET
+    {GAME_BASE}/fantasy_teams/{team_id}?round=editable call as part of
+    normal page load, whose response body already carries
+    fantasyTeam.privateName (confirmed live: a team named "Testing Name"
+    round-trips exactly). A bare replayed HTTP call to this same URL,
+    even with the right Bearer token, gets a 401 - whatever auth the
+    SPA's own client attaches isn't just the header - so this only works
+    by capturing the app's OWN real request while it fires during normal
+    navigation, not by re-requesting it independently. The navigation
+    itself always happens (the `with` block's body runs before its exit
+    can time out) - only the private-name capture is best-effort; any
+    failure there (timeout, unexpected shape) returns None rather than
+    failing the whole squad fetch over a "nice to have" display name."""
+    url = EDIT_URL_TEMPLATE.format(tournament_id=tournament_id, team_id=fantasy_team_id)
+    try:
+        with page.expect_response(
+            lambda r: f"/fantasy_teams/{fantasy_team_id}?round=editable" in r.url, timeout=15000
+        ) as resp_info:
+            page.goto(url, wait_until="networkidle")
+        body = resp_info.value.json()
+        name = (body.get("fantasyTeam") or {}).get("privateName")
+        return name if name else None
+    except Exception:
+        return None
+
+
 def fetch_squad(page, tournament_id, fantasy_team_id):
     """Real squad for one team on an already-authenticated `page` (see
     open_authenticated_page) - navigates to the edit URL and parses the
     rendered squad via _flatten_shadow_text + _locate_squad_section +
-    _parse_squad_tokens. Returns _parse_squad_tokens' shape, or raises if
-    the page doesn't render a recognisable squad (fails loud, never
-    returns a silently wrong/partial squad)."""
-    page.goto(EDIT_URL_TEMPLATE.format(tournament_id=tournament_id, team_id=fantasy_team_id), wait_until="networkidle")
+    _parse_squad_tokens. Returns _parse_squad_tokens' shape plus a
+    "private_name" key (see _goto_and_capture_private_name - None if the
+    entry has no custom name set). Raises if the page doesn't render a
+    recognisable squad (fails loud, never returns a silently wrong/
+    partial squad)."""
+    private_name = _goto_and_capture_private_name(page, tournament_id, fantasy_team_id)
     page.wait_for_timeout(2000)
     tokens = _locate_squad_section(_flatten_shadow_text(page))
     squad = _parse_squad_tokens(tokens)
@@ -493,4 +525,5 @@ def fetch_squad(page, tournament_id, fantasy_team_id):
             f"FanTeam squad page for team {fantasy_team_id} didn't render a recognisable squad "
             f"(parsed {len(squad['starting'])} starting players) - session may be invalid or the page layout changed."
         )
+    squad["private_name"] = private_name
     return squad

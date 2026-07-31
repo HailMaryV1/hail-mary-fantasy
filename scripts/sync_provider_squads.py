@@ -378,17 +378,17 @@ def sync_fanteam(cur, user_id, credential_row, requested_only=False):
 
                 cur.execute("select id from fantasy_games where slug = %s", (game_slug,))
                 game_id = cur.fetchone()["id"]
-                # FanTeam has no editable/visible custom name for an
-                # existing entry anywhere we can read (confirmed live:
-                # no text input on the squad edit page, and My Entries
-                # shows only the raw numeric team id, "#133545691", for
-                # this real account's entry) - so there's no real name
-                # to prefer. FanTeam's OWN display convention for an
-                # unnamed entry is exactly this pattern (confirmed live
-                # via this account's real profile - username "ciccio12",
-                # id 51333 - matching the "ciccio12 #51333" example
-                # already documented in provider_fanteam_scoutgg.py) -
-                # not an invented label, FanTeam's real one.
+                # get_or_create_squad_link needs SOME name at the moment
+                # of first creation, before fetch_squad below has had a
+                # chance to learn the real one (fetch_squad needs the
+                # squad_id link to already exist to write into) - this
+                # deterministic placeholder is FanTeam's OWN real display
+                # convention for an entry with no private name set
+                # (confirmed live via this account's real profile -
+                # username "ciccio12" - matching the "ciccio12 #51333"
+                # example documented in provider_fanteam_scoutgg.py), not
+                # an invented label. Upgraded to the real private name
+                # below the moment fetch_squad finds one.
                 default_name = f"{profile.get('username') or username} #{team['fantasy_team_id']}"
                 squad_id, link_id = get_or_create_squad_link(
                     cur, user_id, "fanteam_scoutgg", game_slug, tournament_id, team["fantasy_team_id"], default_name,
@@ -396,6 +396,20 @@ def sync_fanteam(cur, user_id, credential_row, requested_only=False):
                 )
                 try:
                     parsed = fanteam.fetch_squad(page, tournament_id, team["fantasy_team_id"])
+                    # FanTeam's own "Edit private name" field (confirmed
+                    # live via network capture - GET fantasy_teams/{id}
+                    # ?round=editable's real fantasyTeam.privateName,
+                    # never scraped from the DOM) is the real name to
+                    # prefer. Only overwrites while the stored name still
+                    # matches exactly what THIS run would have created it
+                    # with by default - never touches a name the user
+                    # deliberately changed inside Hail Mary itself.
+                    private_name = parsed.get("private_name")
+                    if private_name:
+                        cur.execute(
+                            "update squads set name = %s, updated_at = now() where id = %s and name = %s",
+                            (private_name, squad_id, default_name),
+                        )
                     changes = apply_squad(cur, squad_id, game_id, parsed)
                     summary = "; ".join(changes) if changes else "No changes detected"
                     cur.execute(
