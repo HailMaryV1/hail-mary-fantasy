@@ -287,7 +287,7 @@ export default async function AskMaryPage({
                 </p>
                 <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {favouredMoves.map((move) => (
-                    <FavouredMoveCard key={move.kind} move={move} squadId={selectedSquad.id} />
+                    <FavouredMoveCard key={move.kind} move={move} squadId={selectedSquad.id} gameSlug="fanteam" />
                   ))}
                 </div>
               </div>
@@ -302,7 +302,7 @@ export default async function AskMaryPage({
                   <p className="text-sm text-navy-400">No gameweek calendar published yet to build a plan from.</p>
                 ) : (
                   gameweekPlan.map((step) => (
-                    <GameweekPlanRow key={step.offset} step={step} squadId={selectedSquad.id} gameId={fanteamGame.id} />
+                    <GameweekPlanRow key={step.offset} step={step} squadId={selectedSquad.id} gameId={fanteamGame.id} gameSlug="fanteam" />
                   ))
                 )}
 

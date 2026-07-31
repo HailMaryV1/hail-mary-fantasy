@@ -25,10 +25,12 @@ export default function GameweekPlanRow({
   step,
   squadId,
   gameId,
+  gameSlug,
 }: {
   step: GameweekPlanStep;
   squadId: number;
   gameId: number;
+  gameSlug: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [expandedLegIdx, setExpandedLegIdx] = useState<number | null>(null);
@@ -161,6 +163,14 @@ export default function GameweekPlanRow({
                             </ul>
                           </div>
                         )}
+                        <div className="flex gap-3 sm:col-span-2">
+                          <Link href={`/algorithm-explain?game=${gameSlug}&player=${t.outGamePlayerId}`} className="text-[10px] font-medium text-sky-400 hover:text-sky-300">
+                            Engine Validation: {t.outName} →
+                          </Link>
+                          <Link href={`/algorithm-explain?game=${gameSlug}&player=${t.inGamePlayerId}`} className="text-[10px] font-medium text-sky-400 hover:text-sky-300">
+                            Engine Validation: {t.inName} →
+                          </Link>
+                        </div>
                       </div>
                     )}
                   </div>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { applyRecommendation } from "../squads/actions";
 import FormPill from "../FormPill";
 import type { FavouredMove, BundleTransfer } from "@/lib/askMaryEngine";
@@ -26,7 +27,7 @@ const KIND_TONE: Record<FavouredMove["kind"], string> = {
  * favoured move's single transfer leg is exactly what that action already
  * expects - no new server action needed for this feature.
  */
-export default function FavouredMoveCard({ move, squadId }: { move: FavouredMove; squadId: number }) {
+export default function FavouredMoveCard({ move, squadId, gameSlug }: { move: FavouredMove; squadId: number; gameSlug: string }) {
   const [expanded, setExpanded] = useState(false);
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -113,6 +114,14 @@ export default function FavouredMoveCard({ move, squadId }: { move: FavouredMove
                   </ul>
                 </div>
               )}
+              <div className="flex gap-3 sm:col-span-2">
+                <Link href={`/algorithm-explain?game=${gameSlug}&player=${leg.outGamePlayerId}`} className="text-[10px] font-medium text-sky-400 hover:text-sky-300">
+                  Engine Validation: {leg.outName} →
+                </Link>
+                <Link href={`/algorithm-explain?game=${gameSlug}&player=${leg.inGamePlayerId}`} className="text-[10px] font-medium text-sky-400 hover:text-sky-300">
+                  Engine Validation: {leg.inName} →
+                </Link>
+              </div>
             </div>
           )}
         </>

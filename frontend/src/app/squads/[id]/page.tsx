@@ -508,7 +508,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
 
           {game.slug === "fanteam" && (
             <div className="mt-10">
-              <MaryRecommendationsPanel squadId={squad.id} gameId={game.id} analysis={analysis} />
+              <MaryRecommendationsPanel squadId={squad.id} gameId={game.id} gameSlug={game.slug} analysis={analysis} />
             </div>
           )}
 
