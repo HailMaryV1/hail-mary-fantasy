@@ -2,8 +2,10 @@
 .env.*
 auth_state.json
 auth_state_fanteam.json
+auth_state_cloudff.json
 discovered_calls.json
 discovered_calls_fanteam.json
+discovered_calls_cloudff.json
 token.txt
 __pycache__/
 *.pyc
@@ -16,6 +18,8 @@ players.csv
 fanteam_players_raw.json
 fanteam_fixtures_raw.json
 golf_tournament_raw.json
+cloudff_players_raw.json
+cloudff_fixtures_raw.json
 
 # Local tool config, not project source
 .claude/

@@ -35,7 +35,15 @@ START_URL = "https://www.cloud-ff.co.uk/team"
 OUTPUT_FILE = Path("discovered_calls_cloudff.json")
 AUTH_STATE_FILE = Path("auth_state_cloudff.json")
 
-INTERESTING_KEYWORDS = ["player", "stat", "price", "team", "squad", "gameweek", "user", "captain", "league"]
+INTERESTING_KEYWORDS = ["player", "stat", "price", "team", "squad", "gameweek", "user", "captain", "league", "login", "signup", "auth", "verify", "session"]
+
+# Same caution as discover_fanteam.py: a credential-shaped request's body
+# gets its VALUES redacted before anything is written to disk or printed
+# - only field NAMES are ever kept. Every other captured request here
+# (getUserTeam etc.) is already just team_id/gameweek numbers, not
+# credentials, so those are left as-is.
+CREDENTIAL_URL_KEYWORDS = ["login", "signup", "auth", "verify", "session"]
+SENSITIVE_FIELD_SUBSTRINGS = ["pass", "pwd", "secret", "token", "email", "user", "login", "identifier"]
 
 captured = []
 
@@ -43,6 +51,27 @@ captured = []
 def looks_interesting(url: str) -> bool:
     url_lower = url.lower()
     return any(kw in url_lower for kw in INTERESTING_KEYWORDS)
+
+
+def is_credential_shaped(url: str) -> bool:
+    url_lower = url.lower()
+    return any(kw in url_lower for kw in CREDENTIAL_URL_KEYWORDS)
+
+
+def redact_body(raw_post_data):
+    """None, or {field_name: "<redacted>"} for every field - proves which
+    field names a login-shaped request actually uses without ever saving
+    a real credential value anywhere (same approach as
+    discover_fanteam.py's redact_body)."""
+    if not raw_post_data:
+        return None
+    try:
+        parsed = json.loads(raw_post_data)
+    except Exception:
+        return {"_unparseable_body_length": len(raw_post_data)}
+    if isinstance(parsed, dict):
+        return {k: "<redacted>" for k in parsed.keys()}
+    return {"_non_object_body_type": type(parsed).__name__}
 
 
 def handle_request(request):
@@ -53,16 +82,21 @@ def handle_request(request):
     if not looks_interesting(request.url):
         return
     try:
+        credential_shaped = is_credential_shaped(request.url)
+        body_to_store = redact_body(request.post_data) if credential_shaped else request.post_data
         captured.append({
             "phase": "request",
             "method": request.method,
             "url": request.url,
             "headers": {k: v for k, v in request.headers.items() if k.lower() not in ("authorization", "cookie")},
             "has_auth_header": "authorization" in {k.lower() for k in request.headers},
-            "post_data": request.post_data,
+            "post_data": body_to_store,
+            "post_data_redacted": credential_shaped,
         })
         print(f"\n[REQUEST] {request.method} {request.url}")
-        if request.post_data:
+        if credential_shaped:
+            print(f"  body field names (values redacted): {body_to_store}")
+        elif request.post_data:
             print(f"  body: {request.post_data[:300]}")
     except Exception as e:
         print(f"[warn] couldn't process request to {request.url}: {e}")
