@@ -32,7 +32,6 @@ RUN:
 """
 import json
 import os
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +42,7 @@ import psycopg2.extras
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from activity_log import log_event  # noqa: E402
+from name_matching import compact, surname_key  # noqa: E402
 
 SEASON = "2026/27"
 
@@ -85,15 +85,6 @@ def load_env():
             continue
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip())
-
-
-def compact(name: str) -> str:
-    return re.sub(r"[^a-z]", "", name.lower())
-
-
-def surname_key(full_name: str) -> str:
-    parts = full_name.split(" ")
-    return compact(" ".join(parts[1:])) if len(parts) > 1 else compact(full_name)
 
 
 def strip_disambiguator(last_name: str):

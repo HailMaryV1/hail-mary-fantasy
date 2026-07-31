@@ -43,7 +43,6 @@ RUN:
 import argparse
 import json
 import os
-import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -56,6 +55,7 @@ import provider_cloudff as cloudff
 import provider_fanteam_scoutgg as fanteam
 import provider_secrets
 from activity_log import log_event
+from name_matching import compact, surname_key
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -85,15 +85,6 @@ def load_env():
             continue
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip())
-
-
-def compact(name):
-    return re.sub(r"[^a-z]", "", name.lower())
-
-
-def surname_key(full_name):
-    parts = full_name.split(" ")
-    return compact(" ".join(parts[1:])) if len(parts) > 1 else compact(full_name)
 
 
 # FanTeam's own position vocabulary, both the starting-XI full-word form

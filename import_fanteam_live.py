@@ -40,9 +40,9 @@ RUN:
     python3 import_fanteam_live.py
 """
 
+import io
 import json
 import os
-import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -53,6 +53,11 @@ import psycopg2.extras
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from activity_log import log_event  # noqa: E402
+from name_matching import compact, surname_key  # noqa: E402
+
+# Real player names legitimately contain non-ASCII characters - Windows'
+# console codepage can't print those directly.
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 SEASON = "2026/27"
 
@@ -93,30 +98,6 @@ def load_env():
             continue
         key, _, value = line.partition("=")
         os.environ.setdefault(key.strip(), value.strip())
-
-
-def compact(name: str) -> str:
-    return re.sub(r"[^a-z]", "", name.lower())
-
-
-def surname_key(full_name: str) -> str:
-    if ". " in full_name:
-        return compact(full_name.split(". ", 1)[1])
-    # Everything after the first word, not just the last one - a naive
-    # last-word-only key breaks for compound/multi-word surnames (e.g.
-    # "Jocelin Ta Bi"'s real surname is "Ta Bi", not just "Bi") and
-    # produces a dangerously short, generic suffix that spuriously matches
-    # unrelated players whose names just happen to end the same way.
-    # Confirmed live: "Ta Bi" truncated to "bi" matched "Johan Manzambi"
-    # ("...manzam-bi") every import, flip-flopping the wrong player's team
-    # back and forth (their real position also matched, so the existing
-    # first-initial safety check - added for the earlier Kamara case -
-    # didn't catch it either: "Jocelin" and "Johan" both start with "J").
-    # Matching more of the real surname only makes the match MORE
-    # specific, never less - identical result to the old behavior for the
-    # common single-word-surname case, strictly safer for compound ones.
-    parts = full_name.split(" ")
-    return compact(" ".join(parts[1:])) if len(parts) > 1 else compact(full_name)
 
 
 def resolve_team_id(cur, live_name: str) -> int:
@@ -375,10 +356,28 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
             player_id = cur.fetchone()[0]
             created += 1
 
-        cur.execute("select id from game_players where game_id = %s and player_id = %s", (game_id, player_id))
-        row = cur.fetchone()
         external_id = str(pc["realPlayerId"])
         seen_external_ids.add(external_id)
+        # A player can (rarely) end up with more than one game_players row
+        # for the same game - e.g. right after merge_player_identities.py
+        # consolidates a split identity, the canonical player briefly has
+        # its own old (now-stale) row alongside the newly-repointed one
+        # until this import naturally settles it. Ordering by "does this
+        # row's external_id already match the live one" first, then
+        # is_active, makes the choice deterministic instead of picking
+        # whichever row Postgres happens to return first - confirmed live
+        # this crashed with a real unique-constraint violation otherwise
+        # (the stale row got its external_id blindly overwritten to a
+        # value the OTHER row already owned).
+        cur.execute(
+            """
+            select id from game_players where game_id = %s and player_id = %s
+            order by (external_id = %s) desc, is_active desc, id desc
+            limit 1
+            """,
+            (game_id, player_id, external_id),
+        )
+        row = cur.fetchone()
         if row:
             game_player_id = row[0]
             cur.execute(
