@@ -35,12 +35,50 @@ AUTH_STATE_FILE = Path("auth_state_fanteam.json")
 # Keywords that suggest an API response is about players/stats/prices/fixtures.
 INTERESTING_KEYWORDS = ["player", "stat", "price", "team", "squad", "gameweek", "fixture", "round", "score", "leaderboard"]
 
+# Real request bodies get captured too now (added after discovering the
+# login endpoint accepts SOMETHING in an "email" field, but never having
+# proof of the real field name for a username-based login) - so any
+# field that could plausibly hold a credential gets its VALUE redacted
+# before anything is written to disk or printed. Only field NAMES ever
+# get saved for a login-shaped request - never a real password, never a
+# real username/email either, out of caution.
+SENSITIVE_FIELD_SUBSTRINGS = ["pass", "pwd", "secret", "token", "email", "user", "login", "identifier"]
+
 captured = []
 
 
 def looks_interesting(url: str) -> bool:
     url_lower = url.lower()
     return any(kw in url_lower for kw in INTERESTING_KEYWORDS)
+
+
+def redact_body(raw_post_data):
+    """None, or {field_name: "<redacted>"} for every field - proves which
+    field names a login-shaped request actually uses without ever saving
+    a real credential value anywhere."""
+    if not raw_post_data:
+        return None
+    try:
+        parsed = json.loads(raw_post_data)
+    except Exception:
+        return {"_unparseable_body_length": len(raw_post_data)}
+    if isinstance(parsed, dict):
+        return {k: "<redacted>" for k in parsed.keys()}
+    return {"_non_object_body_type": type(parsed).__name__}
+
+
+def handle_request(request):
+    if request.method != "POST":
+        return
+    if "login" not in request.url.lower() and "auth" not in request.url.lower() and "session" not in request.url.lower():
+        return
+    try:
+        entry = {"phase": "request", "method": request.method, "url": request.url, "body_field_names": redact_body(request.post_data)}
+        captured.append(entry)
+        print(f"\n[REQUEST] {request.method} {request.url}")
+        print(f"  body field names (values redacted): {entry['body_field_names']}")
+    except Exception as e:
+        print(f"[warn] couldn't process request to {request.url}: {e}")
 
 
 def handle_response(response):
@@ -76,6 +114,7 @@ def main():
         context = browser.new_context()
         page = context.new_page()
         page.on("response", handle_response)
+        page.on("request", handle_request)
 
         print(f"Opening {START_URL} ...")
         page.goto(START_URL, wait_until="domcontentloaded")
