@@ -1140,3 +1140,31 @@ export async function setCaptain({ squadId, captainGamePlayerId, viceCaptainGame
 
   redirect(`/squads/${squadId}`);
 }
+
+/**
+ * Auto Import My Squad - "Sync Now" button (see migration 0071). This
+ * NEVER touches a provider credential or calls a provider's API itself -
+ * by design, only scripts/sync_provider_squads.py (server-side, holding
+ * PROVIDER_SECRETS_KEY) ever does that. All this does is set
+ * sync_requested_at, which a scheduled job (running every few minutes,
+ * same cadence as the golf live-score poller) picks up and clears once
+ * it's actually processed the request. RLS's "own provider squad links
+ * request sync" policy is the real enforcement here - this update simply
+ * can't touch a link that isn't the signed-in user's own squad.
+ */
+export async function requestProviderSync({ squadId }: { squadId: number }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Sign in to sync your squad." };
+
+  const { data: link } = await supabase.from("provider_squad_links").select("id, squad_id").eq("squad_id", squadId).maybeSingle();
+  if (!link) return { error: "This squad isn't linked to a provider yet." };
+
+  const { error } = await supabase.from("provider_squad_links").update({ sync_requested_at: new Date().toISOString() }).eq("id", link.id);
+  if (error) return { error: error.message };
+
+  revalidatePath(`/squads/${squadId}`);
+  return { success: true as const };
+}

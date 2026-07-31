@@ -1,0 +1,36 @@
+name: Provider squad sync (Sync Now)
+
+# The frequent half of Auto Import My Squad (see migration 0071 and
+# scripts/sync_provider_squads.py). Runs every 5 minutes so a "Sync Now"
+# click on a squad page (frontend/src/app/squads/actions.ts's
+# requestProviderSync - it only ever sets sync_requested_at, never
+# touches a credential itself) completes within a few minutes rather than
+# waiting for the next scheduled full sync. --requested-only makes this
+# cheap on the vast majority of ticks where nobody clicked anything - it
+# does one indexed DB lookup and returns immediately without ever logging
+# into a real provider (see sync_fanteam's own early-exit guard).
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sync-requested:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install psycopg2-binary cryptography playwright
+          playwright install --with-deps chromium
+
+      - name: Sync any requested squads
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PROVIDER_SECRETS_KEY: ${{ secrets.PROVIDER_SECRETS_KEY }}
+        run: python scripts/sync_provider_squads.py --requested-only

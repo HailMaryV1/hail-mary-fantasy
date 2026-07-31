@@ -60,6 +60,8 @@ FANTEAM_TOURNAMENT_GAME_SLUG = {
 
 def load_env():
     env_path = ROOT / ".env"
+    if not env_path.exists():
+        return  # CI sets real env vars directly - no .env file there.
     for line in env_path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -204,7 +206,20 @@ def apply_squad(cur, squad_id, game_id, parsed_squad):
     return changes
 
 
-def sync_fanteam(cur, user_id, credential_row):
+def sync_fanteam(cur, user_id, credential_row, requested_only=False):
+    if requested_only:
+        # Cheap path for the frequent (~5 min) scheduled check - a real
+        # FanTeam login on every single tick, all day, every day, would
+        # hammer their login endpoint for no reason on the ~99% of ticks
+        # where nobody clicked "Sync Now". One indexed lookup answers
+        # "is there anything to do" before paying for a real login.
+        cur.execute(
+            "select 1 from provider_squad_links where provider = 'fanteam_scoutgg' and sync_requested_at is not null limit 1"
+        )
+        if not cur.fetchone():
+            print("  [skip] no sync_requested_at pending - not logging in.")
+            return
+
     email = provider_secrets.decrypt(credential_row["encrypted_username"])
     password = provider_secrets.decrypt(credential_row["encrypted_password"])
     access_token, refresh_token, profile = fanteam.login(email, password)
@@ -263,6 +278,10 @@ def sync_fanteam(cur, user_id, credential_row):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider", choices=["fanteam_scoutgg"], default=None)
+    parser.add_argument(
+        "--requested-only", action="store_true",
+        help="Only act if a 'Sync Now' click is actually pending - for the frequent scheduled check (see .github/workflows/provider_sync_requested.yml). Never logs in otherwise.",
+    )
     args = parser.parse_args()
 
     load_env()
@@ -280,7 +299,7 @@ def main():
                 continue
             print(f"Syncing {provider} ...")
             if provider == "fanteam_scoutgg":
-                sync_fanteam(cur, cred["user_id"], cred)
+                sync_fanteam(cur, cred["user_id"], cred, requested_only=args.requested_only)
             conn.commit()
     except Exception:
         conn.rollback()

@@ -15,6 +15,7 @@ import TransferBoard from "./TransferBoard";
 import MaryRecommendationsPanel from "./MaryRecommendationsPanel";
 import FixtureSwingPanel from "./FixtureSwingPanel";
 import RecentTransfers from "./RecentTransfers";
+import ProviderSyncStatus from "./ProviderSyncStatus";
 
 // EPL season length - same 38 used throughout the scoring pipeline
 // (compute_projections.py's season_games weight, wildcard windows below).
@@ -74,6 +75,15 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
     .eq("id", squadId)
     .single();
   if (!squad || squad.user_id !== user?.id) notFound();
+
+  // Auto Import My Squad (migration 0071) - a squad either has exactly
+  // one provider link or none at all (unique(squad_id)), so this is
+  // always a single-row lookup, never a list.
+  const { data: providerLink } = await supabase
+    .from("provider_squad_links")
+    .select("provider, last_synced_at, last_sync_status, last_sync_error, last_change_summary, sync_requested_at")
+    .eq("squad_id", squadId)
+    .maybeSingle();
 
   const { data: rules } = await supabase
     .from("game_squad_rules")
@@ -333,6 +343,19 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
         {hasCalendar && !seasonStarted && " · Unlimited transfers (pre-season)"}
         {wildcardActiveThisWeek && " · Wildcard active this gameweek"}
       </p>
+      {providerLink && (
+        <div className="mt-3">
+          <ProviderSyncStatus
+            squadId={squadId}
+            provider={providerLink.provider}
+            lastSyncedAt={providerLink.last_synced_at}
+            lastSyncStatus={providerLink.last_sync_status}
+            lastSyncError={providerLink.last_sync_error}
+            lastChangeSummary={providerLink.last_change_summary}
+            syncRequested={providerLink.sync_requested_at != null}
+          />
+        </div>
+      )}
     </div>
   );
 

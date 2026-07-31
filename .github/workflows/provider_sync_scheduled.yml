@@ -1,0 +1,35 @@
+name: Provider squad sync (scheduled)
+
+# The regular half of Auto Import My Squad (see migration 0071 and
+# scripts/sync_provider_squads.py) - discovers any new real entries and
+# re-syncs every linked, enabled squad on its own, independent of anyone
+# clicking "Sync Now" (that's provider_sync_requested.yml's job, every 5
+# minutes). Every 20 minutes is frequent enough to catch a real transfer
+# or captain change without hammering FanTeam's login endpoint (no
+# confirmed refresh-token flow there yet - see
+# scripts/provider_fanteam_scoutgg.py - so every run is a fresh login).
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install psycopg2-binary cryptography playwright
+          playwright install --with-deps chromium
+
+      - name: Sync provider squads
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PROVIDER_SECRETS_KEY: ${{ secrets.PROVIDER_SECRETS_KEY }}
+        run: python scripts/sync_provider_squads.py
