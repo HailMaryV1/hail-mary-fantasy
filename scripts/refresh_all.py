@@ -4,10 +4,12 @@ refresh_all.py
 Single entrypoint for the automated data-refresh pipeline (see
 .github/workflows/refresh_data.yml, twice-daily cron): odds -> fixture
 extras -> SportMonks player props -> probabilities -> FanTeam player
-pull -> import -> recompute scores for every upcoming gameweek. Every
-step here is
-authentication-free (the FanTeam player pull needs no login - confirmed
-live, see scraper_fanteam.py) so this can run entirely unattended in CI.
+pull -> import -> recompute scores for every upcoming gameweek, then the
+same players/fixtures/recompute shape again for Cloud FF. Every step
+here is authentication-free (the FanTeam player pull needs no login -
+confirmed live, see scraper_fanteam.py; Cloud FF's getPlayerList and
+fixtures.json are both confirmed live unauthenticated, see
+scraper_cloudff.py) so this can run entirely unattended in CI.
 
 Deliberately excludes:
   - compute_team_strength.py - manually re-run from screenshot odds, not
@@ -18,6 +20,10 @@ Deliberately excludes:
     if the season's schedule ever changes.
   - Dream Team - no live scrape source at all yet (existing, unrelated
     limitation).
+  - Cloud FF's own Auto Import My Squad sync (scripts/sync_provider_
+    squads.py) - that's a per-user credential flow with its own
+    dedicated scheduled workflows (provider_sync_requested.yml /
+    provider_sync_scheduled.yml), not part of this game-data refresh.
 
 Each step's failure is logged but doesn't abort the rest (e.g. a
 transient Odds API hiccup shouldn't also block the FanTeam player pull,
@@ -82,7 +88,7 @@ def current_golf_tournament(conn):
     return row[0] if row else None
 
 
-def upcoming_gameweeks(conn):
+def upcoming_gameweeks(conn, game_slug):
     cur = conn.cursor()
     cur.execute(
         """
@@ -90,11 +96,11 @@ def upcoming_gameweeks(conn):
         from game_fixture_gameweeks gfg
         join fixtures f on f.id = gfg.fixture_id
         join fantasy_games fg on fg.id = gfg.game_id
-        where fg.slug = 'fanteam' and f.kickoff_at >= now()
+        where fg.slug = %s and f.kickoff_at >= now()
         order by gfg.gameweek
         limit %s
         """,
-        (MAX_GAMEWEEKS_AHEAD,),
+        (game_slug, MAX_GAMEWEEKS_AHEAD),
     )
     return [row[0] for row in cur.fetchall()]
 
@@ -119,7 +125,7 @@ def main():
 
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:
-        gameweeks = upcoming_gameweeks(conn)
+        gameweeks = upcoming_gameweeks(conn, "fanteam")
     finally:
         conn.close()
 
@@ -130,6 +136,31 @@ def main():
         for gw in gameweeks:
             results.append(
                 run_step(f"Recompute FanTeam GW{gw}", ["scripts/compute_projections.py", "fanteam", "--gameweek", str(gw)])
+            )
+
+    # Cloud FF - same players/fixtures/recompute shape as FanTeam above,
+    # its own two real unauthenticated endpoints (see scraper_cloudff.py).
+    # seed_cloudff_historical_stats.py is idempotent (skips any Cloud FF
+    # game_player that already has a historical row - see its own
+    # docstring) so it's safe to run every cycle, picking up newly-signed
+    # players as import_cloudff.py adds them.
+    results.append(run_step("Cloud FF players + fixtures (no login needed)", ["scraper_cloudff.py"]))
+    results.append(run_step("Import Cloud FF players + fixtures", ["import_cloudff.py"]))
+    results.append(run_step("Seed Cloud FF historical stats", ["scripts/seed_cloudff_historical_stats.py"]))
+
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    try:
+        cloudff_gameweeks = upcoming_gameweeks(conn, "cloudff")
+    finally:
+        conn.close()
+
+    if not cloudff_gameweeks:
+        print("\nNo upcoming Cloud FF gameweeks found in game_fixture_gameweeks - skipping score recompute.")
+    else:
+        print(f"\nRecomputing Hail Mary Score for Cloud FF gameweeks: {cloudff_gameweeks}")
+        for gw in cloudff_gameweeks:
+            results.append(
+                run_step(f"Recompute Cloud FF GW{gw}", ["scripts/compute_projections.py", "cloudff", "--gameweek", str(gw)])
             )
 
     results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
