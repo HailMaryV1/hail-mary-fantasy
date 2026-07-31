@@ -18,30 +18,41 @@ this script:
      "Sync Now" button (which only ever sets that column - see migration
      0071's RLS policy comment) knows its request was picked up.
 
-Player matching is name+price based (surname_key, the same technique -
-and the same compound-surname fix - already proven correct elsewhere in
-this codebase for FanTeam data; see import_fanteam_live.py's own
-surname_key docstring for the Ta Bi/Manzambi bug this avoids repeating),
-scoped to the target game's own player pool. A provider player that can't
-be matched with EXACTLY one confident candidate is logged and skipped
-rather than guessed - a wrong player silently entering a real squad would
-be far worse than a gap.
+Every provider adapter resolves its own real squad data down to a list
+of real game_player_ids, then hands off to the one shared write/diff
+function, apply_resolved_squad - that's the actual "one shared squad-
+sync architecture" boundary (not five disconnected per-provider
+writers). How a provider gets to a game_player_id varies: FanTeam's
+squad page is DOM-only and only exposes display names, so apply_squad
+resolves via name+price matching (surname_key, the same technique - and
+the same compound-surname fix - already proven correct elsewhere in
+this codebase; see import_fanteam_live.py's own surname_key docstring
+for the Ta Bi/Manzambi bug this avoids repeating), scoped to the target
+game's own player pool - a provider player that can't be matched with
+EXACTLY one confident candidate is logged and skipped rather than
+guessed, a wrong player silently entering a real squad being far worse
+than a gap. Cloud FF's real API returns real numeric PlayerIDs directly
+(sync_cloudff), which already equal game_players.external_id from
+import_cloudff.py - no name-matching needed at all.
 
 RUN:
     python3 scripts/sync_provider_squads.py                  # every due link
     python3 scripts/sync_provider_squads.py --provider fanteam_scoutgg
+    python3 scripts/sync_provider_squads.py --provider cloudff
 """
 import argparse
 import json
 import os
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import provider_cloudff as cloudff
 import provider_fanteam_scoutgg as fanteam
 import provider_secrets
 from activity_log import log_event
@@ -56,6 +67,12 @@ ROOT = Path(__file__).resolve().parent.parent
 FANTEAM_TOURNAMENT_GAME_SLUG = {
     "1131483": "fanteam",  # EPL Fantasy Season Game [Micro] - real, verified 2026-07-30
 }
+
+# Cloud FF is a single ongoing season game, not tournament-based like
+# FanTeam - there's exactly one real team per account, so this constant
+# stands in for provider_squad_links.external_tournament_id (NOT NULL)
+# where FanTeam would use a real tournament_id.
+CLOUDFF_SEASON_TOKEN = "season"
 
 
 def load_env():
@@ -169,41 +186,32 @@ def get_or_create_squad_link(cur, user_id, provider, game_slug, tournament_id, t
     return squad_id, link_id
 
 
-def apply_squad(cur, squad_id, game_id, parsed_squad):
-    """Writes the parsed provider squad into squads/squad_players, diffed
-    against what's already there. Returns a list of human-readable change
-    summary strings (empty on a genuinely unchanged re-sync)."""
+def apply_resolved_squad(cur, squad_id, resolved):
+    """Writes an ALREADY-RESOLVED squad into squads/squad_players, diffed
+    against what's already there - the provider-agnostic half of squad
+    sync. `resolved` is a list of dicts: {"game_player_id", "is_starting",
+    "bench_order", "is_captain", "is_vice_captain"}. Every provider
+    adapter funnels into this same function once it has real
+    game_player_ids in hand (FanTeam via apply_squad's name-matching
+    below; Cloud FF directly, since its real PlayerIDs already equal
+    game_players.external_id - see sync_cloudff) - this is the "one
+    shared squad-sync architecture" boundary, not five disconnected
+    per-provider writers. Returns a list of human-readable change summary
+    strings (empty on a genuinely unchanged re-sync)."""
     changes = []
-    all_entries = [dict(p, is_starting=True) for p in parsed_squad["starting"]] + [
-        dict(p, is_starting=False) for p in parsed_squad["bench"]
-    ]
-
-    resolved = []
-    unmatched = []
-    for idx, entry in enumerate(all_entries):
-        gpid = match_player(cur, game_id, entry["name"], entry["price"], POSITION_CODE.get(entry["position"]))
-        if gpid is None:
-            unmatched.append(entry["name"])
-            continue
-        resolved.append((gpid, entry, idx))
-    if unmatched:
-        changes.append(f"Could not confidently match: {', '.join(unmatched)} - left out of the synced squad, needs a manual look.")
 
     cur.execute("select game_player_id, is_starting, bench_order from squad_players where squad_id = %s", (squad_id,))
     before = {r["game_player_id"]: r for r in cur.fetchall()}
     cur.execute("select captain_game_player_id, vice_captain_game_player_id from squads where id = %s", (squad_id,))
     before_squad = cur.fetchone()
 
-    after_ids = {gpid for gpid, _, _ in resolved}
+    after_ids = {e["game_player_id"] for e in resolved}
     removed_ids = set(before.keys()) - after_ids
     added_ids = after_ids - set(before.keys())
 
     if removed_ids:
         cur.execute("delete from squad_players where squad_id = %s and game_player_id = any(%s)", (squad_id, list(removed_ids)))
-    for gpid, entry, idx in resolved:
-        bench_order = None
-        if not entry["is_starting"] and entry["position"] != "GK":
-            bench_order = [e["is_starting"] for e in all_entries[:idx]].count(False) or 1
+    for e in resolved:
         cur.execute(
             """
             insert into squad_players (squad_id, game_player_id, is_starting, bench_order)
@@ -211,11 +219,11 @@ def apply_squad(cur, squad_id, game_id, parsed_squad):
             on conflict (squad_id, game_player_id)
             do update set is_starting = excluded.is_starting, bench_order = excluded.bench_order
             """,
-            (squad_id, gpid, entry["is_starting"], bench_order),
+            (squad_id, e["game_player_id"], e["is_starting"], e["bench_order"]),
         )
 
-    captain_gpid = next((gpid for gpid, e, _ in resolved if e["is_captain"]), None)
-    vice_gpid = next((gpid for gpid, e, _ in resolved if e["is_vice_captain"]), None)
+    captain_gpid = next((e["game_player_id"] for e in resolved if e["is_captain"]), None)
+    vice_gpid = next((e["game_player_id"] for e in resolved if e["is_vice_captain"]), None)
     cur.execute(
         "update squads set captain_game_player_id = %s, vice_captain_game_player_id = %s, updated_at = now() where id = %s",
         (captain_gpid, vice_gpid, squad_id),
@@ -232,6 +240,37 @@ def apply_squad(cur, squad_id, game_id, parsed_squad):
     if before_squad and before_squad["vice_captain_game_player_id"] != vice_gpid:
         changes.append("Vice-captain changed")
 
+    return changes
+
+
+def apply_squad(cur, squad_id, game_id, parsed_squad):
+    """FanTeam-specific: resolves the DOM-parsed squad (name/price/
+    position per entry) to real game_player_ids via match_player, then
+    hands off to apply_resolved_squad. Returns the same change-summary
+    list, with an extra entry up front for anything that couldn't be
+    confidently matched."""
+    all_entries = [dict(p, is_starting=True) for p in parsed_squad["starting"]] + [
+        dict(p, is_starting=False) for p in parsed_squad["bench"]
+    ]
+
+    resolved = []
+    unmatched = []
+    for idx, entry in enumerate(all_entries):
+        gpid = match_player(cur, game_id, entry["name"], entry["price"], POSITION_CODE.get(entry["position"]))
+        if gpid is None:
+            unmatched.append(entry["name"])
+            continue
+        bench_order = None
+        if not entry["is_starting"] and entry["position"] != "GK":
+            bench_order = [e["is_starting"] for e in all_entries[:idx]].count(False) or 1
+        resolved.append({
+            "game_player_id": gpid, "is_starting": entry["is_starting"], "bench_order": bench_order,
+            "is_captain": entry["is_captain"], "is_vice_captain": entry["is_vice_captain"],
+        })
+
+    changes = apply_resolved_squad(cur, squad_id, resolved)
+    if unmatched:
+        changes.insert(0, f"Could not confidently match: {', '.join(unmatched)} - left out of the synced squad, needs a manual look.")
     return changes
 
 
@@ -315,9 +354,145 @@ def sync_fanteam(cur, user_id, credential_row, requested_only=False):
             browser.close()
 
 
+def get_current_gameweek(cur, game_id):
+    """The nearest gameweek that hasn't kicked off yet, from this game's
+    own real fixture/gameweek mapping (already imported) - matches the
+    real app's own "curgw" usage (confirmed live: 1, pre-season). Falls
+    back to the latest known gameweek if every fixture has already kicked
+    off, rather than crashing."""
+    cur.execute(
+        """
+        select min(gfg.gameweek) as gw from game_fixture_gameweeks gfg
+        join fixtures f on f.id = gfg.fixture_id
+        where gfg.game_id = %s and f.kickoff_at > now()
+        """,
+        (game_id,),
+    )
+    row = cur.fetchone()
+    if row and row["gw"] is not None:
+        return row["gw"]
+    cur.execute("select max(gameweek) as gw from game_fixture_gameweeks where game_id = %s", (game_id,))
+    row = cur.fetchone()
+    return row["gw"] if row and row["gw"] is not None else 1
+
+
+def sync_cloudff(cur, user_id, credential_row, requested_only=False):
+    if requested_only:
+        cur.execute(
+            "select 1 from provider_squad_links where provider = 'cloudff' and sync_requested_at is not null limit 1"
+        )
+        if not cur.fetchone():
+            print("  [skip] no sync_requested_at pending - not logging in.")
+            return
+
+    game_slug = "cloudff"
+    cur.execute("select id from fantasy_games where slug = %s", (game_slug,))
+    game_id = cur.fetchone()["id"]
+
+    # Reuse the stored access token while it's still valid - confirmed
+    # live that Cloud FF's token lasts a full 14 days (see
+    # provider_cloudff.py's module docstring), unlike FanTeam's ~3h token
+    # which forces a fresh login on every single run.
+    access_token = None
+    team_id = None
+    expires_at = credential_row["access_token_expires_at"]
+    if credential_row["encrypted_access_token"] and expires_at and expires_at > datetime.now(timezone.utc) + timedelta(hours=1):
+        access_token = provider_secrets.decrypt(credential_row["encrypted_access_token"])
+        cur.execute(
+            """
+            select psl.external_team_id from provider_squad_links psl
+            join squads s on s.id = psl.squad_id
+            where psl.provider = 'cloudff' and s.user_id = %s
+            limit 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        team_id = row["external_team_id"] if row else None
+
+    if access_token is None or team_id is None:
+        # No usable cached token/team_id (first run, expired token, or a
+        # cached token with no known link yet) - a real login is the only
+        # way to learn team_id at all, since Cloud FF's own token IS the
+        # "which team do I have" answer (see provider_cloudff.py).
+        email = provider_secrets.decrypt(credential_row["encrypted_username"])
+        password = provider_secrets.decrypt(credential_row["encrypted_password"])
+        access_token, claims = cloudff.login(email, password)
+        expires_at = datetime.fromtimestamp(claims["exp"], tz=timezone.utc)
+        team_id = str(claims["team_id"])
+        cur.execute(
+            """
+            update provider_credentials
+            set encrypted_access_token = %s, access_token_expires_at = %s,
+                last_refreshed_at = now(), last_refresh_error = null
+            where id = %s
+            """,
+            (provider_secrets.encrypt(access_token), expires_at, credential_row["id"]),
+        )
+
+    squad_id, link_id = get_or_create_squad_link(
+        cur, user_id, "cloudff", game_slug, CLOUDFF_SEASON_TOKEN, team_id, "Cloud Fantasy Football"
+    )
+
+    try:
+        current_gameweek = get_current_gameweek(cur, game_id)
+        raw_squad = cloudff.fetch_squad(access_token, team_id, current_gameweek)
+
+        cur.execute("select external_id, id from game_players where game_id = %s", (game_id,))
+        gpid_by_external = {r["external_id"]: r["id"] for r in cur.fetchall()}
+
+        resolved, unmatched_ids = [], []
+        for position, player_ids in raw_squad.items():
+            for pid in player_ids:
+                gpid = gpid_by_external.get(str(pid))
+                if gpid is None:
+                    unmatched_ids.append(pid)
+                    continue
+                # Cloud FF's real API has no bench/captain concept at all
+                # (confirmed live against the full response - see
+                # provider_cloudff.py's module docstring) - every player
+                # counts as starting, and the position breakdown itself
+                # already is the formation.
+                resolved.append({
+                    "game_player_id": gpid, "is_starting": True, "bench_order": None,
+                    "is_captain": False, "is_vice_captain": False,
+                })
+
+        changes = apply_resolved_squad(cur, squad_id, resolved)
+        if unmatched_ids:
+            changes.insert(0, f"Could not match Cloud FF PlayerIDs to a Hail Mary player: {unmatched_ids} - run import_cloudff.py again.")
+        summary = "; ".join(changes) if changes else "No changes detected"
+
+        cur.execute(
+            """
+            update provider_squad_links
+            set last_synced_at = now(), last_sync_status = 'ok', last_sync_error = null,
+                last_change_summary = %s, sync_requested_at = null, updated_at = now()
+            where id = %s
+            """,
+            (summary, link_id),
+        )
+        log_event(
+            cur, "provider_squad_synced", f"Cloud FF squad synced: {summary}",
+            game_id=game_id, details={"provider": "cloudff", "team_id": team_id, "changes": changes},
+        )
+        print(f"  [ok] cloudff team {team_id}: {summary}")
+    except Exception as e:
+        cur.execute(
+            """
+            update provider_squad_links
+            set last_sync_status = 'error', last_sync_error = %s, sync_requested_at = null, updated_at = now()
+            where id = %s
+            """,
+            (str(e), link_id),
+        )
+        log_event(cur, "provider_sync_failed", f"Cloud FF sync failed: {e}", game_id=game_id)
+        print(f"  [error] cloudff team {team_id}: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--provider", choices=["fanteam_scoutgg"], default=None)
+    parser.add_argument("--provider", choices=["fanteam_scoutgg", "cloudff"], default=None)
     parser.add_argument(
         "--requested-only", action="store_true",
         help="Only act if a 'Sync Now' click is actually pending - for the frequent scheduled check (see .github/workflows/provider_sync_requested.yml). Never logs in otherwise.",
@@ -329,7 +504,7 @@ def main():
     conn.autocommit = False
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    providers = [args.provider] if args.provider else ["fanteam_scoutgg"]
+    providers = [args.provider] if args.provider else ["fanteam_scoutgg", "cloudff"]
     try:
         for provider in providers:
             cur.execute("select * from provider_credentials where provider = %s", (provider,))
@@ -340,6 +515,8 @@ def main():
             print(f"Syncing {provider} ...")
             if provider == "fanteam_scoutgg":
                 sync_fanteam(cur, cred["user_id"], cred, requested_only=args.requested_only)
+            elif provider == "cloudff":
+                sync_cloudff(cur, cred["user_id"], cred, requested_only=args.requested_only)
             conn.commit()
     except Exception:
         conn.rollback()

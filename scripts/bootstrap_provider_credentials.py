@@ -84,8 +84,49 @@ def bootstrap_fanteam(cur, user_id):
     print("Stored (encrypted) - run scripts/sync_provider_squads.py --provider fanteam_scoutgg to import your real squads.")
 
 
+def bootstrap_cloudff(cur, user_id):
+    import provider_cloudff as cloudff
+    from datetime import datetime, timezone
+
+    print("Cloud Fantasy Football (cloud-ff.co.uk) - email-based login.")
+    email = input("Cloud FF email: ").strip()
+    password = getpass.getpass("Cloud FF password (not shown): ")
+
+    print("Verifying against the real login endpoint ...")
+    access_token, claims = cloudff.login(email, password)
+    print(f"  Logged in as team_id={claims.get('team_id')} - credentials are real and working.")
+
+    # Caches the token from this real login too - the first real sync run
+    # can reuse it directly (Cloud FF's token lasts 14 days, see
+    # provider_cloudff.py) instead of paying for a second login right away.
+    expires_at = datetime.fromtimestamp(claims["exp"], tz=timezone.utc)
+    cur.execute(
+        """
+        insert into provider_credentials
+            (user_id, provider, auth_method, encrypted_username, encrypted_password,
+             encrypted_access_token, access_token_expires_at, last_refreshed_at)
+        values (%s, 'cloudff', 'encrypted_password', %s, %s, %s, %s, now())
+        on conflict (user_id, provider) do update set
+          auth_method = excluded.auth_method,
+          encrypted_username = excluded.encrypted_username,
+          encrypted_password = excluded.encrypted_password,
+          encrypted_access_token = excluded.encrypted_access_token,
+          access_token_expires_at = excluded.access_token_expires_at,
+          last_refreshed_at = now(),
+          last_refresh_error = null,
+          updated_at = now()
+        """,
+        (
+            user_id, provider_secrets.encrypt(email), provider_secrets.encrypt(password),
+            provider_secrets.encrypt(access_token), expires_at,
+        ),
+    )
+    print("Stored (encrypted) - run scripts/sync_provider_squads.py --provider cloudff to import your real squad.")
+
+
 BOOTSTRAPPERS = {
     "fanteam_scoutgg": bootstrap_fanteam,
+    "cloudff": bootstrap_cloudff,
 }
 
 
