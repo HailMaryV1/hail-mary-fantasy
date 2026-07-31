@@ -263,24 +263,80 @@ export async function runAskMaryAnalysis(
   // prediction's planning_horizon column.
   const captainHorizonGameweeks = 1;
 
-  const { data: rulesRow } = await supabase
-    .from("game_squad_rules")
-    .select("budget, max_per_club, squad_size, starting_size")
-    .eq("game_id", fanteamGame.id)
-    .single();
+  // Every query below reads only the input params (fanteamGame.id,
+  // squad.id, or the hardcoded "fanteam" slug) - none of them depend on
+  // another query's result, so they're fetched together instead of one
+  // await at a time. That sequential-by-default pattern was previously
+  // adding 4+ real round trips of pure network latency to every Ask Mary
+  // page load before any recommendation math even started - confirmed by
+  // measuring a live page's TTFB. fixturesRaw/difficultyRaw (used much
+  // further down, alongside the fixture-block/swing computations) and
+  // getSeasonTiming's own query are folded into this same batch for the
+  // same reason - their own inputs are equally independent, they were
+  // just physically written later in the function.
+  const nowIso = new Date().toISOString();
+  const [
+    { data: rulesRow },
+    { data: formationsRaw },
+    { data: squadPlayersRaw },
+    { data: poolRaw },
+    { data: formRows },
+    { data: gwRow },
+    { data: fixturesRaw },
+    { data: difficultyRaw },
+    seasonTiming,
+  ] = await Promise.all([
+    supabase.from("game_squad_rules").select("budget, max_per_club, squad_size, starting_size").eq("game_id", fanteamGame.id).single(),
+    // Needed to know which players in a hypothetical squad would actually
+    // START (and therefore actually score) - see optimalXITotal below.
+    supabase.from("game_formations").select("code, gk_count, def_count, mid_count, fwd_count").eq("game_id", fanteamGame.id).order("code"),
+    supabase
+      .from("squad_players")
+      .select("game_player_id, is_starting, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
+      .eq("squad_id", squad.id)
+      .returns<SquadPlayerRow[]>(),
+    supabase.from("game_player_pool").select("*").eq("game_slug", "fanteam").returns<PoolRow[]>(),
+    // Hail Mary Form - same merge pattern as every other surface, sourced
+    // from the frozen prediction archive (migration 0044) rather than
+    // game_player_pool. Threaded through poolCandidates below so a
+    // recommended buy's form shows up on BundleTransfer.inFormStatus.
+    // completed gameweeks only - also keeps this well under PostgREST's
+    // default row cap across a full season.
+    supabase
+      .from("player_gameweek_predictions")
+      .select("game_player_id, gameweek, points_difference")
+      .eq("game_id", fanteamGame.id)
+      .not("points_difference", "is", null),
+    supabase
+      .from("game_fixture_gameweeks")
+      .select("gameweek, fixtures!inner(kickoff_at)")
+      .eq("game_id", fanteamGame.id)
+      .gte("fixtures.kickoff_at", nowIso)
+      .order("gameweek", { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("game_fixture_gameweeks")
+      .select(
+        "gameweek, fixtures(id, home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))"
+      )
+      .eq("game_id", fanteamGame.id)
+      .gte("fixtures.kickoff_at", nowIso)
+      .order("gameweek"),
+    supabase
+      .from("team_fixture_difficulty")
+      .select("fixture_id, team_id, attack_score, clean_sheet_score")
+      .eq("game_id", fanteamGame.id)
+      .returns<{ fixture_id: number; team_id: number; attack_score: number; clean_sheet_score: number }[]>(),
+    getSeasonTiming(supabase, fanteamGame.id),
+  ]);
+
   if (!rulesRow) return null;
   // Reassigned to a plain non-null const - TypeScript's control-flow
   // narrowing from the guard above doesn't carry into nested function
   // declarations below.
   const rules = rulesRow;
 
-  // Needed to know which players in a hypothetical squad would actually
-  // START (and therefore actually score) - see optimalXITotal below.
-  const { data: formationsRaw } = await supabase
-    .from("game_formations")
-    .select("code, gk_count, def_count, mid_count, fwd_count")
-    .eq("game_id", fanteamGame.id)
-    .order("code");
   const formations: Formation[] = (formationsRaw ?? []).map((f) => ({
     code: f.code,
     gk_count: f.gk_count,
@@ -289,23 +345,6 @@ export async function runAskMaryAnalysis(
     fwd_count: f.fwd_count,
   }));
 
-  const { data: squadPlayersRaw } = await supabase
-    .from("squad_players")
-    .select("game_player_id, is_starting, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
-    .eq("squad_id", squad.id)
-    .returns<SquadPlayerRow[]>();
-
-  const { data: poolRaw } = await supabase.from("game_player_pool").select("*").eq("game_slug", "fanteam").returns<PoolRow[]>();
-
-  // Hail Mary Form - same merge pattern as every other surface, sourced
-  // from the frozen prediction archive (migration 0044) rather than
-  // game_player_pool. Threaded through poolCandidates below so a
-  // recommended buy's form shows up on BundleTransfer.inFormStatus.
-  const { data: formRows } = await supabase
-    .from("player_gameweek_predictions")
-    .select("game_player_id, gameweek, points_difference")
-    .eq("game_id", fanteamGame.id)
-    .not("points_difference", "is", null); // completed gameweeks only - also keeps this well under PostgREST's default row cap across a full season
   const formByGamePlayerId = buildFormByGamePlayerId(formRows ?? []);
   const pool: PoolRow[] = (poolRaw ?? []).map((p) => ({ ...p, formStatus: formByGamePlayerId.get(p.game_player_id)?.status ?? null }));
   const poolByGamePlayerId = new Map(pool.map((p) => [p.game_player_id, p]));
@@ -334,17 +373,9 @@ export async function runAskMaryAnalysis(
   const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
   const squadTeamsSet = new Set(squadPlayers.map((p) => p.team_name));
 
-  const { data: gwRow } = await supabase
-    .from("game_fixture_gameweeks")
-    .select("gameweek, fixtures!inner(kickoff_at)")
-    .eq("game_id", fanteamGame.id)
-    .gte("fixtures.kickoff_at", new Date().toISOString())
-    .order("gameweek", { ascending: true })
-    .limit(1)
-    .maybeSingle();
   const currentGameweek: number | null = gwRow?.gameweek ?? null;
   const hasCalendar = currentGameweek !== null;
-  const { seasonStarted, planningGameweek } = await getSeasonTiming(supabase, fanteamGame.id);
+  const { seasonStarted, planningGameweek } = seasonTiming;
 
   const freeTransfersBanked = seasonStarted ? squad.free_transfers : Infinity;
 
@@ -456,19 +487,7 @@ export async function runAskMaryAnalysis(
     };
   }
 
-  const { data: fixturesRaw } = await supabase
-    .from("game_fixture_gameweeks")
-    .select(
-      "gameweek, fixtures(id, home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))"
-    )
-    .eq("game_id", fanteamGame.id)
-    .gte("fixtures.kickoff_at", new Date().toISOString())
-    .order("gameweek");
-  const { data: difficultyRaw } = await supabase
-    .from("team_fixture_difficulty")
-    .select("fixture_id, team_id, attack_score, clean_sheet_score")
-    .eq("game_id", fanteamGame.id)
-    .returns<{ fixture_id: number; team_id: number; attack_score: number; clean_sheet_score: number }[]>();
+  // fixturesRaw/difficultyRaw already fetched in the initial Promise.all above.
   const difficultyByFixtureTeam = new Map((difficultyRaw ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, d]));
 
   const fixtureRows: FixtureDifficultyRow[] = [];
