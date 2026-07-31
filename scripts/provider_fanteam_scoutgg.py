@@ -109,8 +109,18 @@ def login(username, password):
 def list_my_teams(access_token):
     """[{"fantasy_team_id": str, "tournament_id": str}, ...] - every real
     entry across every FanTeam product (football/golf/NFL) on this
-    account. tournaments/@me, confirmed live."""
-    status, body = _http_json(f"{GAME_BASE}/tournaments/@me", headers={"Authorization": f"Bearer {access_token}"})
+    account. tournaments/@me, confirmed live - but only WITH the
+    "bearer[white_label]=fanteam" query param. Without it this returns
+    HTTP 401 {"error": "no_client"} even with a genuinely valid token
+    (confirmed live: the exact same token, same header, only the query
+    string different) - Scout Gaming's backend serves several white-label
+    sites off one platform and apparently needs the product told apart
+    explicitly for this particular "@me" (i.e. cross-tournament) endpoint,
+    unlike the single-tournament endpoints (players/fixtures) this
+    project already used successfully without it."""
+    status, body = _http_json(
+        f"{GAME_BASE}/tournaments/@me?bearer%5Bwhite_label%5D=fanteam", headers={"Authorization": f"Bearer {access_token}"}
+    )
     if status != 200 or not body:
         raise RuntimeError(f"FanTeam tournaments/@me failed: HTTP {status}")
     return [
