@@ -22,6 +22,11 @@ Two real mechanisms, confirmed live against the user's actual account on
      else in this file.
      GET  https://fanteam-game.api.scoutgg.net/tournaments/@me
        (Authorization: Bearer <token>) -> {"fantasyTeams": [{"id", "tournamentId", ...}, ...]}
+     ABANDONED as the "which teams do I have" mechanism, though - even
+     with the right token AND the white_label param this still returns
+     an empty fantasyTeams list for the real account (see list_my_teams'
+     docstring for the full story). "Which teams do I have" is instead
+     answered by mechanism 3 below (DOM-based, not REST).
    No confirmed silent-refresh endpoint was found during discovery (the
    captured refreshToken's own `exp` claim was already identical to the
    access token's, and no distinct refresh URL ever appeared in 82
@@ -50,6 +55,12 @@ Two real mechanisms, confirmed live against the user's actual account on
    semantic reading order of the text FanTeam itself renders, which is
    far more stable.
 
+3. "Which teams do I have" - also NOT a JSON endpoint, same reasoning as
+   #2 above. FanTeam's own "My Entries" page lists every real entry with
+   a real per-row link matching /fantasy/edit/{tournamentId}/{teamId} -
+   confirmed live against the real account's real entry. See
+   discover_my_teams' docstring for the full mechanism.
+
 Real squad token grammar (confirmed, not guessed) per starting-XI player:
     [captain-badge?] name, team_short, opponent_short, price
 followed once per position group by that group's label
@@ -63,6 +74,7 @@ Not a standalone script - imported by scripts/sync_provider_squads.py.
 """
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -107,17 +119,22 @@ def login(username, password):
 
 
 def list_my_teams(access_token):
-    """[{"fantasy_team_id": str, "tournament_id": str}, ...] - every real
-    entry across every FanTeam product (football/golf/NFL) on this
-    account. tournaments/@me, confirmed live - but only WITH the
-    "bearer[white_label]=fanteam" query param. Without it this returns
-    HTTP 401 {"error": "no_client"} even with a genuinely valid token
-    (confirmed live: the exact same token, same header, only the query
-    string different) - Scout Gaming's backend serves several white-label
-    sites off one platform and apparently needs the product told apart
-    explicitly for this particular "@me" (i.e. cross-tournament) endpoint,
-    unlike the single-tournament endpoints (players/fixtures) this
-    project already used successfully without it."""
+    """ABANDONED - kept only as a documented dead end. tournaments/@me
+    with "bearer[white_label]=fanteam" fixed the earlier HTTP 401
+    "no_client" error (confirmed live: same token, same header, only the
+    query string different), but the endpoint then returns an EMPTY
+    fantasyTeams list for this real account even so - confirmed live
+    using the browser's own genuinely valid, currently-active session
+    token (not a token minted by this script), while the real FanTeam app
+    itself, in that same browser, in that same moment, clearly showed one
+    real team on screen. This is not an auth or account problem (the
+    account was independently confirmed correct - see
+    discover_my_teams' docstring) - the real app sends something to this
+    specific endpoint that a plain Authorization-header fetch doesn't
+    replicate, and it was never identified. fantasy_teams/entries was
+    also tried and returns user.not_authorized/no_client depending on
+    param combination - also unresolved. Do not resume down this path
+    without new evidence; use discover_my_teams instead."""
     status, body = _http_json(
         f"{GAME_BASE}/tournaments/@me?bearer%5Bwhite_label%5D=fanteam", headers={"Authorization": f"Bearer {access_token}"}
     )
@@ -127,6 +144,110 @@ def list_my_teams(access_token):
         {"fantasy_team_id": str(t["id"]), "tournament_id": str(t["tournamentId"])}
         for t in body.get("fantasyTeams", [])
     ]
+
+
+def _click_shadow_text(page, text):
+    """Clicks the first leaf element anywhere in the page - including
+    nested shadow roots - whose trimmed text matches `text`
+    (case-insensitive). Used instead of navigating to a guessed URL:
+    directly navigating to https://www.fanteam.com/my-overview/upcoming
+    was confirmed live, in a real logged-in session, to sometimes bounce
+    to a generic lobby page and silently clear the stored auth token.
+    Clicking FanTeam's own real nav link never had that problem. Returns
+    True if something was clicked."""
+    return page.evaluate(
+        """
+        (targetText) => {
+          function walk(root) {
+            for (const el of root.querySelectorAll('*')) {
+              if (el.shadowRoot) { const r = walk(el.shadowRoot); if (r) return true; }
+              if (el.children.length === 0 && (el.textContent || '').trim().toUpperCase() === targetText) {
+                el.click();
+                return true;
+              }
+            }
+            return false;
+          }
+          return walk(document);
+        }
+        """,
+        text.upper(),
+    )
+
+
+def _expand_all_entry_rows(page):
+    """Clicks every "expando" toggle on the My Entries table (confirmed
+    live token capture: each entry row's real team ID only appears in the
+    DOM once its row is expanded) - across all shadow roots, best-effort,
+    no return value."""
+    page.evaluate(
+        """
+        () => {
+          function walk(root) {
+            root.querySelectorAll('*').forEach(el => {
+              if (el.shadowRoot) walk(el.shadowRoot);
+              if (el.children.length === 0 && (el.textContent || '').trim().toLowerCase() === 'expando') {
+                el.click();
+              }
+            });
+          }
+          walk(document);
+        }
+        """
+    )
+
+
+def _flatten_shadow_hrefs(page, must_include):
+    """Every real <a href> anywhere in the page - including nested shadow
+    roots - whose href contains `must_include`, deduplicated."""
+    return page.evaluate(
+        """
+        (mustInclude) => {
+          const out = [];
+          function walk(root) {
+            root.querySelectorAll('a[href]').forEach(a => { if (a.href.includes(mustInclude)) out.push(a.href); });
+            root.querySelectorAll('*').forEach(el => { if (el.shadowRoot) walk(el.shadowRoot); });
+          }
+          walk(document);
+          return [...new Set(out)];
+        }
+        """,
+        must_include,
+    )
+
+
+def discover_my_teams(page):
+    """[{"fantasy_team_id": str, "tournament_id": str}, ...] - every real
+    entry visible on FanTeam's own "My Entries" page, reached by clicking
+    the real "MY ENTRIES" nav link (see _click_shadow_text's docstring
+    for why not a guessed URL). Replaces list_my_teams's REST approach
+    entirely - that endpoint is confirmed broken for this real account
+    even with fully correct auth (see list_my_teams' docstring). No JSON
+    API involved: each row is expanded (_expand_all_entry_rows) and its
+    real tournament_id/team_id are read straight off a real <a href>
+    matching /fantasy/edit/{tournamentId}/{teamId} - confirmed live
+    against the real account's real entry (team 133545691, tournament
+    1131483, "ciccio12" #51333 shown on screen next to it, ruling out an
+    account mismatch). `page` must already have a valid ftToken in
+    localStorage and be freshly reloaded so the app's nav reflects the
+    logged-in state (see open_authenticated_page)."""
+    if not _click_shadow_text(page, "MY ENTRIES"):
+        raise RuntimeError("Couldn't find the 'MY ENTRIES' nav link on fanteam.com - page layout may have changed.")
+    page.wait_for_timeout(2000)
+    _expand_all_entry_rows(page)
+    page.wait_for_timeout(800)
+
+    pairs = set()
+    for href in _flatten_shadow_hrefs(page, "/fantasy/edit/"):
+        m = re.search(r"/fantasy/edit/(\d+)/(\d+)", href)
+        if m:
+            pairs.add((m.group(1), m.group(2)))
+    if not pairs:
+        raise RuntimeError(
+            "No real entries found on FanTeam's My Entries page - either the account genuinely has none right "
+            "now, or the page layout changed. Not guessing either way."
+        )
+    return [{"tournament_id": t, "fantasy_team_id": team} for t, team in sorted(pairs)]
 
 
 def _flatten_shadow_text(page):
@@ -151,6 +272,35 @@ def _flatten_shadow_text(page):
         }
         """
     )
+
+
+def _locate_squad_section(tokens):
+    """Slices the full flattened page down to just the real squad-picks
+    grammar - confirmed live (2026-07-31) that the real edit page also
+    renders a "suggested team" onboarding modal, a budget/preview widget,
+    and a large player-pool/filters panel elsewhere on the same page
+    (total flattened tokens: ~1200, vs. ~50 for the real picks), and that
+    a defensive linear scan across ALL of it can pick up coincidental
+    4-token sequences (e.g. price-filter buttons: team name, team name,
+    team name, "4.5M") that look like a valid player entry and get
+    miscounted as real starting-XI players, corrupting the group-boundary
+    bookkeeping before the real players are even reached (confirmed live:
+    a real defender - Gabriel - went missing from a synced squad this
+    way). The full-word position labels ("Goalkeeper"/"Defender"/
+    "Midfielder"/"Forward") are a reliable anchor because they are
+    confirmed to appear EXACTLY ONCE per real page load, unlike the short
+    bench codes ("GK"/"DEF"/"MID"/"FOR") which repeat throughout the pool/
+    preview panels - so slicing a small window around them keeps whatever
+    the defensive per-token parser has to withstand down to a handful of
+    tokens instead of the whole page. Falls back to the full token list
+    if the anchors aren't found (parser's own defenses still apply, just
+    without this extra guard)."""
+    try:
+        start = tokens.index("Goalkeeper") - 10
+        end = tokens.index("Forward") + 40
+    except ValueError:
+        return tokens
+    return tokens[max(0, start):min(len(tokens), end)]
 
 
 def _parse_squad_tokens(tokens):
@@ -218,30 +368,40 @@ def _parse_squad_tokens(tokens):
     return {"starting": starting, "bench": bench}
 
 
-def fetch_squad(playwright, access_token, tournament_id, fantasy_team_id):
-    """Real squad for one team - launches a fresh headless browser,
-    injects the real access token FanTeam's own app reads from
-    localStorage (see scraper_fanteam.py's get_ft_token/AUTH_STATE_FILE
-    for the same key name), navigates to the edit URL, and parses the
-    rendered squad via _flatten_shadow_text + _parse_squad_tokens.
-    Returns _parse_squad_tokens' shape, or raises if the page doesn't
-    render a recognisable squad (fails loud, never returns a silently
-    wrong/partial squad)."""
+def open_authenticated_page(playwright, access_token):
+    """(browser, page) - one shared headless browser/page, authenticated
+    once, reused for both discover_my_teams and every fetch_squad call
+    (rather than a fresh browser launch + token injection per team, which
+    the original single-team version did). Injects the real access token
+    FanTeam's own app reads from localStorage (see scraper_fanteam.py's
+    get_ft_token/AUTH_STATE_FILE for the same key name), then reloads so
+    the app's own JS actually picks the token up and renders the
+    logged-in nav (needed for discover_my_teams' nav click to find "MY
+    ENTRIES" at all). Caller must browser.close() when done."""
     browser = playwright.chromium.launch(headless=True)
-    try:
-        context = browser.new_context()
-        page = context.new_page()
-        page.goto("https://www.fanteam.com/", wait_until="domcontentloaded")
-        page.evaluate("(t) => localStorage.setItem('ftToken', t)", access_token)
-        page.goto(EDIT_URL_TEMPLATE.format(tournament_id=tournament_id, team_id=fantasy_team_id), wait_until="networkidle")
-        page.wait_for_timeout(2000)
-        tokens = _flatten_shadow_text(page)
-        squad = _parse_squad_tokens(tokens)
-        if len(squad["starting"]) < 5:  # a real squad is 11-15 players; a login/error page never is
-            raise RuntimeError(
-                f"FanTeam squad page for team {fantasy_team_id} didn't render a recognisable squad "
-                f"(parsed {len(squad['starting'])} starting players) - session may be invalid or the page layout changed."
-            )
-        return squad
-    finally:
-        browser.close()
+    context = browser.new_context()
+    page = context.new_page()
+    page.goto("https://www.fanteam.com/", wait_until="domcontentloaded")
+    page.evaluate("(t) => localStorage.setItem('ftToken', t)", access_token)
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(1000)
+    return browser, page
+
+
+def fetch_squad(page, tournament_id, fantasy_team_id):
+    """Real squad for one team on an already-authenticated `page` (see
+    open_authenticated_page) - navigates to the edit URL and parses the
+    rendered squad via _flatten_shadow_text + _locate_squad_section +
+    _parse_squad_tokens. Returns _parse_squad_tokens' shape, or raises if
+    the page doesn't render a recognisable squad (fails loud, never
+    returns a silently wrong/partial squad)."""
+    page.goto(EDIT_URL_TEMPLATE.format(tournament_id=tournament_id, team_id=fantasy_team_id), wait_until="networkidle")
+    page.wait_for_timeout(2000)
+    tokens = _locate_squad_section(_flatten_shadow_text(page))
+    squad = _parse_squad_tokens(tokens)
+    if len(squad["starting"]) < 5:  # a real squad is 11-15 players; a login/error page never is
+        raise RuntimeError(
+            f"FanTeam squad page for team {fantasy_team_id} didn't render a recognisable squad "
+            f"(parsed {len(squad['starting'])} starting players) - session may be invalid or the page layout changed."
+        )
+    return squad

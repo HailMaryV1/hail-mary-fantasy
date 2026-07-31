@@ -79,28 +79,57 @@ def surname_key(full_name):
     return compact(" ".join(parts[1:])) if len(parts) > 1 else compact(full_name)
 
 
-def match_player(cur, game_id, provider_name, price):
+# FanTeam's own position vocabulary, both the starting-XI full-word form
+# and the bench short-code form ("FOR" - not "FWD", FanTeam's own naming
+# - see provider_fanteam_scoutgg.py's BENCH_POSITION_CODES), mapped to
+# this project's DB position codes.
+POSITION_CODE = {
+    "Goalkeeper": "GK", "Defender": "DEF", "Midfielder": "MID", "Forward": "FWD",
+    "GK": "GK", "DEF": "DEF", "MID": "MID", "FOR": "FWD",
+}
+
+
+def match_player(cur, game_id, provider_name, price, position=None):
     """Exactly one confident game_player_id, or None (never a guess among
-    several candidates). Matches on surname_key + price - price is real
-    signal here (FanTeam's own current price, already stored on
-    game_players by the regular player import), not just a tiebreaker."""
-    key = surname_key(provider_name)
+    several candidates). Primary match is surname_key + price - price is
+    real signal here (FanTeam's own current price, already stored on
+    game_players by the regular player import), not just a tiebreaker.
+    Falls back to a given-name + price + position match for players
+    FanTeam displays by first name only - confirmed live: DEF "Gabriel"
+    (real entry: Gabriel Magalhaes, 6.5M, DEF) never has his surname
+    rendered anywhere on FanTeam's squad-edit page, unlike every other
+    real player observed. Price alone doesn't disambiguate him from the
+    DB's other 6.5M "Gabriel" (Martinelli, MID) - position does."""
     cur.execute(
         """
-        select gp.id, p.full_name, gp.price
+        select gp.id, p.full_name, gp.price, p.position
         from game_players gp
         join players p on p.id = gp.player_id
         where gp.game_id = %s and gp.is_active = true
         """,
         (game_id,),
     )
-    candidates = [r for r in cur.fetchall() if surname_key(r["full_name"]) == key]
+    pool = cur.fetchall()
+
+    key = surname_key(provider_name)
+    candidates = [r for r in pool if surname_key(r["full_name"]) == key]
     if len(candidates) == 1:
         return candidates[0]["id"]
     if len(candidates) > 1:
         price_matches = [c for c in candidates if c["price"] is not None and abs(float(c["price"]) - price) < 0.05]
         if len(price_matches) == 1:
             return price_matches[0]["id"]
+        return None
+
+    given_key = compact(provider_name)
+    given_name_matches = [
+        r for r in pool
+        if compact(r["full_name"].split(" ")[0]) == given_key
+        and r["price"] is not None and abs(float(r["price"]) - price) < 0.05
+        and (position is None or r["position"] == position)
+    ]
+    if len(given_name_matches) == 1:
+        return given_name_matches[0]["id"]
     return None
 
 
@@ -152,7 +181,7 @@ def apply_squad(cur, squad_id, game_id, parsed_squad):
     resolved = []
     unmatched = []
     for idx, entry in enumerate(all_entries):
-        gpid = match_player(cur, game_id, entry["name"], entry["price"])
+        gpid = match_player(cur, game_id, entry["name"], entry["price"], POSITION_CODE.get(entry["position"]))
         if gpid is None:
             unmatched.append(entry["name"])
             continue
@@ -228,51 +257,62 @@ def sync_fanteam(cur, user_id, credential_row, requested_only=False):
         (credential_row["id"],),
     )
 
-    teams = fanteam.list_my_teams(access_token)
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        for team in teams:
-            tournament_id = team["tournament_id"]
-            game_slug = FANTEAM_TOURNAMENT_GAME_SLUG.get(tournament_id)
-            if not game_slug:
-                print(f"  [skip] tournament {tournament_id} not in FANTEAM_TOURNAMENT_GAME_SLUG - add it once its sport is confirmed.")
-                continue
+        browser, page = fanteam.open_authenticated_page(p, access_token)
+        try:
+            teams = fanteam.discover_my_teams(page)
+        except Exception as e:
+            browser.close()
+            print(f"  [error] couldn't discover FanTeam entries: {e}")
+            log_event(cur, "provider_sync_failed", f"FanTeam entry discovery failed: {e}")
+            return
 
-            cur.execute("select id from fantasy_games where slug = %s", (game_slug,))
-            game_id = cur.fetchone()["id"]
-            squad_id, link_id = get_or_create_squad_link(
-                cur, user_id, "fanteam_scoutgg", game_slug, tournament_id, team["fantasy_team_id"], f"FanTeam {game_slug}"
-            )
-            try:
-                parsed = fanteam.fetch_squad(p, access_token, tournament_id, team["fantasy_team_id"])
-                changes = apply_squad(cur, squad_id, game_id, parsed)
-                summary = "; ".join(changes) if changes else "No changes detected"
-                cur.execute(
-                    """
-                    update provider_squad_links
-                    set last_synced_at = now(), last_sync_status = 'ok', last_sync_error = null,
-                        last_change_summary = %s, sync_requested_at = null, updated_at = now()
-                    where id = %s
-                    """,
-                    (summary, link_id),
+        try:
+            for team in teams:
+                tournament_id = team["tournament_id"]
+                game_slug = FANTEAM_TOURNAMENT_GAME_SLUG.get(tournament_id)
+                if not game_slug:
+                    print(f"  [skip] tournament {tournament_id} not in FANTEAM_TOURNAMENT_GAME_SLUG - add it once its sport is confirmed.")
+                    continue
+
+                cur.execute("select id from fantasy_games where slug = %s", (game_slug,))
+                game_id = cur.fetchone()["id"]
+                squad_id, link_id = get_or_create_squad_link(
+                    cur, user_id, "fanteam_scoutgg", game_slug, tournament_id, team["fantasy_team_id"], f"FanTeam {game_slug}"
                 )
-                log_event(
-                    cur, "provider_squad_synced", f"FanTeam squad synced ({game_slug}): {summary}",
-                    game_id=game_id, details={"provider": "fanteam_scoutgg", "tournament_id": tournament_id, "changes": changes},
-                )
-                print(f"  [ok] {game_slug} team {team['fantasy_team_id']}: {summary}")
-            except Exception as e:
-                cur.execute(
-                    """
-                    update provider_squad_links
-                    set last_sync_status = 'error', last_sync_error = %s, sync_requested_at = null, updated_at = now()
-                    where id = %s
-                    """,
-                    (str(e), link_id),
-                )
-                log_event(cur, "provider_sync_failed", f"FanTeam sync failed ({game_slug}): {e}", game_id=game_id)
-                print(f"  [error] {game_slug} team {team['fantasy_team_id']}: {e}")
+                try:
+                    parsed = fanteam.fetch_squad(page, tournament_id, team["fantasy_team_id"])
+                    changes = apply_squad(cur, squad_id, game_id, parsed)
+                    summary = "; ".join(changes) if changes else "No changes detected"
+                    cur.execute(
+                        """
+                        update provider_squad_links
+                        set last_synced_at = now(), last_sync_status = 'ok', last_sync_error = null,
+                            last_change_summary = %s, sync_requested_at = null, updated_at = now()
+                        where id = %s
+                        """,
+                        (summary, link_id),
+                    )
+                    log_event(
+                        cur, "provider_squad_synced", f"FanTeam squad synced ({game_slug}): {summary}",
+                        game_id=game_id, details={"provider": "fanteam_scoutgg", "tournament_id": tournament_id, "changes": changes},
+                    )
+                    print(f"  [ok] {game_slug} team {team['fantasy_team_id']}: {summary}")
+                except Exception as e:
+                    cur.execute(
+                        """
+                        update provider_squad_links
+                        set last_sync_status = 'error', last_sync_error = %s, sync_requested_at = null, updated_at = now()
+                        where id = %s
+                        """,
+                        (str(e), link_id),
+                    )
+                    log_event(cur, "provider_sync_failed", f"FanTeam sync failed ({game_slug}): {e}", game_id=game_id)
+                    print(f"  [error] {game_slug} team {team['fantasy_team_id']}: {e}")
+        finally:
+            browser.close()
 
 
 def main():
