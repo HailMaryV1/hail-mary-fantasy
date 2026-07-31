@@ -238,8 +238,11 @@ export default async function AskMaryPage({
               <div className="mt-2 rounded-xl border border-navy-700 bg-navy-900 p-4">
                 <div className="flex items-center gap-3">
                   <span className="text-3xl font-bold text-sky-400">{health.rating}</span>
-                  <span className="text-sm text-navy-400">/ 100 squad rating</span>
+                  <span className="text-sm text-navy-400">/ 100 Starting XI Strength</span>
                 </div>
+                <p className="mt-1 text-xs text-navy-500">
+                  Bench depth, fixtures, flexibility, and club-limit issues are assessed separately below.
+                </p>
                 {health.strengths.length > 0 && (
                   <div className="mt-3">
                     <p className="text-xs font-medium uppercase tracking-wide text-emerald-400">Strengths</p>
