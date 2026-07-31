@@ -130,7 +130,13 @@ PHASE2_PAIRS = [
     (590, 784, "C. Doucoure / Cheick Doucouré - initial-form vs full given name + accent"),
     (591, 782, "M. Franca / Matheus França - initial-form vs full given name + accent"),
     (436, 1281, "Hakon Rafn Valdimarsson / Hákon Valdimarsson - dropped middle name + accent"),
-    (395, 756, "Axel Toth / Alex Tóth - given-name spelling discrepancy (Axel/Alex), not pure encoding"),
+    # Axel Toth (id=395) / Alex Tóth (id=756) - deliberately excluded from
+    # this pass per explicit direction: the official identity is "Alex
+    # Tóth", so "Axel Toth" is itself the wrong record (a source-data
+    # error, not a nickname/display variant) - a merge would keep the
+    # WRONG name as canonical. Needs its own investigation (which import
+    # first introduced "Axel Toth", and everywhere it's referenced)
+    # before this gets touched at all.
 ]
 
 

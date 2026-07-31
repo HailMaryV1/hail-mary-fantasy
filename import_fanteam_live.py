@@ -204,10 +204,23 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
         # surname it doesn't contain, so for that case also accept the
         # candidate's full name simply starting with the mononym - catches
         # "Gabriel" matching stored "Gabriel Magalhaes".
+        #
+        # The reverse direction (does the CANDIDATE's own name end with
+        # the LIVE name's surname_key) is also needed - confirmed live: a
+        # canonical row stored with a compound surname ("Jamie Bynoe-
+        # Gittens") never matched FanTeam's live feed sending the
+        # shortened form ("Jamie Gittens") under the forward rule alone,
+        # since "jamiegittens" can never end with the longer
+        # "bynoegittens" - the live import silently recreated a brand new
+        # duplicate player every run instead. One-directional endswith
+        # only catches a surname getting LONGER on the live side (initials
+        # expanding to full names); this catches it getting SHORTER too.
+        live_surname_key = surname_key(live_full_name)
         candidates = [
             (pid, name, team_id)
             for pid, name, team_id in by_position.get(live_position, [])
             if live_compact.endswith(surname_key(name))
+            or (live_surname_key and compact(name).endswith(live_surname_key))
             or (is_mononym and compact(name).startswith(live_compact))
         ]
 
@@ -228,6 +241,7 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
                 (pid, name, team_id)
                 for pid, name, team_id in all_players
                 if live_compact.endswith(surname_key(name))
+                or (live_surname_key and compact(name).endswith(live_surname_key))
                 or (is_mononym and compact(name).startswith(live_compact))
             ]
 
@@ -257,8 +271,21 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
         # between his two clubs on every import run. An exact full-name
         # match is exempted (deliberately not requiring the initial check)
         # since that's already an unambiguous identity match.
+        #
+        # A real nickname can share no first letter at all with the full
+        # name it's short for ("Tino" for "Valentino") - confirmed live:
+        # this guard silently rejected "Tino Livramento" against the
+        # stored "Valentino Livramento" every run, recreating a duplicate
+        # each time. Exempted the same way an exact match already is, but
+        # only when the candidate's own first name actually CONTAINS the
+        # live first name as a substring - "boubacar" doesn't contain
+        # "abu", so the real Kamara-collision guard this exists for is
+        # untouched; "valentino" does contain "tino".
         if len(candidates) == 1 and not is_mononym and compact(candidates[0][1]) != live_compact:
-            if candidates[0][1][0].lower() != live_full_name[0].lower():
+            candidate_first_name = candidates[0][1].split(" ", 1)[0].lower()
+            live_first_name = live_full_name.split(" ", 1)[0].lower()
+            is_nickname_of_candidate = live_first_name and live_first_name in candidate_first_name
+            if candidates[0][1][0].lower() != live_full_name[0].lower() and not is_nickname_of_candidate:
                 candidates = []
 
         # Last resort for genuine name collisions (e.g. two players called
