@@ -22,6 +22,11 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    # 19 sequential steps incl. up to 5-gameweek recomputes for 2 games -
+    # generous headroom over typical run time, far under the 12h gap
+    # between scheduled runs. No GitHub Actions run history was available
+    # to measure real durations when this was chosen - revisit once it is.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

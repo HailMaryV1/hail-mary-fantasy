@@ -21,6 +21,12 @@ on:
 jobs:
   poll:
     runs-on: ubuntu-latest
+    # A single lightweight, self-gating poll - should complete in seconds
+    # in the common case. Real durations aren't observable without GitHub
+    # Actions run history, so 8 minutes is a deliberately conservative
+    # starting point given the notification step's own network calls -
+    # tighten toward 5 once real run durations are observed.
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
 

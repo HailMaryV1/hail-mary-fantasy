@@ -23,6 +23,13 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # This job's own timeout is what actually bounds a queued Sync Now
+    # request's worst-case wait (see provider_sync_requested.yml's
+    # comment): if this run hangs, GitHub force-cancels it after 15
+    # minutes and the shared concurrency group frees up. Deliberately
+    # tighter than the 20-minute cron interval, with headroom for a
+    # multi-squad sweep as real linked-squad volume grows.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 

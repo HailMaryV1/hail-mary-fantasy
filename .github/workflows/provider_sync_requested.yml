@@ -28,6 +28,14 @@ concurrency:
 jobs:
   sync-requested:
     runs-on: ubuntu-latest
+    # Near-instant on the common early-exit case; real logins/scrapes
+    # should still finish well inside this. Deliberately tighter than
+    # provider_sync_scheduled.yml's timeout - if that job is occupying the
+    # shared concurrency group, this bounds how much longer a queued Sync
+    # Now tick has to wait before the group frees up again (though the
+    # durable sync_requested_at flag, not this timeout, is what actually
+    # guarantees the request is never lost - see provider_sync_scheduled.yml).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
