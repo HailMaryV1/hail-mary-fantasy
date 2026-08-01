@@ -10,6 +10,15 @@ on:
     - cron: "0 19 * * *"
   workflow_dispatch: {}
 
+# A manual dispatch (e.g. right before a squad-lock deadline, per the
+# comment above) can otherwise land mid-flight of a scheduled run -
+# refresh_all.py's per-step DB transactions shouldn't be interleaved with
+# a second full pipeline run. cancel-in-progress: false so an in-flight
+# run finishes rather than being torn mid-commit; the next trigger waits.
+concurrency:
+  group: refresh-data-pipeline
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
