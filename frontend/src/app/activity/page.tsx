@@ -24,11 +24,26 @@ const TONE_CLASSES: Record<(typeof EVENT_TYPES)[number]["tone"], string> = {
   red: "bg-red-950 text-red-400",
 };
 
+// Most rows (fixture/odds/price imports) aren't tied to one game at all -
+// only game-specific steps (score recompute, provider sync, golf live
+// polling) stamp a game_id. Global rows get their own neutral label
+// rather than being silently dropped by a per-game filter.
+const GAME_LABEL_CLASSES: Record<string, string> = {
+  fanteam: "border-sky-800 text-sky-300",
+  dreamteam: "border-violet-800 text-violet-300",
+  "nfl-fanteam": "border-orange-800 text-orange-300",
+  "fanteam-golf": "border-lime-800 text-lime-300",
+  cloudff: "border-fuchsia-800 text-fuchsia-300",
+};
+const GLOBAL_LABEL_CLASS = "border-navy-600 text-navy-400";
+
 type ActivityRow = {
   id: number;
   event_type: string;
   summary: string;
   created_at: string;
+  game_slug: string | null;
+  game_display_name: string | null;
 };
 
 function formatTimestamp(iso: string) {
@@ -48,12 +63,22 @@ export default async function ActivityPage({ searchParams }: { searchParams: Pro
 
   let query = supabase
     .from("activity_log")
-    .select("id, event_type, summary, created_at")
+    .select("id, event_type, summary, created_at, fantasy_games(slug, display_name)")
     .order("created_at", { ascending: false })
     .limit(150);
   if (activeType) query = query.eq("event_type", activeType);
 
-  const { data, error } = await query.returns<ActivityRow[]>();
+  const { data: rawData, error } = await query.returns<
+    { id: number; event_type: string; summary: string; created_at: string; fantasy_games: { slug: string; display_name: string } | null }[]
+  >();
+  const data: ActivityRow[] | undefined = rawData?.map((r) => ({
+    id: r.id,
+    event_type: r.event_type,
+    summary: r.summary,
+    created_at: r.created_at,
+    game_slug: r.fantasy_games?.slug ?? null,
+    game_display_name: r.fantasy_games?.display_name ?? null,
+  }));
 
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
@@ -64,7 +89,9 @@ export default async function ActivityPage({ searchParams }: { searchParams: Pro
         <h1 className="text-2xl font-semibold text-white">Activity</h1>
         <p className="mt-1 text-sm text-navy-300">
           New players, Hail Mary Score swings, club transfers, and fixture changes - everything the twice-daily
-          refresh picks up, as it happens.
+          refresh picks up, as it happens. This is a global feed across every game, not just FanTeam - most pipeline
+          steps (fixtures, odds, prices) aren&apos;t tied to a single game at all. Each row below is labelled with the
+          game it belongs to, or &quot;Global&quot; for steps that aren&apos;t game-specific.
         </p>
 
         <nav className="mt-6 flex flex-wrap gap-2">
@@ -108,6 +135,13 @@ export default async function ActivityPage({ searchParams }: { searchParams: Pro
                       }`}
                     >
                       {eventDef?.label ?? row.event_type}
+                    </span>
+                    <span
+                      className={`mt-0.5 shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+                        row.game_slug ? GAME_LABEL_CLASSES[row.game_slug] ?? GLOBAL_LABEL_CLASS : GLOBAL_LABEL_CLASS
+                      }`}
+                    >
+                      {row.game_display_name ?? "Global"}
                     </span>
                     <p className="text-sm text-white">{row.summary}</p>
                   </div>
