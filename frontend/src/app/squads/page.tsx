@@ -16,11 +16,23 @@ export default async function SquadsPage() {
 
   const allStatuses = await getSquadStatuses(supabase, user!.id);
 
+  // Only games the frontend actually supports (a game_squad_rules row
+  // exists) get listed here - same signal app/page.tsx's dashboard and
+  // NavBar.tsx already use. Cloud FF's provider sync writes a real squad
+  // row directly (scripts/sync_provider_squads.py), bypassing this page's
+  // normal creation flow entirely, so without this filter a real Cloud FF
+  // squad would show up here with "Manage squad"/"Look ahead" links that
+  // 404 or degrade (no game_squad_rules row for it) - this doesn't touch
+  // that squad row, the provider link, or the sync pipeline at all, it
+  // just isn't listed until the frontend actually supports the game.
+  const { data: rulesRows } = await supabase.from("game_squad_rules").select("game_id");
+  const configuredGameIds = new Set((rulesRows ?? []).map((r) => r.game_id));
+
   // Scratch squads (see migration 0059) are for testing an alternative
   // route through Ask Mary, not real entries - kept out of the main
   // per-game groups below entirely and shown in their own section, so
   // they're never mistaken for a real team.
-  const statuses = allStatuses.filter((s) => !s.isScratch);
+  const statuses = allStatuses.filter((s) => !s.isScratch && configuredGameIds.has(s.gameId));
   const scratchStatuses = allStatuses.filter((s) => s.isScratch);
   const sourceNameById = new Map(allStatuses.map((s) => [s.id, s.name]));
 
