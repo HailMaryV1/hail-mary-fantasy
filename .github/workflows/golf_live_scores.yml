@@ -18,6 +18,19 @@ on:
     - cron: "*/5 11-23 * * 0"
   workflow_dispatch: {}
 
+# A manual dispatch during an active polling window can overlap a
+# scheduled tick. scripts/poll_golf_live_scores.py's DB writes are
+# idempotent upserts (safe either way), but its push-notification step
+# runs after the score commit, in its own try/except, specifically so a
+# notification failure never rolls back already-saved scores (see that
+# script's own docstring). cancel-in-progress: false, matching the
+# provider-sync workflows - a run already mid-notification-send finishes
+# cleanly rather than being killed between the commit and the send; the
+# next 5-minute tick just queues behind it instead.
+concurrency:
+  group: golf-live-scores
+  cancel-in-progress: false
+
 jobs:
   poll:
     runs-on: ubuntu-latest
