@@ -13,6 +13,13 @@ on:
     - cron: "*/20 * * * *"
   workflow_dispatch: {}
 
+# Shared with provider_sync_requested.yml (same group name) - see that
+# file's comment for why. cancel-in-progress: false so a requested sync
+# already in flight is never killed by this workflow's own tick.
+concurrency:
+  group: provider-squad-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest

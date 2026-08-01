@@ -14,6 +14,17 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
+# Shared with provider_sync_scheduled.yml (same group name) - both
+# workflows call sync_provider_squads.py against overlapping
+# provider_squad_links rows with no other locking, so a 5-minute and a
+# 20-minute run can otherwise land at the same time. cancel-in-progress
+# is false: a run already logging into a provider should finish (and
+# release its login/DB transaction) rather than being killed mid-sync -
+# the next trigger just waits its turn instead.
+concurrency:
+  group: provider-squad-sync
+  cancel-in-progress: false
+
 jobs:
   sync-requested:
     runs-on: ubuntu-latest
