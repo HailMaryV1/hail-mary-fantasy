@@ -15,6 +15,7 @@ export const MODULE_NAMES = [
   "fixture_model",
   "bookmaker_intelligence",
   "recent_form",
+  "fantasy_influence",
 ] as const;
 export type ModuleName = (typeof MODULE_NAMES)[number];
 
@@ -23,6 +24,7 @@ export const MODULE_DISPLAY_NAMES: Record<ModuleName, string> = {
   fixture_model: "Fixture Model",
   bookmaker_intelligence: "Bookmaker Intelligence",
   recent_form: "Recent Form",
+  fantasy_influence: "Fantasy Influence",
 };
 
 export const MODULAR_STATS = ["goal", "assist", "clean_sheet_60min"] as const;
@@ -154,6 +156,27 @@ export type RecentFormDetail = {
   scheduleStrengthSource: string;
 };
 
+// Fantasy Influence (Phase A) - see build_fantasy_influence_detail() in
+// scripts/compute_projections.py. The renamed "Player Role V2" - a
+// RATIO to the position average (unbounded), not a share of team
+// output (bounded - the structural flaw that got V1 retired). Configured
+// weight is 0 for every position in both games (migration 0076) - this
+// is real, computed data, visible for validation, but contributes
+// nothing to finalScore. goalScalingIndex/assistScalingIndex are
+// leave-one-out blends (shot share + the OTHER outcome stat's
+// involvement) - deliberately never include that same stat's own
+// involvement index, so neither multiplier is derived from the rate it
+// scales.
+export type FantasyInfluenceDetail = {
+  goalInvolvementIdx: number | null;
+  assistInvolvementIdx: number | null;
+  shotShareIdx: number | null;
+  goalScalingIndex: number | null;
+  assistScalingIndex: number | null;
+  games90: number;
+  sampleConfidence: number;
+};
+
 // "What if only this module had decided goal/assist/clean-sheet, with
 // everything else (saves, cards, bonus...) left exactly as actually
 // projected" - a full scenario total in the SAME units as the final
@@ -178,6 +201,7 @@ export type EngineExplanation = {
   expectedMinutesFraction: number | null;
   opportunityDetail: OpportunityDetail | null;
   recentFormDetail: RecentFormDetail | null;
+  fantasyInfluenceDetail: FantasyInfluenceDetail | null;
   moduleDetailScope: ModuleDetailScope;
   moduleDetail: Partial<Record<ModularStat, StatDetail>> | null;
   moduleScenarios: ModuleScenarios;
@@ -210,6 +234,11 @@ type RawInputs = {
     lookback_gameweeks: number; decay: number; k_recent: number; decay_basis: string;
     playing_appearances_in_window: number;
     schedule_strength: number | null; schedule_strength_source: string;
+  } | null;
+  fantasy_influence_detail?: {
+    goal_involvement_idx: number | null; assist_involvement_idx: number | null; shot_share_idx: number | null;
+    goal_scaling_index: number | null; assist_scaling_index: number | null;
+    games90: number; sample_confidence: number;
   } | null;
   module_detail_scope?: { is_primary_fixture_only: boolean; fixture_count: number };
   module_detail?: Record<string, { final_rate: number; points_each: number | null; modules: Record<string, {
@@ -327,6 +356,17 @@ export function parseEngineExplanation(gameSlug: string, row: SummaryRow): Engin
           playingAppearancesInWindow: inputs.recent_form_detail.playing_appearances_in_window,
           scheduleStrength: inputs.recent_form_detail.schedule_strength,
           scheduleStrengthSource: inputs.recent_form_detail.schedule_strength_source,
+        }
+      : null,
+    fantasyInfluenceDetail: inputs.fantasy_influence_detail
+      ? {
+          goalInvolvementIdx: inputs.fantasy_influence_detail.goal_involvement_idx,
+          assistInvolvementIdx: inputs.fantasy_influence_detail.assist_involvement_idx,
+          shotShareIdx: inputs.fantasy_influence_detail.shot_share_idx,
+          goalScalingIndex: inputs.fantasy_influence_detail.goal_scaling_index,
+          assistScalingIndex: inputs.fantasy_influence_detail.assist_scaling_index,
+          games90: inputs.fantasy_influence_detail.games90,
+          sampleConfidence: inputs.fantasy_influence_detail.sample_confidence,
         }
       : null,
     moduleDetailScope: inputs.module_detail_scope

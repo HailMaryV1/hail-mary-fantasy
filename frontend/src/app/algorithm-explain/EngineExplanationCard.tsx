@@ -10,6 +10,7 @@ import {
   type OpportunityDetail,
   type RecentFormDetail,
   type RecentFormStatDetail,
+  type FantasyInfluenceDetail,
 } from "@/lib/engineExplainability";
 
 function fmt(value: number | null | undefined, digits = 3): string {
@@ -187,6 +188,53 @@ function RecentFormSection({ rf }: { rf: RecentFormDetail }) {
   );
 }
 
+function FantasyInfluenceSection({ fi }: { fi: FantasyInfluenceDetail }) {
+  return (
+    <div className="rounded-xl border border-violet-800/60 bg-navy-900 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-white">Fantasy Influence - attacking involvement relative to position</h3>
+        <span className="rounded-full bg-navy-800 px-2.5 py-1 text-xs font-semibold text-navy-300">Configured weight: 0%</span>
+      </div>
+      <p className="mt-1 text-xs text-navy-500">
+        Configured weight is 0 in production - visible for validation only, not yet contributing to the score. A ratio
+        to the position average (not a share of team output, the flaw that got the earlier Player Role module
+        retired), so a genuine standout can show well above 1.0x with no ceiling. Each stat&apos;s own scaling index
+        below never includes that same stat&apos;s own involvement - only shot share plus the OTHER outcome stat.
+      </p>
+
+      <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-3 text-sm text-navy-200 sm:grid-cols-4">
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Goal involvement</p>
+          <p className="font-medium text-white">{fmt(fi.goalInvolvementIdx, 2)}x</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Assist involvement</p>
+          <p className="font-medium text-white">{fmt(fi.assistInvolvementIdx, 2)}x</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Shot share</p>
+          <p className="font-medium text-white">{fmt(fi.shotShareIdx, 2)}x</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Sample confidence</p>
+          <p className="font-medium text-white">{fi.sampleConfidence}%</p>
+          <p className="text-xs text-navy-500">{fmt(fi.games90, 2)} games90</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Goal scaling index</p>
+          <p className="font-medium text-white">{fmt(fi.goalScalingIndex, 2)}x</p>
+          <p className="text-xs text-navy-500">shot share + assist involvement</p>
+        </div>
+        <div>
+          <p className="text-[10px] uppercase tracking-wide text-navy-500">Assist scaling index</p>
+          <p className="font-medium text-white">{fmt(fi.assistScalingIndex, 2)}x</p>
+          <p className="text-xs text-navy-500">shot share + goal involvement</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ReconciliationRow({ label, expected, actual, difference, tolerance, passed }: {
   label: string; expected: number; actual: number; difference: number; tolerance: number; passed: boolean;
 }) {
@@ -282,6 +330,9 @@ export default function EngineExplanationCard({ data }: { data: EngineExplanatio
 
       {/* Recent Form - recency-weighted, historical-shrunk event-rate deviation */}
       {data.recentFormDetail && <RecentFormSection rf={data.recentFormDetail} />}
+
+      {/* Fantasy Influence (Phase A) - attacking involvement, weight 0 */}
+      {data.fantasyInfluenceDetail && <FantasyInfluenceSection fi={data.fantasyInfluenceDetail} />}
 
       {/* Per-stat module tables */}
       {data.moduleDetail &&

@@ -381,6 +381,13 @@ DEFAULT_WEIGHTS_V2 = {
     # rate x avg_minutes_per_appearance formula it replaces, even though
     # no literal weight value below changed.
     "opportunity_model_version": "v1",
+    # Forces a new algorithm_versions revision the moment Fantasy
+    # Influence (Phase A) starts being computed - even though its
+    # configured weight is 0 everywhere (migration 0076) and it changes
+    # no live score, Performance Lab still needs to be able to attribute
+    # the new fantasy_influence_detail data appearing in `inputs` to a
+    # real revision boundary, same purpose as the two keys above.
+    "fantasy_influence_version": "v1",
 }
 
 # The 3 stats with both a real fixture-level driver AND a real bookmaker
@@ -721,6 +728,133 @@ def compute_module_rate_bookmaker(stat, fixture, player_id, hub_features):
             return None
         return anytime_prob_to_expected_goals(float(feature["assist_probability"]))
     return None
+
+
+# Fantasy Influence (Phase A) - the renamed "Player Role V2". Replaces
+# Player Role V1 (retired by migration 0070 after an audit found its
+# formula, share x team_per90, algebraically collapsed to a scaled
+# duplicate of Historical Performance's own rate - mathematically bounded
+# at the team average by construction, which silently suppressed elite
+# attackers who outscore their own teammates). The structural fix here is
+# a RATIO to the position average instead of a share of team output -
+# unbounded, reusing the same technique fixture_stat_factor already uses
+# elsewhere in this file (attack_score / neutral_attack). See the "Player
+# Role V2 - Design Proposal" artifact (2026-07-30) for the full rationale
+# and the Phase A implementation plan for the formula derivation.
+#
+# Configured weight is 0 for every position in both games as of migration
+# 0076 - deliberately, not a placeholder. This module computes a real,
+# non-None rate, but blend_module_rates renormalizes strictly by
+# CONFIGURED weight, so a weight of exactly 0 contributes exactly 0 to
+# the blend regardless of what this returns. Production weight is a
+# separate, future, explicitly-approved decision gated on Performance Lab
+# demonstrating genuine incremental predictive value once real 2026/27
+# results exist (blocked on FanTeam GW1, 2026-08-21).
+ATTACKING_INVOLVEMENT_INPUTS = ("goal", "assist", "shot_on_target")
+
+
+def historical_shrunk_rate_ratio(stat, historical_row, position, position_avg, weights):
+    """Ratio of this player's own shrunk per-90 rate (historical_shrunk_rate)
+    to the position's own average per-90 rate for the same stat -
+    unbounded, unlike Player Role V1's team-total SHARE. 1.0 means
+    exactly average involvement for the position; a genuine standout can
+    show a ratio well above 1.0 with no ceiling - the actual structural
+    fix this module exists to make. None (never fabricated) if the
+    position has no real cohort average for this stat to divide by
+    (shouldn't happen in practice for goal/assist/shot_on_target, but
+    guarded the same way every other module in this file guards a
+    missing denominator)."""
+    col = STAT_COLUMNS[stat]
+    denom = position_avg[position][col]
+    if not denom:
+        return None
+    return historical_shrunk_rate(stat, historical_row, position, position_avg, weights) / denom
+
+
+def compute_attacking_involvement_indices(historical_row, position, position_avg, weights):
+    """The 3 per-input involvement indices Fantasy Influence's attacking
+    scaling multipliers are built from - see combine_involvement_index
+    for how they're combined without ever letting a stat vote on its own
+    multiplier."""
+    return {
+        stat: historical_shrunk_rate_ratio(stat, historical_row, position, position_avg, weights)
+        for stat in ATTACKING_INVOLVEMENT_INPUTS
+    }
+
+
+def combine_involvement_index(idx_process, idx_cross_outcome, process_weight=0.6):
+    """Leave-one-out blend used to scale ONE outcome stat's rate (goal or
+    assist) - deliberately NEVER includes that stat's own involvement
+    index. An earlier draft of this module blended all 3 sub-indices
+    (goal/assist/shot-on-target) into one shared multiplier applied to
+    both goal and assist, which meant a third of the goal rate's own
+    scaling multiplier was DERIVED FROM the goal rate itself - a stat
+    voting on its own scaling factor. Not the same exact-collapse bug
+    Player Role V1 had (that was a linear identity; this would have been
+    quadratic self-reference), but the same shape the design doc
+    explicitly warned against: "must weight process inputs alongside
+    outcome inputs, not just repackage outcome alone." Leave-one-out
+    blending removes the self-reference entirely rather than diluting
+    it. process_weight=0.6 weights shot share (a process signal) over
+    the single remaining cross-outcome index, per that same instruction -
+    e.g. goal's multiplier uses shot-on-target + assist involvement,
+    never goal involvement; assist's multiplier uses shot-on-target +
+    goal involvement, never assist involvement."""
+    if idx_process is not None and idx_cross_outcome is not None:
+        return process_weight * idx_process + (1 - process_weight) * idx_cross_outcome
+    if idx_process is not None:
+        return idx_process
+    return idx_cross_outcome
+
+
+def compute_module_rate_fantasy_influence(stat, historical_row, position, position_avg, weights):
+    """Fantasy Influence (Phase A, attacking involvement only) - this
+    player's own historical rate for `stat`, scaled by how involved they
+    are in general attacking play RELATIVE TO THEIR POSITION (via
+    combine_involvement_index), rather than the raw historical rate
+    alone. A zero-history player's scaling index is 1.0 (historical_
+    shrunk_rate collapses to the position average as games90 -> 0), so
+    this module contributes exactly what Historical Performance alone
+    already would for anyone with no real sample - it only diverges once
+    real history exists to compute a ratio from. None for anything but
+    goal/assist - clean_sheet_60min is out of Phase A's scope (defensive/
+    distribution involvement is Phase B, Dream-Team-only, not built
+    here)."""
+    if stat not in ("goal", "assist"):
+        return None
+    idx = compute_attacking_involvement_indices(historical_row, position, position_avg, weights)
+    if stat == "goal":
+        scaling_index = combine_involvement_index(idx["shot_on_target"], idx["assist"])
+    else:
+        scaling_index = combine_involvement_index(idx["shot_on_target"], idx["goal"])
+    if scaling_index is None:
+        return None
+    return historical_shrunk_rate(stat, historical_row, position, position_avg, weights) * scaling_index
+
+
+def build_fantasy_influence_detail(historical_row, position, position_avg, weights):
+    """Engine Validation's fantasy_influence_detail - the full
+    involvement-index breakdown for one player, stored regardless of the
+    module's configured weight (see compute_module_rate_fantasy_influence)
+    so it's visible for validation even while contributing nothing to
+    the score."""
+    idx = compute_attacking_involvement_indices(historical_row, position, position_avg, weights)
+    games90 = historical_row["minutes_played"] / 90.0
+    # Same damping curve compute_data_confidence uses for its own
+    # sample_factor - a thin historical sample shouldn't read as
+    # confidently as a full season's worth, same reasoning, duplicated
+    # rather than imported since compute_data_confidence's signature is
+    # shaped around the whole blended projection, not one module alone.
+    sample_factor = 1.0 if games90 >= 5 else max(0.4, 0.4 + 0.12 * games90)
+    return {
+        "goal_involvement_idx": idx["goal"],
+        "assist_involvement_idx": idx["assist"],
+        "shot_share_idx": idx["shot_on_target"],
+        "goal_scaling_index": combine_involvement_index(idx["shot_on_target"], idx["assist"]),
+        "assist_scaling_index": combine_involvement_index(idx["shot_on_target"], idx["goal"]),
+        "games90": round(games90, 2),
+        "sample_confidence": round(100 * sample_factor),
+    }
 
 
 RECENT_FORM_STATS = ("goal", "assist")
@@ -1593,6 +1727,7 @@ def project_player_stats(
                 "fixture_model": compute_module_rate_fixture_model(stat, position, position_avg, fixture, weights),
                 "bookmaker_intelligence": compute_module_rate_bookmaker(stat, fixture, player_id, hub_features),
                 "recent_form": compute_module_rate_recent_form(stat, player_id, recent_form_rates),
+                "fantasy_influence": compute_module_rate_fantasy_influence(stat, historical_row, position, position_avg, weights),
             }
             raw_rate, effective_weights = blend_module_rates(module_rates, module_weights_by_position)
             # Everything the Engine Validation report needs per module for
@@ -1616,13 +1751,14 @@ def project_player_stats(
     return projected, expected_minutes_fraction, module_rates_by_stat, opportunity_detail
 
 
-MODULE_NAMES = ("historical_performance", "fixture_model", "bookmaker_intelligence", "recent_form")
+MODULE_NAMES = ("historical_performance", "fixture_model", "bookmaker_intelligence", "recent_form", "fantasy_influence")
 
 MODULE_DISPLAY_NAMES = {
     "historical_performance": "Historical Performance",
     "fixture_model": "Fixture Model",
     "bookmaker_intelligence": "Bookmaker Intelligence",
     "recent_form": "Recent Form",
+    "fantasy_influence": "Fantasy Influence",
 }
 
 
@@ -2238,6 +2374,15 @@ def main():
                     # every fixture that gameweek, so this is simply the
                     # player's detail, not a "primary fixture" figure.
                     "recent_form_detail": build_recent_form_detail(recent_form_rates, player_id),
+                    # Fantasy Influence (Phase A) attacking-involvement
+                    # breakdown - see build_fantasy_influence_detail. Not
+                    # fixture-scoped (same reasoning as recent_form_detail
+                    # above - it's a per-player historical ratio, not tied
+                    # to any one fixture). Configured weight is 0 (see
+                    # migration 0076) so this is real, computed, and
+                    # visible for validation, but contributes nothing to
+                    # `score` above.
+                    "fantasy_influence_detail": build_fantasy_influence_detail(historical_row, position, position_avg_rates, runtime_weights),
                     "expected_minutes_fraction": round(primary_expected_minutes_fraction, 4) if primary_expected_minutes_fraction is not None else None,
                     "data_confidence": {"score": data_confidence_score, "label": data_confidence_label(data_confidence_score)},
                     # Per-module "what if this module alone decided"
