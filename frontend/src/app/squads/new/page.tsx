@@ -9,7 +9,13 @@ export default async function NewSquadPage({
   searchParams: Promise<{ game?: string; squad?: string; scratch?: string }>;
 }) {
   const { game: gameSlug, squad: squadParam, scratch: scratchParam } = await searchParams;
-  if (gameSlug !== "dreamteam" && gameSlug !== "fanteam" && gameSlug !== "nfl-fanteam") redirect("/squads");
+  // Cloud FF is deliberately NOT offered as a creation option anywhere in
+  // the UI (real rule: "You can create one team only," and the real team
+  // already exists via provider sync - a create button here would risk a
+  // second, confusing, non-synced squad). It's allowed through this gate
+  // only so the "Edit squad" link on the synced squad's own card
+  // (/squads/new?game=cloudff&squad=23) works instead of dead-ending.
+  if (gameSlug !== "dreamteam" && gameSlug !== "fanteam" && gameSlug !== "nfl-fanteam" && gameSlug !== "cloudff") redirect("/squads");
   const isScratch = scratchParam === "1";
 
   const supabase = await createAuthServerClient();

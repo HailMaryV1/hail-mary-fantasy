@@ -58,9 +58,25 @@ export default function SquadBuilder({
   initialSelected?: number[];
   isScratch?: boolean;
 }) {
-  const [formationCode, setFormationCode] = useState<string | null>(
-    rules.uses_formations ? formations[0]?.code ?? null : null
-  );
+  const [formationCode, setFormationCode] = useState<string | null>(() => {
+    if (!rules.uses_formations) return null;
+    // When editing an existing squad, detect which formation its real
+    // player counts actually match, rather than always defaulting to the
+    // first formation in the list - otherwise the quota bar shows a
+    // misleading over/under-quota state for a perfectly legal squad.
+    if (editingSquadId && initialSelected && initialSelected.length > 0) {
+      const counts: Record<string, number> = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
+      const selectedSet = new Set(initialSelected);
+      players.forEach((p) => {
+        if (selectedSet.has(p.game_player_id)) counts[p.position] += 1;
+      });
+      const match = formations.find(
+        (f) => f.gk_count === counts.GK && f.def_count === counts.DEF && f.mid_count === counts.MID && f.fwd_count === counts.FWD
+      );
+      if (match) return match.code;
+    }
+    return formations[0]?.code ?? null;
+  });
   const [name, setName] = useState(
     initialName ?? (isScratch ? "Test Squad" : gameSlug === "dreamteam" ? "Dream Team Squad" : "FanTeam Squad")
   );
@@ -175,9 +191,11 @@ export default function SquadBuilder({
           placeholder="e.g. Entry 2, Wildcard team"
           className="mt-1 w-full max-w-xs rounded-lg border border-navy-700 bg-navy-900 px-3 py-1.5 text-sm text-white"
         />
-        <p className="mt-1 text-xs text-navy-400">
-          Running more than one {gameSlug === "fanteam" ? "FanTeam" : "Dream Team"} entry? Give each squad its own name so they&apos;re easy to tell apart on the squads list.
-        </p>
+        {(gameSlug === "fanteam" || gameSlug === "dreamteam") && (
+          <p className="mt-1 text-xs text-navy-400">
+            Running more than one {gameSlug === "fanteam" ? "FanTeam" : "Dream Team"} entry? Give each squad its own name so they&apos;re easy to tell apart on the squads list.
+          </p>
+        )}
       </div>
 
       {rules.uses_formations && (
