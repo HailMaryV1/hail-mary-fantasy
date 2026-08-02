@@ -755,6 +755,17 @@ async function executeTransfer(
   const swapResult = await performSwap(supabase, squad, outGamePlayerId, inGamePlayerId);
   if (swapResult.error) return swapResult;
 
+  // Cloud FF's real transfer rules (50 transfers/season total, one
+  // "Overhaul" window, no points cost at all) don't fit this FanTeam-shaped
+  // cost/wildcard model and there's no schema support for a season-total
+  // cap yet - building a partial or guessed version would itself be
+  // inventing rules. Skip cost/wildcard accounting entirely for cloudff
+  // (legality - budget/formation/club-limit - is already fully enforced
+  // above by performSwap, unconditionally) as a temporary compatibility
+  // measure until the real model is scoped and built.
+  const { data: game } = await supabase.from("fantasy_games").select("slug").eq("id", squad.game_id).single();
+  const isCloudFF = game?.slug === "cloudff";
+
   // Transfer cost - only meaningful for games with a real gameweek
   // calendar (currently FanTeam). Games without one skip this entirely.
   const gameweek = await getCurrentGameweek(supabase, squad.game_id);
@@ -763,7 +774,7 @@ async function executeTransfer(
   let newFreeTransfers = squad.free_transfers;
   const squadUpdate: Record<string, number> = {};
 
-  if (gameweek !== null) {
+  if (gameweek !== null && !isCloudFF) {
     const { seasonStarted } = await getSeasonTiming(supabase, squad.game_id);
 
     if (seasonStarted) {
