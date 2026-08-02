@@ -21,8 +21,19 @@ function timeAgo(iso: string | null): string {
   return `${days}d ago`;
 }
 
-function statusTone(status: string): string {
-  if (status === "ok") return "bg-emerald-950 text-emerald-400";
+// The scheduled sync (.github/workflows/provider_sync_scheduled.yml) runs
+// every 20 minutes - 2 hours is a generous multiple of that (covers
+// occasional GitHub Actions queue delays) while still catching a genuinely
+// broken/stuck sync rather than showing a false "Synced" for days.
+const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
+
+function isStale(iso: string | null): boolean {
+  if (!iso) return false;
+  return Date.now() - new Date(iso).getTime() > STALE_THRESHOLD_MS;
+}
+
+function statusTone(status: string, stale: boolean): string {
+  if (status === "ok") return stale ? "bg-amber-950 text-amber-400" : "bg-emerald-950 text-emerald-400";
   if (status === "error") return "bg-red-950 text-red-400";
   return "bg-navy-800 text-navy-400";
 }
@@ -53,6 +64,7 @@ export default function ProviderSyncStatus({
   }
 
   const requestedButNotYetPicked = syncRequested;
+  const stale = lastSyncStatus === "ok" && isStale(lastSyncedAt);
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-navy-700 bg-navy-900 px-4 py-3">
@@ -60,15 +72,20 @@ export default function ProviderSyncStatus({
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold uppercase tracking-wide text-navy-400">Auto-synced from</span>
           <span className="text-sm font-medium text-white">{PROVIDER_DISPLAY_NAMES[provider] ?? provider}</span>
-          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${statusTone(lastSyncStatus)}`}>
-            {lastSyncStatus === "ok" ? "Synced" : lastSyncStatus === "error" ? "Sync failed" : "Not yet synced"}
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${statusTone(lastSyncStatus, stale)}`}>
+            {lastSyncStatus === "ok" ? (stale ? "Stale" : "Synced") : lastSyncStatus === "error" ? "Sync failed" : "Not yet synced"}
           </span>
         </div>
         <p className="mt-1 text-xs text-navy-400">
           Last synced: {timeAgo(lastSyncedAt)}
-          {lastChangeSummary && lastSyncStatus === "ok" && ` — ${lastChangeSummary}`}
+          {lastChangeSummary && lastSyncStatus === "ok" && !stale && ` — ${lastChangeSummary}`}
         </p>
         {lastSyncStatus === "error" && lastSyncError && <p className="mt-1 text-xs text-red-400">{lastSyncError}</p>}
+        {stale && (
+          <p className="mt-1 text-xs text-amber-400">
+            This hasn&apos;t synced in a while - the data below may be out of date. Try Sync Now, or check back later.
+          </p>
+        )}
       </div>
       <button
         onClick={handleSyncNow}
