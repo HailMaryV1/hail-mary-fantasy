@@ -59,12 +59,19 @@ export default async function GameHubPage({ params }: { params: Promise<{ slug: 
 
         <div className="mt-6 flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Your squads</h2>
-          <Link
-            href={`/squads/new?game=${game.slug}`}
-            className="rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-medium text-navy-950 hover:bg-sky-400"
-          >
-            + New squad
-          </Link>
+          {/* Cloud FF's real rule is "you can create one team only," and
+              that one team already exists via provider sync - a create
+              button here would risk a second, confusing, non-synced squad
+              (same reasoning as the allowlist comment in
+              squads/new/page.tsx). */}
+          {game.slug !== "cloudff" && (
+            <Link
+              href={`/squads/new?game=${game.slug}`}
+              className="rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-medium text-navy-950 hover:bg-sky-400"
+            >
+              + New squad
+            </Link>
+          )}
         </div>
 
         {statuses.length === 0 ? (
