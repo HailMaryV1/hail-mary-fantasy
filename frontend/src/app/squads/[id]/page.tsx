@@ -390,7 +390,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
               wildcardActiveThisWeek={wildcardActiveThisWeek}
               wc1Available={wc1Available}
               wc2Available={wc2Available}
-              isNfl
+              isNfl={game.slug === "nfl-fanteam"}
             />
           </div>
           {hasCalendar && !seasonStarted && <RecentTransfers squadId={squadId} transfers={recentTransfers} />}
