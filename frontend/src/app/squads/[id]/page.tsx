@@ -362,15 +362,29 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
   );
 
   if (!hasBench) {
-    // NFL FanTeam today: no bench/lineup/captain concept, no live
-    // calendar yet - the pool-browsing board plus recent-transfers undo
-    // is the whole page.
+    // NFL FanTeam: no bench/lineup/captain concept, no live calendar yet -
+    // the pool-browsing board plus recent-transfers undo is the whole
+    // page. Cloud FF also has no bench, but it DOES have a real captain
+    // concept ("captains score double") - see the manual CaptainPicker
+    // added below, same reasoning as the Dream Team one further down this
+    // file (no provider-supplied captain field to sync from - confirmed
+    // against the real Cloud FF API response - so manual selection is the
+    // only honest option).
     const squadMembersForBoard = players.map((p) => ({ ...p, nextFixture: null }));
     const poolCandidates = (pool ?? [])
       .filter((p) => !players.some((sp) => sp.game_player_id === p.game_player_id))
       .map((p) => ({ ...p, score: scoreByGamePlayerId.get(p.game_player_id) ?? null, formStatus: formByGamePlayerId.get(p.game_player_id)?.status ?? null }));
     const clubCountsObj: Record<number, number> = {};
     clubCounts.forEach((count, teamId) => (clubCountsObj[teamId] = count));
+    const cloudFFStarters = players
+      .map((p) => ({
+        game_player_id: p.game_player_id,
+        full_name: p.full_name,
+        position: p.position,
+        team_name: p.team_name,
+        hail_mary_score: p.score ?? 0,
+      }))
+      .sort((a, b) => b.hail_mary_score - a.hail_mary_score);
 
     return (
       <div className="min-h-screen bg-navy-950 px-6 py-10">
@@ -393,6 +407,21 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
               isNfl={game.slug === "nfl-fanteam"}
             />
           </div>
+          {game.slug === "cloudff" && (
+            <div className="mt-10">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Captain</h2>
+              <div className="mt-2">
+                <CaptainPicker
+                  squadId={squad.id}
+                  starters={cloudFFStarters}
+                  currentCaptainId={squad.captain_game_player_id}
+                  currentViceCaptainId={squad.vice_captain_game_player_id}
+                  recommendedCaptain={null}
+                  recommendedVice={null}
+                />
+              </div>
+            </div>
+          )}
           {hasCalendar && !seasonStarted && <RecentTransfers squadId={squadId} transfers={recentTransfers} />}
         </main>
       </div>
