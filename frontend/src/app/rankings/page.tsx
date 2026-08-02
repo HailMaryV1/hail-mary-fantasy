@@ -35,6 +35,7 @@ const GAMES = [
   { slug: "dreamteam", label: "Dream Team" },
   { slug: "fanteam", label: "FanTeam" },
   { slug: "nfl-fanteam", label: "NFL FanTeam" },
+  { slug: "cloudff", label: "Cloud FF" },
 ] as const;
 
 const HORIZONS = [

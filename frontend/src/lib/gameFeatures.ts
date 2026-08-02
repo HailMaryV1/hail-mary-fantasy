@@ -32,6 +32,13 @@ export const GAME_FEATURES: Record<string, GameFeatureSet> = {
   fanteam: { rankings: true, fixtures: true, watchlist: true, activity: true, askMary: true, performanceLab: true, hailMaryForm: true, engineExplain: true },
   dreamteam: { rankings: true, fixtures: true, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: true },
   "nfl-fanteam": { rankings: true, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: false },
+  // Cloud FF frontend wiring is intentionally minimal for now (see
+  // supabase/migrations/0079_cloudff_squad_rules.sql commit) - only
+  // Player Rankings is being turned on. Fixtures/Watchlist/Activity/Ask
+  // Mary/Performance Lab/Engine Validation are all real, working features
+  // elsewhere, but none have been built or verified against Cloud FF's
+  // real rules yet, so they stay off rather than show something untested.
+  cloudff: { rankings: true, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: false },
 };
 
 export const NO_FEATURES: GameFeatureSet = {
