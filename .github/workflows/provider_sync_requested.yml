@@ -1,34 +1,33 @@
 name: Provider squad sync (Sync Now)
 
-# The "check for a pending Sync Now click" half of Auto Import My Squad
-# (see migration 0071 and scripts/sync_provider_squads.py). Was every 5
-# minutes; moved to the same 90-minute cadence as provider_sync_scheduled.
-# yml (see that file's comment for the real Actions-minutes accounting
-# behind that number - a private repo's 2,000 min/month budget, plus a
-# real incident where the previous 5-minute + 20-minute combined schedule
-# appears to have burned through it, silently stalling both workflows'
-# actual `schedule` triggers for over an hour). A "Sync Now" click
-# (frontend/src/app/squads/actions.ts's requestProviderSync - it only
-# ever sets sync_requested_at, never touches a credential itself) can now
-# take up to ~90 minutes to be picked up automatically; the Actions tab's
-# manual "Run workflow" button still triggers an immediate pickup in the
-# meantime. --requested-only keeps each tick cheap when nothing is
-# pending - one indexed DB lookup, no provider login (see sync_fanteam's
-# own early-exit guard) - though the checkout/setup/dependency-install
-# steps below still run and cost their own Actions minutes regardless.
+# The "Sync Now" half of Auto Import My Squad (see migration 0071 and
+# scripts/sync_provider_squads.py) - NOT on any schedule at all.
+# requestProviderSync (frontend/src/app/squads/actions.ts) sets
+# sync_requested_at (durable, in case the call below ever fails) AND
+# calls GitHub's REST API to dispatch this workflow immediately -
+# github.com/.../actions/workflows/provider_sync_requested.yml/dispatches,
+# authenticated with a repo-scoped PAT in GITHUB_ACTIONS_TOKEN (a Vercel
+# env var, set by the account owner - this workflow has no way to
+# generate that token itself). A real 5-minute/20-minute-then-90-minute
+# polling cadence here was tried first and abandoned: a click's own
+# request only ever gets picked up on the NEXT tick regardless of how
+# short the interval is, which is exactly the "why did nothing happen"
+# friction that prompted this - direct dispatch means a click starts a
+# real run within seconds, genuinely zero Actions minutes spent between
+# clicks. --requested-only still guards the actual sync/login logic
+# (never runs a provider login on a manual `Run workflow` retrigger with
+# nothing genuinely pending), it's just no longer covering for an absent
+# trigger.
 on:
-  schedule:
-    - cron: "0 0,3,6,9,12,15,18,21 * * *"
-    - cron: "30 1,4,7,10,13,16,19,22 * * *"
   workflow_dispatch: {}
 
 # Shared with provider_sync_scheduled.yml (same group name) - both
 # workflows call sync_provider_squads.py against overlapping
-# provider_squad_links rows with no other locking, so their ticks can
-# otherwise land at the same time. cancel-in-progress is false: a run
-# already logging into a provider should finish (and release its
-# login/DB transaction) rather than being killed mid-sync - the next
-# trigger just waits its turn instead.
+# provider_squad_links rows with no other locking, so a dispatched run
+# and the periodic sweep can otherwise land at the same time.
+# cancel-in-progress is false: a run already logging into a provider
+# should finish (and release its login/DB transaction) rather than being
+# killed mid-sync - the next trigger just waits its turn instead.
 concurrency:
   group: provider-squad-sync
   cancel-in-progress: false

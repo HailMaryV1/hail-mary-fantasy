@@ -1,6 +1,6 @@
 "use client";
 
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import { requestProviderSync } from "../actions";
 
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
@@ -21,11 +21,14 @@ function timeAgo(iso: string | null): string {
   return `${days}d ago`;
 }
 
-// The scheduled sync (.github/workflows/provider_sync_scheduled.yml) runs
-// every 20 minutes - 2 hours is a generous multiple of that (covers
-// occasional GitHub Actions queue delays) while still catching a genuinely
-// broken/stuck sync rather than showing a false "Synced" for days.
-const STALE_THRESHOLD_MS = 2 * 60 * 60 * 1000;
+// A "Sync Now" click is instant now (requestProviderSync dispatches
+// .github/workflows/provider_sync_requested.yml directly via GitHub's
+// API), but the background sweep that catches provider-side-only changes
+// (.github/workflows/provider_sync_scheduled.yml) runs every 3 hours - 4
+// hours is a generous multiple of that (covers one occasional missed/
+// delayed tick) while still catching a genuinely broken/stuck sync
+// rather than showing a false "Synced" for days.
+const STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 
 function isStale(iso: string | null): boolean {
   if (!iso) return false;
@@ -56,10 +59,20 @@ export default function ProviderSyncStatus({
   syncRequested: boolean;
 }) {
   const [isPending, startTransition] = useTransition();
+  // Only meaningful when dispatch failed (e.g. GITHUB_ACTIONS_TOKEN not
+  // yet configured) - the request itself always succeeds either way
+  // (sync_requested_at is durable), this is purely "how soon" feedback,
+  // not an error the user needs to act on.
+  const [dispatchNote, setDispatchNote] = useState<string | null>(null);
 
   function handleSyncNow() {
     startTransition(async () => {
-      await requestProviderSync({ squadId });
+      const result = await requestProviderSync({ squadId });
+      if (result && "success" in result && !result.dispatched) {
+        setDispatchNote("Requested - will run on the next background sweep (instant trigger not configured yet).");
+      } else {
+        setDispatchNote(null);
+      }
     });
   }
 
@@ -86,6 +99,7 @@ export default function ProviderSyncStatus({
             This hasn&apos;t synced in a while - the data below may be out of date. Try Sync Now, or check back later.
           </p>
         )}
+        {dispatchNote && <p className="mt-1 text-xs text-amber-400">{dispatchNote}</p>}
       </div>
       <button
         onClick={handleSyncNow}

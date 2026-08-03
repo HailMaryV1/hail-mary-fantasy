@@ -1149,16 +1149,66 @@ export async function setCaptain({ squadId, captainGamePlayerId, viceCaptainGame
   redirect(`/squads/${squadId}`);
 }
 
+const GITHUB_REPO = "HailMaryV1/hail-mary-fantasy";
+const GITHUB_SYNC_WORKFLOW = "provider_sync_requested.yml";
+
+/**
+ * Fires .github/workflows/provider_sync_requested.yml immediately via
+ * GitHub's own REST API (workflow_dispatch), rather than relying on any
+ * `schedule` trigger to eventually notice sync_requested_at - a real
+ * incident found live (2026-08-03) that even a 5-minute poll still means
+ * "click, then wait for the next tick", and that a private repo's 2,000
+ * Actions-minutes/month budget can't actually sustain a tight enough
+ * polling interval to feel instant anyway (see provider_sync_requested.
+ * yml's own comment for the full accounting). GITHUB_ACTIONS_TOKEN is a
+ * fine-grained PAT (Actions: read and write, scoped to just this repo)
+ * the account owner generates and sets as a Vercel env var - this server
+ * action has no way to create that token itself. Best-effort: if it's
+ * missing or the API call fails for any reason, sync_requested_at (see
+ * requestProviderSync below) is still set, so the periodic background
+ * sweep (provider_sync_scheduled.yml, every 3h) remains a real fallback -
+ * a dispatch failure here should never surface as a hard error to the
+ * user, just a slower path to the same eventual sync.
+ */
+async function dispatchProviderSyncWorkflow(): Promise<{ dispatched: boolean; error?: string }> {
+  const token = process.env.GITHUB_ACTIONS_TOKEN;
+  if (!token) return { dispatched: false, error: "GITHUB_ACTIONS_TOKEN not configured" };
+
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${GITHUB_REPO}/actions/workflows/${GITHUB_SYNC_WORKFLOW}/dispatches`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ref: "main" }),
+      }
+    );
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { dispatched: false, error: `GitHub API ${res.status}: ${body}` };
+    }
+    return { dispatched: true };
+  } catch (e) {
+    return { dispatched: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /**
  * Auto Import My Squad - "Sync Now" button (see migration 0071). This
  * NEVER touches a provider credential or calls a provider's API itself -
  * by design, only scripts/sync_provider_squads.py (server-side, holding
- * PROVIDER_SECRETS_KEY) ever does that. All this does is set
- * sync_requested_at, which a scheduled job (running every few minutes,
- * same cadence as the golf live-score poller) picks up and clears once
- * it's actually processed the request. RLS's "own provider squad links
- * request sync" policy is the real enforcement here - this update simply
- * can't touch a link that isn't the signed-in user's own squad.
+ * PROVIDER_SECRETS_KEY) ever does that. Sets sync_requested_at (durable
+ * record of the request, and the fallback path if the dispatch below
+ * ever fails) AND dispatches the sync workflow immediately - see
+ * dispatchProviderSyncWorkflow's own docstring for why polling alone
+ * wasn't good enough. RLS's "own provider squad links request sync"
+ * policy is the real enforcement here - this update simply can't touch
+ * a link that isn't the signed-in user's own squad.
  */
 export async function requestProviderSync({ squadId }: { squadId: number }) {
   const supabase = await createAuthServerClient();
@@ -1173,6 +1223,8 @@ export async function requestProviderSync({ squadId }: { squadId: number }) {
   const { error } = await supabase.from("provider_squad_links").update({ sync_requested_at: new Date().toISOString() }).eq("id", link.id);
   if (error) return { error: error.message };
 
+  const dispatch = await dispatchProviderSyncWorkflow();
+
   revalidatePath(`/squads/${squadId}`);
-  return { success: true as const };
+  return { success: true as const, dispatched: dispatch.dispatched };
 }

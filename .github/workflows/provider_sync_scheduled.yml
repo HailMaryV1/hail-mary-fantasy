@@ -2,22 +2,23 @@ name: Provider squad sync (scheduled)
 
 # The regular half of Auto Import My Squad (see migration 0071 and
 # scripts/sync_provider_squads.py) - discovers any new real entries and
-# re-syncs every linked, enabled squad on its own, independent of anyone
-# clicking "Sync Now" (that's provider_sync_requested.yml's job, every 90
-# minutes). Every 90 minutes keeps this comfortably inside the account's
-# 2,000 Actions-minutes/month budget (a private repo - see
-# provider_sync_requested.yml's own comment for the full accounting)
-# while still catching a real transfer or captain change reasonably
-# promptly. Cron's minute field only accepts 0-59 and 90 doesn't divide
-# evenly into a single hour, so an exact 90-minute cadence needs two
-# interleaved cron lines rather than one "*/90" (which GitHub would
-# reject outright) - together these fire at :00 past every 3rd hour and
-# :30 past the hour exactly in between (00:00, 01:30, 03:00, 04:30, ...),
-# each gap exactly 90 minutes, 16 runs/day.
+# re-syncs every linked, enabled squad on its own periodic sweep,
+# independent of anyone clicking "Sync Now" (that's now instant, real
+# GitHub API dispatch on click - see provider_sync_requested.yml, no
+# schedule left there at all). This is the only remaining scheduled
+# workflow in Auto Import My Squad, so it has the account's whole 2,000
+# Actions-minutes/month private-repo budget to itself now (see
+# provider_sync_requested.yml's comment for the real incident that
+# happened when both workflows ran on tight, overlapping schedules).
+# Every 3 hours - matches FanTeam's own ~3h token lifetime (see
+# provider_fanteam_scoutgg.py's module docstring), so this sweep never
+# goes more than one token cycle without a chance to catch a real
+# provider-side change (a transfer or captain swap made directly on
+# FanTeam's site, never touching Hail Mary at all) - and divides evenly
+# into a day (8 runs/day) so it's a single plain cron line.
 on:
   schedule:
-    - cron: "0 0,3,6,9,12,15,18,21 * * *"
-    - cron: "30 1,4,7,10,13,16,19,22 * * *"
+    - cron: "0 */3 * * *"
   workflow_dispatch: {}
 
 # Shared with provider_sync_requested.yml (same group name) - see that
@@ -30,12 +31,12 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    # This job's own timeout is what actually bounds a queued Sync Now
-    # request's worst-case wait (see provider_sync_requested.yml's
-    # comment): if this run hangs, GitHub force-cancels it after 15
-    # minutes and the shared concurrency group frees up. Deliberately
-    # tighter than the 90-minute cron interval, with headroom for a
-    # multi-squad sweep as real linked-squad volume grows.
+    # If a dispatched Sync Now run is queued behind this one in the
+    # shared concurrency group (see below), this timeout is what bounds
+    # its worst-case wait - GitHub force-cancels a hung run after 15
+    # minutes and the group frees up. Deliberately tighter than the
+    # 3-hour cron interval, with headroom for a multi-squad sweep as
+    # real linked-squad volume grows.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
