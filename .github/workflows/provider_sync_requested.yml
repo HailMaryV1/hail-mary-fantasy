@@ -53,3 +53,16 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PROVIDER_SECRETS_KEY: ${{ secrets.PROVIDER_SECRETS_KEY }}
         run: python scripts/sync_provider_squads.py --requested-only
+
+      # Only exists when discover_my_teams raised (see sync_provider_squads.py's
+      # discovery-failure catch block) - a screenshot + full HTML of whatever
+      # FanTeam's app actually rendered after token injection, so a "MY ENTRIES
+      # nav link not found" failure is debuggable instead of a bare error string.
+      - name: Upload FanTeam debug artifacts (on discovery failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fanteam-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: fanteam_debug/
+          if-no-files-found: ignore
+          retention-days: 7

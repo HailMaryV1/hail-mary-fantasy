@@ -355,8 +355,17 @@ def sync_fanteam(cur, user_id, credential_row, requested_only=False):
         try:
             teams = fanteam.discover_my_teams(page)
         except Exception as e:
+            debug_note = ""
+            try:
+                debug_dir = Path("fanteam_debug")
+                debug_dir.mkdir(exist_ok=True)
+                page.screenshot(path=str(debug_dir / "fanteam_debug.png"), full_page=True)
+                (debug_dir / "fanteam_debug.html").write_text(page.content(), encoding="utf-8")
+                debug_note = " (debug screenshot/html saved to fanteam_debug/)"
+            except Exception as debug_e:
+                debug_note = f" (debug capture also failed: {debug_e})"
             browser.close()
-            print(f"  [error] couldn't discover FanTeam entries: {e}")
+            print(f"  [error] couldn't discover FanTeam entries: {e}{debug_note}")
             log_event(cur, "provider_sync_failed", f"FanTeam entry discovery failed: {e}")
             return
 
