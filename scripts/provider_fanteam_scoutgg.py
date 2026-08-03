@@ -113,18 +113,29 @@ def login(username, password):
     "Username required"} - FanTeam accounts are username-based, not
     email-based, unlike most of this project's other integrations).
 
-    UNCONFIRMED HYPOTHESIS (2026-08-03): sync started failing live with
-    HTTP 451 {"error": "auth.wrong_domain"} - a class of error this same
-    file has hit before on tournaments/@me, fixed there by adding a
-    white_label identifier (see list_my_teams' docstring: "with the right
-    token AND the white_label param"). Added the same identifier to the
-    login body as the most likely fix, matching that precedent - but
-    unlike that earlier fix, this hasn't been confirmed against real
-    traffic yet. If login still fails after this change, this hypothesis
-    was wrong and needs revisiting (e.g. a different field name/casing,
-    or a genuinely unrelated cause)."""
+    Started failing live on 2026-08-03 with HTTP 451
+    {"error": "auth.wrong_domain"} - a tried fix (adding a white_label
+    identifier to the request body, matching a precedent from a
+    different endpoint - see list_my_teams' docstring) was tested against
+    real traffic and DID NOT resolve it, same error. Reverted that guess.
+
+    SECOND UNCONFIRMED HYPOTHESIS (2026-08-03): this worked live as
+    recently as 2026-07-31, which argues against the request URL itself
+    being wrong all along - something more likely changed FanTeam-side.
+    A real browser automatically sends Origin/Referer on this
+    cross-origin call; this script (plain urllib) sends neither. If
+    FanTeam recently started validating that header, a missing Origin
+    would plausibly read as "wrong domain" the same as a mismatched one.
+    Added both headers here as the next best-reasoned guess - still
+    unconfirmed against real traffic. If login still fails after this,
+    this hypothesis was also wrong and the real fix needs the actual
+    request captured from a real browser's Network tab instead of
+    further guessing."""
     status, body = _http_json(
-        LOGIN_URL, method="POST", body={"username": username, "password": password, "white_label": "fanteam"}
+        LOGIN_URL,
+        method="POST",
+        headers={"Origin": "https://www.fanteam.com", "Referer": "https://www.fanteam.com/"},
+        body={"username": username, "password": password},
     )
     if status != 200 or not body or "token" not in body:
         raise RuntimeError(f"FanTeam login failed: HTTP {status} {body}")
