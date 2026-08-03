@@ -24,7 +24,16 @@ import { fernetEncrypt } from "@/lib/fernet";
  * provider_fanteam_scoutgg.py for the evidence trail.
  */
 
-const FANTEAM_ORIGIN = "https://www.fanteam.com";
+// Both confirmed live (2026-08-03): the marketing homepage serves from
+// www.fanteam.com, but a real logged-in session's own dashboard/entries
+// pages (where the bookmarklet actually gets clicked) serve from the
+// bare fanteam.com - no www. A single hardcoded ACAO value silently
+// mismatched the real Origin header for exactly the page the bookmarklet
+// is meant to run on, making every real click fail client-side with a
+// bare "Failed to fetch" (the browser rejects the response before the
+// bookmarklet's own .then()/.catch() ever sees an HTTP status) - the
+// server was actually never reached in a way the browser would accept.
+const FANTEAM_ORIGINS = ["https://fanteam.com", "https://www.fanteam.com"];
 // FanTeam's real token lifetime is ~3h (see provider_fanteam_scoutgg.py's
 // module docstring) - a 15-minute safety margin means sync_fanteam always
 // sees a token as expired slightly before FanTeam itself would reject it,
@@ -32,20 +41,22 @@ const FANTEAM_ORIGIN = "https://www.fanteam.com";
 const TOKEN_LIFETIME_MS = (3 * 60 - 15) * 60 * 1000;
 const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
-function corsHeaders() {
+function corsHeaders(origin: string | null) {
+  const allowedOrigin = origin && FANTEAM_ORIGINS.includes(origin) ? origin : FANTEAM_ORIGINS[0];
   return {
-    "Access-Control-Allow-Origin": FANTEAM_ORIGIN,
+    "Access-Control-Allow-Origin": allowedOrigin,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
+    Vary: "Origin",
   };
 }
 
-export async function OPTIONS() {
-  return new Response(null, { status: 204, headers: corsHeaders() });
+export async function OPTIONS(request: Request) {
+  return new Response(null, { status: 204, headers: corsHeaders(request.headers.get("origin")) });
 }
 
 export async function POST(request: Request) {
-  const headers = corsHeaders();
+  const headers = corsHeaders(request.headers.get("origin"));
 
   const expectedSecret = process.env.FANTEAM_BOOKMARKLET_SECRET;
   if (!expectedSecret) {
