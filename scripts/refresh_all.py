@@ -18,8 +18,11 @@ Deliberately excludes:
     token that eventually expires (confirmed - see scraper_fanteam.py's
     fetch_fixtures docstring). Manual/occasional path only, run by hand
     if the season's schedule ever changes.
-  - Dream Team - no live scrape source at all yet (existing, unrelated
-    limitation).
+  - Dream Team's own fixture/gameweek calendar and score recompute -
+    players/prices ARE refreshed here (scraper_dreamteam.py +
+    import_dreamteam.py, both unauthenticated), but zero
+    game_fixture_gameweeks rows exist for Dream Team at all (confirmed
+    live) - a separate, larger piece of work, not yet built.
   - Cloud FF's own Auto Import My Squad sync (scripts/sync_provider_
     squads.py) - that's a per-user credential flow with its own
     dedicated scheduled workflows (provider_sync_requested.yml /
@@ -162,6 +165,20 @@ def main():
             results.append(
                 run_step(f"Recompute Cloud FF GW{gw}", ["scripts/compute_projections.py", "cloudff", "--gameweek", str(gw)])
             )
+
+    # Dream Team - players/prices only, deliberately no recompute step
+    # yet: unlike FanTeam/Cloud FF, Dream Team has zero
+    # game_fixture_gameweeks rows (confirmed live, 2026-08-03) - no
+    # fixture/gameweek calendar has ever been built for it, so
+    # compute_projections.py has nothing to run against. That's a
+    # separate, larger piece of work (matching fixtures to gameweeks,
+    # same reused-fixture-row technique as the other games) - out of
+    # scope for just keeping player/price data fresh. See
+    # import_dreamteam.py's own docstring for the real live source
+    # (engagecraft-fantasy-backend-prod.azurewebsites.net) and matching
+    # logic.
+    results.append(run_step("Dream Team players (no login needed)", ["scraper_dreamteam.py"]))
+    results.append(run_step("Import Dream Team players", ["import_dreamteam.py"]))
 
     results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
     results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
