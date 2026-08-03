@@ -111,8 +111,21 @@ def login(username, password):
     "username" (confirmed live: a real login attempt with the account's
     real FanTeam username in an "email" field got HTTP 400 {"error":
     "Username required"} - FanTeam accounts are username-based, not
-    email-based, unlike most of this project's other integrations)."""
-    status, body = _http_json(LOGIN_URL, method="POST", body={"username": username, "password": password})
+    email-based, unlike most of this project's other integrations).
+
+    UNCONFIRMED HYPOTHESIS (2026-08-03): sync started failing live with
+    HTTP 451 {"error": "auth.wrong_domain"} - a class of error this same
+    file has hit before on tournaments/@me, fixed there by adding a
+    white_label identifier (see list_my_teams' docstring: "with the right
+    token AND the white_label param"). Added the same identifier to the
+    login body as the most likely fix, matching that precedent - but
+    unlike that earlier fix, this hasn't been confirmed against real
+    traffic yet. If login still fails after this change, this hypothesis
+    was wrong and needs revisiting (e.g. a different field name/casing,
+    or a genuinely unrelated cause)."""
+    status, body = _http_json(
+        LOGIN_URL, method="POST", body={"username": username, "password": password, "white_label": "fanteam"}
+    )
     if status != 200 or not body or "token" not in body:
         raise RuntimeError(f"FanTeam login failed: HTTP {status} {body}")
     return body["token"], body.get("refreshToken"), body.get("profile")
