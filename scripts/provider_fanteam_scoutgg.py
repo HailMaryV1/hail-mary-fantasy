@@ -490,11 +490,31 @@ def open_authenticated_page(playwright, access_token):
     get_ft_token/AUTH_STATE_FILE for the same key name), then reloads so
     the app's own JS actually picks the token up and renders the
     logged-in nav (needed for discover_my_teams' nav click to find "MY
-    ENTRIES" at all). Caller must browser.close() when done."""
+    ENTRIES" at all).
+
+    Before any of that: dismisses FanTeam's own geo-compliance interstitial
+    ("this site isn't tailored for the regulations in your area - Skip /
+    Redirect") and cookie-consent banner, which a real UK browser session
+    doesn't hit but a GitHub Actions runner's US datacenter IP does -
+    confirmed via a real fanteam_debug screenshot (see
+    sync_provider_squads.py's discovery-failure debug capture) showing the
+    logged-out marketing homepage sitting behind that interstitial instead
+    of the SPA, regardless of whether the injected token was valid. "Skip"
+    (not "Redirect") keeps us on the same fanteam.com the token belongs to.
+    Both dismissals are best-effort (page.evaluate returning False if the
+    banner never appears, e.g. already dismissed this session) - never
+    fatal on their own, since a real invalid/expired token should still
+    fail loudly downstream in discover_my_teams, not here.
+
+    Caller must browser.close() when done."""
     browser = playwright.chromium.launch(headless=True)
     context = browser.new_context()
     page = context.new_page()
     page.goto("https://www.fanteam.com/", wait_until="domcontentloaded")
+    page.wait_for_timeout(1500)
+    _click_shadow_text(page, "Skip")
+    _click_shadow_text(page, "Decline All")
+    page.wait_for_timeout(500)
     page.evaluate("(t) => localStorage.setItem('ftToken', t)", access_token)
     page.reload(wait_until="networkidle")
     page.wait_for_timeout(1000)
