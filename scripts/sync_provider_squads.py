@@ -347,11 +347,12 @@ def sync_fanteam(cur, user_id, credential_row, requested_only=False):
         print("  [skip] no valid FanTeam token on file (bookmarklet not run recently, or it expired) - not syncing.")
         return
     access_token = provider_secrets.decrypt(credential_row["encrypted_access_token"])
+    refresh_token = provider_secrets.decrypt(credential_row["encrypted_refresh_token"])
 
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
-        browser, page = fanteam.open_authenticated_page(p, access_token)
+        browser, page = fanteam.open_authenticated_page(p, access_token, refresh_token=refresh_token)
         try:
             teams = fanteam.discover_my_teams(page)
         except Exception as e:

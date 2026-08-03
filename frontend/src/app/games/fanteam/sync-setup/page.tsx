@@ -16,6 +16,14 @@ import BookmarkletLink from "./BookmarkletLink";
  * to /api/fanteam-token, which stores it (encrypted) for the next
  * scheduled sync to pick up. Nothing here ever attempts a FanTeam login
  * itself.
+ *
+ * Also relays refreshToken (same localStorage key) when present -
+ * confirmed live (2026-08-03) that ftToken alone, even a real, still-
+ * valid one, isn't enough for FanTeam's own app to render a logged-in
+ * session in a fresh Playwright context; the app's auth bootstrap most
+ * likely needs refreshToken too (see open_authenticated_page's docstring
+ * for the full evidence trail). refreshToken is optional - a session
+ * that never set one still relays ftToken alone, unchanged.
  */
 export default async function FanteamSyncSetupPage() {
   const supabase = await createAuthServerClient();
@@ -48,10 +56,11 @@ export default async function FanteamSyncSetupPage() {
     alert('Hail Mary: could not find a FanTeam login token in this tab. Make sure you are logged into FanTeam here, then click this again.');
     return;
   }
+  var refreshToken = localStorage.getItem('refreshToken') || null;
   fetch('${siteUrl}/api/fanteam-token', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({secret: '${secret}', token: token})
+    body: JSON.stringify({secret: '${secret}', token: token, refreshToken: refreshToken})
   }).then(function(r){ return r.json(); }).then(function(data){
     if (data && data.ok) {
       alert('Hail Mary: FanTeam token sent! Your squads will sync within a few minutes.');

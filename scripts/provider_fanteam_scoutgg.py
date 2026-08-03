@@ -481,7 +481,7 @@ def _parse_squad_tokens(tokens):
     return {"starting": starting, "bench": bench}
 
 
-def open_authenticated_page(playwright, access_token):
+def open_authenticated_page(playwright, access_token, refresh_token=None):
     """(browser, page) - one shared headless browser/page, authenticated
     once, reused for both discover_my_teams and every fetch_squad call
     (rather than a fresh browser launch + token injection per team, which
@@ -491,6 +491,20 @@ def open_authenticated_page(playwright, access_token):
     the app's own JS actually picks the token up and renders the
     logged-in nav (needed for discover_my_teams' nav click to find "MY
     ENTRIES" at all).
+
+    Also injects `refreshToken` (same localStorage key FanTeam's own app
+    uses) when the caller has one. Confirmed live (2026-08-03) that
+    injecting ftToken ALONE - even a real, still-valid one (checked
+    directly against provider_credentials.access_token_expires_at, well
+    inside its window) - still renders the logged-out marketing homepage,
+    not the authenticated SPA (see sync_provider_squads.py's discovery-
+    failure debug capture). The app's own auth bootstrap most likely
+    validates/rotates the session using refreshToken on load and treats
+    the whole session as invalid without it, even though ftToken alone
+    would be a valid bearer token for direct API calls. Best-effort: a
+    caller with no refresh token on file (None) still injects ftToken
+    alone, unchanged from before - this only adds a second key when one
+    is available (see /api/fanteam-token/route.ts's bookmarklet relay).
 
     Before any of that: dismisses FanTeam's own geo-compliance interstitial
     ("this site isn't tailored for the regulations in your area - Skip /
@@ -516,6 +530,8 @@ def open_authenticated_page(playwright, access_token):
     _click_shadow_text(page, "Decline All")
     page.wait_for_timeout(500)
     page.evaluate("(t) => localStorage.setItem('ftToken', t)", access_token)
+    if refresh_token:
+        page.evaluate("(t) => localStorage.setItem('refreshToken', t)", refresh_token)
     page.reload(wait_until="networkidle")
     page.wait_for_timeout(1000)
     return browser, page

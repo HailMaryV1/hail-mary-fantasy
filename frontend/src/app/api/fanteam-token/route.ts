@@ -15,6 +15,13 @@ import { fernetEncrypt } from "@/lib/fernet";
  * does for Cloud FF's cached-token path (provider_credentials.
  * encrypted_access_token / access_token_expires_at) - sync_fanteam picks
  * it up from there on its next run, never logging in itself.
+ *
+ * Also stores refreshToken (optional - encrypted_refresh_token, already
+ * on the migration 0071 schema but unused until now) when the bookmarklet
+ * found one - confirmed live (2026-08-03) that ftToken alone isn't enough
+ * for FanTeam's own app to render a logged-in session in a fresh
+ * Playwright context; see open_authenticated_page's docstring in
+ * provider_fanteam_scoutgg.py for the evidence trail.
  */
 
 const FANTEAM_ORIGIN = "https://www.fanteam.com";
@@ -45,7 +52,7 @@ export async function POST(request: Request) {
     return Response.json({ error: "Server not configured (FANTEAM_BOOKMARKLET_SECRET missing)." }, { status: 500, headers });
   }
 
-  let body: { secret?: string; token?: string };
+  let body: { secret?: string; token?: string; refreshToken?: string | null };
   try {
     body = await request.json();
   } catch {
@@ -75,6 +82,7 @@ export async function POST(request: Request) {
   const userId = users.users[0].id;
 
   const encryptedToken = fernetEncrypt(providerSecretsKey, body.token);
+  const encryptedRefreshToken = body.refreshToken ? fernetEncrypt(providerSecretsKey, body.refreshToken) : null;
   const expiresAt = new Date(Date.now() + TOKEN_LIFETIME_MS).toISOString();
 
   const { error: upsertError } = await supabase.from("provider_credentials").upsert(
@@ -83,6 +91,7 @@ export async function POST(request: Request) {
       provider: "fanteam_scoutgg",
       auth_method: "encrypted_password",
       encrypted_access_token: encryptedToken,
+      encrypted_refresh_token: encryptedRefreshToken,
       access_token_expires_at: expiresAt,
       last_refreshed_at: new Date().toISOString(),
       last_refresh_error: null,
