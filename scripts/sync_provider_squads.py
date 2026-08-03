@@ -401,15 +401,20 @@ def sync_fanteam(cur, user_id, credential_row, requested_only=False):
                 # get_or_create_squad_link needs SOME name at the moment
                 # of first creation, before fetch_squad below has had a
                 # chance to learn the real one (fetch_squad needs the
-                # squad_id link to already exist to write into) - this
-                # deterministic placeholder is FanTeam's OWN real display
-                # convention for an entry with no private name set
-                # (confirmed live via this account's real profile -
-                # username "ciccio12" - matching the "ciccio12 #51333"
-                # example documented in provider_fanteam_scoutgg.py), not
-                # an invented label. Upgraded to the real private name
+                # squad_id link to already exist to write into). FanTeam's
+                # own convention for an unnamed entry is "{username} #{id}"
+                # (confirmed live: this account's real "ciccio12 #51333"),
+                # but the account username is only known to us via a real
+                # scripted login (fanteam.login()'s profile field) - no
+                # longer called since FanTeam's reCAPTCHA blocks it (see
+                # this function's own comment above), and not otherwise
+                # obtainable from the token-relay flow. Using just the
+                # real team id instead of guessing/hardcoding a username
+                # - never touches an existing squad's stored name either
+                # way (get_or_create_squad_link only applies this on first
+                # insert), and gets upgraded to the real private name
                 # below the moment fetch_squad finds one.
-                default_name = f"{profile.get('username') or username} #{team['fantasy_team_id']}"
+                default_name = f"FanTeam Team #{team['fantasy_team_id']}"
                 squad_id, link_id = get_or_create_squad_link(
                     cur, user_id, "fanteam_scoutgg", game_slug, tournament_id, team["fantasy_team_id"], default_name,
                     competition_id=competition_id,
