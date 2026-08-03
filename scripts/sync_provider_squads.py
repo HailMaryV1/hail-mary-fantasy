@@ -318,11 +318,10 @@ def apply_squad(cur, squad_id, game_id, parsed_squad):
 
 def sync_fanteam(cur, user_id, credential_row, requested_only=False):
     if requested_only:
-        # Cheap path for the frequent (~5 min) scheduled check - a real
-        # FanTeam login on every single tick, all day, every day, would
-        # hammer their login endpoint for no reason on the ~99% of ticks
-        # where nobody clicked "Sync Now". One indexed lookup answers
-        # "is there anything to do" before paying for a real login.
+        # Cheap path for the frequent (~5 min) scheduled check - avoids
+        # even the cached-token branch below on the ~99% of ticks where
+        # nobody clicked "Sync Now". One indexed lookup answers "is there
+        # anything to do" first.
         cur.execute(
             "select 1 from provider_squad_links where provider = 'fanteam_scoutgg' and sync_requested_at is not null limit 1"
         )
@@ -330,13 +329,24 @@ def sync_fanteam(cur, user_id, credential_row, requested_only=False):
             print("  [skip] no sync_requested_at pending - not logging in.")
             return
 
-    username = provider_secrets.decrypt(credential_row["encrypted_username"])
-    password = provider_secrets.decrypt(credential_row["encrypted_password"])
-    access_token, refresh_token, profile = fanteam.login(username, password)
-    cur.execute(
-        "update provider_credentials set last_refreshed_at = now(), last_refresh_error = null where id = %s",
-        (credential_row["id"],),
-    )
+    # FanTeam's login endpoint started rejecting this script's own scripted
+    # login live on 2026-08-03 (HTTP 451 auth.wrong_domain) - confirmed via
+    # a real browser's DevTools capture that FanTeam's login page runs
+    # Google reCAPTCHA, which a plain scripted request can never satisfy.
+    # Deliberately NOT attempting fanteam.login() from here anymore - doing
+    # so repeatedly, automatically, against a CAPTCHA-protected endpoint is
+    # exactly the kind of traffic that control exists to filter, and every
+    # attempt would just fail anyway. Instead this only ever reuses a
+    # token the account owner supplied themselves after a real, human
+    # login (see frontend/src/app/api/fanteam-token/route.ts and
+    # /games/fanteam/sync-setup's bookmarklet) - the token itself is
+    # exactly what a real logged-in browser already holds, this just
+    # relays it rather than trying to obtain one automatically.
+    expires_at = credential_row["access_token_expires_at"]
+    if not credential_row["encrypted_access_token"] or not expires_at or expires_at <= datetime.now(timezone.utc):
+        print("  [skip] no valid FanTeam token on file (bookmarklet not run recently, or it expired) - not syncing.")
+        return
+    access_token = provider_secrets.decrypt(credential_row["encrypted_access_token"])
 
     from playwright.sync_api import sync_playwright
 
@@ -592,6 +602,14 @@ def main():
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     providers = [args.provider] if args.provider else ["fanteam_scoutgg", "cloudff"]
+    # Each provider gets its own try/except - a real bug in one provider's
+    # sync (or, historically, an uncaught auth failure - see sync_fanteam's
+    # 2026-08-03 incident where FanTeam's blocked login took Cloud FF down
+    # with it every run, purely because they shared one exception handler)
+    # must never stop the other provider from being attempted. commit/
+    # rollback is per-provider too, so one failure can't undo a different
+    # provider's already-successful writes earlier in the same run.
+    failures = []
     try:
         for provider in providers:
             cur.execute("select * from provider_credentials where provider = %s", (provider,))
@@ -600,17 +618,22 @@ def main():
                 print(f"No stored credentials for {provider} - run scripts/bootstrap_provider_credentials.py first.")
                 continue
             print(f"Syncing {provider} ...")
-            if provider == "fanteam_scoutgg":
-                sync_fanteam(cur, cred["user_id"], cred, requested_only=args.requested_only)
-            elif provider == "cloudff":
-                sync_cloudff(cur, cred["user_id"], cred, requested_only=args.requested_only)
-            conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+            try:
+                if provider == "fanteam_scoutgg":
+                    sync_fanteam(cur, cred["user_id"], cred, requested_only=args.requested_only)
+                elif provider == "cloudff":
+                    sync_cloudff(cur, cred["user_id"], cred, requested_only=args.requested_only)
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                print(f"  [error] {provider} sync crashed: {e}")
+                failures.append(provider)
     finally:
         cur.close()
         conn.close()
+
+    if failures:
+        raise SystemExit(f"Sync failed for: {', '.join(failures)} (see logs above) - other providers still ran normally.")
 
 
 if __name__ == "__main__":

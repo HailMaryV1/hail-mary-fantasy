@@ -1,0 +1,98 @@
+import { createServiceSupabaseClient } from "@/lib/supabaseServiceClient";
+import { fernetEncrypt } from "@/lib/fernet";
+
+/**
+ * Receives a real FanTeam access token from the bookmarklet described on
+ * /games/fanteam/sync-setup, after the account owner has logged into
+ * FanTeam themselves in their own browser (passing FanTeam's own
+ * reCAPTCHA the normal way - this endpoint never attempts a FanTeam
+ * login itself, it only relays a token a real human session already
+ * holds). Runs cross-origin from fanteam.com's own page, so this needs
+ * its own CORS handling and its own secret-based auth - there's no Hail
+ * Mary session cookie available from that origin.
+ *
+ * Stores the token the same way scripts/sync_provider_squads.py already
+ * does for Cloud FF's cached-token path (provider_credentials.
+ * encrypted_access_token / access_token_expires_at) - sync_fanteam picks
+ * it up from there on its next run, never logging in itself.
+ */
+
+const FANTEAM_ORIGIN = "https://www.fanteam.com";
+// FanTeam's real token lifetime is ~3h (see provider_fanteam_scoutgg.py's
+// module docstring) - a 15-minute safety margin means sync_fanteam always
+// sees a token as expired slightly before FanTeam itself would reject it,
+// never the other way around.
+const TOKEN_LIFETIME_MS = (3 * 60 - 15) * 60 * 1000;
+const JWT_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": FANTEAM_ORIGIN,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  };
+}
+
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: corsHeaders() });
+}
+
+export async function POST(request: Request) {
+  const headers = corsHeaders();
+
+  const expectedSecret = process.env.FANTEAM_BOOKMARKLET_SECRET;
+  if (!expectedSecret) {
+    return Response.json({ error: "Server not configured (FANTEAM_BOOKMARKLET_SECRET missing)." }, { status: 500, headers });
+  }
+
+  let body: { secret?: string; token?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: "Invalid JSON body." }, { status: 400, headers });
+  }
+
+  if (body.secret !== expectedSecret) {
+    return Response.json({ error: "Invalid secret." }, { status: 401, headers });
+  }
+  if (!body.token || !JWT_SHAPE.test(body.token)) {
+    return Response.json({ error: "Missing or malformed token." }, { status: 400, headers });
+  }
+
+  const providerSecretsKey = process.env.PROVIDER_SECRETS_KEY;
+  if (!providerSecretsKey) {
+    return Response.json({ error: "Server not configured (PROVIDER_SECRETS_KEY missing)." }, { status: 500, headers });
+  }
+
+  const supabase = createServiceSupabaseClient();
+  const { data: users, error: userError } = await supabase.auth.admin.listUsers();
+  if (userError || !users || users.users.length !== 1) {
+    return Response.json(
+      { error: `Expected exactly one Hail Mary user, found ${users?.users.length ?? 0}.` },
+      { status: 500, headers }
+    );
+  }
+  const userId = users.users[0].id;
+
+  const encryptedToken = fernetEncrypt(providerSecretsKey, body.token);
+  const expiresAt = new Date(Date.now() + TOKEN_LIFETIME_MS).toISOString();
+
+  const { error: upsertError } = await supabase.from("provider_credentials").upsert(
+    {
+      user_id: userId,
+      provider: "fanteam_scoutgg",
+      auth_method: "encrypted_password",
+      encrypted_access_token: encryptedToken,
+      access_token_expires_at: expiresAt,
+      last_refreshed_at: new Date().toISOString(),
+      last_refresh_error: null,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "user_id,provider" }
+  );
+  if (upsertError) {
+    return Response.json({ error: upsertError.message }, { status: 500, headers });
+  }
+
+  return Response.json({ ok: true, expiresAt }, { status: 200, headers });
+}

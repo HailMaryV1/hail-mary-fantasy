@@ -61,7 +61,10 @@ export default async function FanteamFootballPage() {
         </Link>
         <h1 className="mt-2 text-2xl font-semibold text-white">{game.display_name}</h1>
         <p className="mt-1 text-sm text-navy-300">
-          Synced automatically from your FanTeam account - choose a squad below to manage it.
+          Synced automatically from your FanTeam account - choose a squad below to manage it.{" "}
+          <Link href="/games/fanteam/sync-setup" className="text-sky-400 hover:text-sky-300">
+            Sync not keeping up?
+          </Link>
         </p>
 
         <div className="mt-4">
