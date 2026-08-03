@@ -1,26 +1,34 @@
 name: Provider squad sync (Sync Now)
 
-# The frequent half of Auto Import My Squad (see migration 0071 and
-# scripts/sync_provider_squads.py). Runs every 5 minutes so a "Sync Now"
-# click on a squad page (frontend/src/app/squads/actions.ts's
-# requestProviderSync - it only ever sets sync_requested_at, never
-# touches a credential itself) completes within a few minutes rather than
-# waiting for the next scheduled full sync. --requested-only makes this
-# cheap on the vast majority of ticks where nobody clicked anything - it
-# does one indexed DB lookup and returns immediately without ever logging
-# into a real provider (see sync_fanteam's own early-exit guard).
+# The "check for a pending Sync Now click" half of Auto Import My Squad
+# (see migration 0071 and scripts/sync_provider_squads.py). Was every 5
+# minutes; moved to the same 90-minute cadence as provider_sync_scheduled.
+# yml (see that file's comment for the real Actions-minutes accounting
+# behind that number - a private repo's 2,000 min/month budget, plus a
+# real incident where the previous 5-minute + 20-minute combined schedule
+# appears to have burned through it, silently stalling both workflows'
+# actual `schedule` triggers for over an hour). A "Sync Now" click
+# (frontend/src/app/squads/actions.ts's requestProviderSync - it only
+# ever sets sync_requested_at, never touches a credential itself) can now
+# take up to ~90 minutes to be picked up automatically; the Actions tab's
+# manual "Run workflow" button still triggers an immediate pickup in the
+# meantime. --requested-only keeps each tick cheap when nothing is
+# pending - one indexed DB lookup, no provider login (see sync_fanteam's
+# own early-exit guard) - though the checkout/setup/dependency-install
+# steps below still run and cost their own Actions minutes regardless.
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "0 0,3,6,9,12,15,18,21 * * *"
+    - cron: "30 1,4,7,10,13,16,19,22 * * *"
   workflow_dispatch: {}
 
 # Shared with provider_sync_scheduled.yml (same group name) - both
 # workflows call sync_provider_squads.py against overlapping
-# provider_squad_links rows with no other locking, so a 5-minute and a
-# 20-minute run can otherwise land at the same time. cancel-in-progress
-# is false: a run already logging into a provider should finish (and
-# release its login/DB transaction) rather than being killed mid-sync -
-# the next trigger just waits its turn instead.
+# provider_squad_links rows with no other locking, so their ticks can
+# otherwise land at the same time. cancel-in-progress is false: a run
+# already logging into a provider should finish (and release its
+# login/DB transaction) rather than being killed mid-sync - the next
+# trigger just waits its turn instead.
 concurrency:
   group: provider-squad-sync
   cancel-in-progress: false

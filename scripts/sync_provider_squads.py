@@ -318,10 +318,11 @@ def apply_squad(cur, squad_id, game_id, parsed_squad):
 
 def sync_fanteam(cur, user_id, credential_row, requested_only=False):
     if requested_only:
-        # Cheap path for the frequent (~5 min) scheduled check - avoids
-        # even the cached-token branch below on the ~99% of ticks where
-        # nobody clicked "Sync Now". One indexed lookup answers "is there
-        # anything to do" first.
+        # Cheap path for the ~90-min scheduled check (see
+        # .github/workflows/provider_sync_requested.yml for why it's not
+        # more frequent) - avoids even the cached-token branch below on
+        # the ~99% of ticks where nobody clicked "Sync Now". One indexed
+        # lookup answers "is there anything to do" first.
         cur.execute(
             "select 1 from provider_squad_links where provider = 'fanteam_scoutgg' and sync_requested_at is not null limit 1"
         )
@@ -607,7 +608,7 @@ def main():
     parser.add_argument("--provider", choices=["fanteam_scoutgg", "cloudff"], default=None)
     parser.add_argument(
         "--requested-only", action="store_true",
-        help="Only act if a 'Sync Now' click is actually pending - for the frequent scheduled check (see .github/workflows/provider_sync_requested.yml). Never logs in otherwise.",
+        help="Only act if a 'Sync Now' click is actually pending - for the ~90-min scheduled check (see .github/workflows/provider_sync_requested.yml). Never logs in otherwise.",
     )
     args = parser.parse_args()
 

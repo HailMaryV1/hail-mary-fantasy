@@ -3,14 +3,21 @@ name: Provider squad sync (scheduled)
 # The regular half of Auto Import My Squad (see migration 0071 and
 # scripts/sync_provider_squads.py) - discovers any new real entries and
 # re-syncs every linked, enabled squad on its own, independent of anyone
-# clicking "Sync Now" (that's provider_sync_requested.yml's job, every 5
-# minutes). Every 20 minutes is frequent enough to catch a real transfer
-# or captain change without hammering FanTeam's login endpoint (no
-# confirmed refresh-token flow there yet - see
-# scripts/provider_fanteam_scoutgg.py - so every run is a fresh login).
+# clicking "Sync Now" (that's provider_sync_requested.yml's job, every 90
+# minutes). Every 90 minutes keeps this comfortably inside the account's
+# 2,000 Actions-minutes/month budget (a private repo - see
+# provider_sync_requested.yml's own comment for the full accounting)
+# while still catching a real transfer or captain change reasonably
+# promptly. Cron's minute field only accepts 0-59 and 90 doesn't divide
+# evenly into a single hour, so an exact 90-minute cadence needs two
+# interleaved cron lines rather than one "*/90" (which GitHub would
+# reject outright) - together these fire at :00 past every 3rd hour and
+# :30 past the hour exactly in between (00:00, 01:30, 03:00, 04:30, ...),
+# each gap exactly 90 minutes, 16 runs/day.
 on:
   schedule:
-    - cron: "*/20 * * * *"
+    - cron: "0 0,3,6,9,12,15,18,21 * * *"
+    - cron: "30 1,4,7,10,13,16,19,22 * * *"
   workflow_dispatch: {}
 
 # Shared with provider_sync_requested.yml (same group name) - see that
@@ -27,7 +34,7 @@ jobs:
     # request's worst-case wait (see provider_sync_requested.yml's
     # comment): if this run hangs, GitHub force-cancels it after 15
     # minutes and the shared concurrency group frees up. Deliberately
-    # tighter than the 20-minute cron interval, with headroom for a
+    # tighter than the 90-minute cron interval, with headroom for a
     # multi-squad sweep as real linked-squad volume grows.
     timeout-minutes: 15
     steps:
