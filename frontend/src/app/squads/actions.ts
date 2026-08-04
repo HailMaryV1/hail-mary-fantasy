@@ -530,7 +530,7 @@ export async function saveTeamForGameweek(args: SaveLineupArgs) {
         wildcard_1_used_gameweek: squadRow.wildcard_1_used_gameweek,
         wildcard_2_used_gameweek: squadRow.wildcard_2_used_gameweek,
       },
-      { id: game.id, display_name: game.display_name },
+      { id: game.id, display_name: game.display_name, slug: game.slug },
       "balanced" as Strategy,
       recordPredictions
     ).catch(() => null);

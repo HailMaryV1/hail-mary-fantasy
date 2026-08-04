@@ -249,7 +249,7 @@ export async function runAskMaryAnalysis(
     wildcard_1_used_gameweek?: number | null;
     wildcard_2_used_gameweek?: number | null;
   },
-  fanteamGame: { id: number; display_name: string },
+  fanteamGame: { id: number; display_name: string; slug: string },
   activeStrategy: Strategy,
   recordPredictionsFn?: (records: PredictionRecord[]) => Promise<{ error?: string } | { recorded: number }>,
   // "Fund a Target" - when set, also computes targetPlan for this one
@@ -264,7 +264,7 @@ export async function runAskMaryAnalysis(
   const captainHorizonGameweeks = 1;
 
   // Every query below reads only the input params (fanteamGame.id,
-  // squad.id, or the hardcoded "fanteam" slug) - none of them depend on
+  // fanteamGame.slug, or squad.id) - none of them depend on
   // another query's result, so they're fetched together instead of one
   // await at a time. That sequential-by-default pattern was previously
   // adding 4+ real round trips of pure network latency to every Ask Mary
@@ -295,7 +295,7 @@ export async function runAskMaryAnalysis(
       .select("game_player_id, is_starting, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squad.id)
       .returns<SquadPlayerRow[]>(),
-    supabase.from("game_player_pool").select("*").eq("game_slug", "fanteam").returns<PoolRow[]>(),
+    supabase.from("game_player_pool").select("*").eq("game_slug", fanteamGame.slug).returns<PoolRow[]>(),
     // Hail Mary Form - same merge pattern as every other surface, sourced
     // from the frozen prediction archive (migration 0044) rather than
     // game_player_pool. Threaded through poolCandidates below so a
@@ -387,7 +387,7 @@ export async function runAskMaryAnalysis(
   async function getStepScoreMap(gameweek: number): Promise<Map<number, number>> {
     if (!hasCalendar) return new Map();
     const { data } = await supabase.rpc("player_score_by_horizon_from", {
-      p_game_slug: "fanteam",
+      p_game_slug: fanteamGame.slug,
       p_start_gameweek: gameweek,
       p_num_gameweeks: 1,
     });
@@ -398,12 +398,12 @@ export async function runAskMaryAnalysis(
   // gameweek-by-gameweek transfer plan.
   async function getHorizonMap(gameweeks: number): Promise<Map<number, number>> {
     if (hasCalendar && !seasonStarted) {
-      const { data } = await supabase.rpc("player_score_by_horizon", { p_game_slug: "fanteam", p_num_gameweeks: gameweeks });
+      const { data } = await supabase.rpc("player_score_by_horizon", { p_game_slug: fanteamGame.slug, p_num_gameweeks: gameweeks });
       return new Map(((data ?? []) as HorizonRow[]).map((r) => [r.game_player_id, Number(r.avg_score)]));
     }
     if (hasCalendar && seasonStarted && planningGameweek !== null) {
       const { data } = await supabase.rpc("player_score_by_horizon_from", {
-        p_game_slug: "fanteam",
+        p_game_slug: fanteamGame.slug,
         p_start_gameweek: planningGameweek,
         p_num_gameweeks: gameweeks,
       });

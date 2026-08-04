@@ -28,7 +28,7 @@ export default async function AskMaryPage({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name").eq("slug", "fanteam").single();
+  const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name, slug").eq("slug", "fanteam").single();
 
   if (!fanteamGameRow) {
     return (

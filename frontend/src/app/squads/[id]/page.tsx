@@ -474,7 +474,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
             wildcard_1_used_gameweek: squad.wildcard_1_used_gameweek,
             wildcard_2_used_gameweek: squad.wildcard_2_used_gameweek,
           },
-          { id: game.id, display_name: game.display_name },
+          { id: game.id, display_name: game.display_name, slug: game.slug },
           "balanced" as Strategy
         )
       : null;
