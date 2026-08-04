@@ -27,9 +27,10 @@ export const dynamic = "force-dynamic";
 export default async function FundATargetPage({
   searchParams,
 }: {
-  searchParams: Promise<{ squad?: string; player?: string }>;
+  searchParams: Promise<{ squad?: string; player?: string; game?: string }>;
 }) {
-  const { squad: squadParam, player: playerParam } = await searchParams;
+  const { squad: squadParam, player: playerParam, game: gameParam } = await searchParams;
+  const gameSlug = gameParam ?? "fanteam";
 
   const supabase = await createAuthServerClient();
   const {
@@ -37,13 +38,13 @@ export default async function FundATargetPage({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name, slug").eq("slug", "fanteam").single();
+  const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name, slug").eq("slug", gameSlug).single();
   if (!fanteamGameRow) {
     return (
       <div className="min-h-screen bg-navy-950 px-6 py-10">
         <main className="mx-auto max-w-2xl">
           <h1 className="text-2xl font-semibold text-white">Fund a Target</h1>
-          <p className="mt-4 text-sm text-red-400">FanTeam isn&apos;t configured on this platform yet.</p>
+          <p className="mt-4 text-sm text-red-400">This game isn&apos;t configured on this platform yet.</p>
         </main>
       </div>
     );
@@ -60,14 +61,14 @@ export default async function FundATargetPage({
   const header = (
     <div>
       <div className="mb-4">
-        <GameSecondaryNav gameSlug="fanteam" gameDisplayName={fanteamGame.display_name} />
+        <GameSecondaryNav gameSlug={fanteamGame.slug} gameDisplayName={fanteamGame.display_name} />
       </div>
       <h1 className="text-2xl font-semibold text-white">Fund a Target</h1>
       <p className="mt-1 text-sm text-navy-300">
         Pick any player and see whether a same-position swap - plus, if needed, one further legal sale elsewhere - can afford
         them right now.
       </p>
-      <Link href="/ask-mary" className="mt-2 inline-block text-xs font-medium text-sky-400 hover:text-sky-300">
+      <Link href={`/ask-mary?game=${fanteamGame.slug}`} className="mt-2 inline-block text-xs font-medium text-sky-400 hover:text-sky-300">
         ← Back to Ask Mary
       </Link>
     </div>
@@ -78,7 +79,7 @@ export default async function FundATargetPage({
       <div className="min-h-screen bg-navy-950 px-6 py-10">
         <main className="mx-auto max-w-2xl">
           {header}
-          <p className="mt-8 text-sm text-navy-300">You don&apos;t have a FanTeam squad yet.</p>
+          <p className="mt-8 text-sm text-navy-300">You don&apos;t have a {fanteamGame.display_name} squad yet.</p>
         </main>
       </div>
     );
@@ -89,7 +90,7 @@ export default async function FundATargetPage({
   const { data: squadPlayersRaw } = await supabase.from("squad_players").select("game_player_id").eq("squad_id", selectedSquad.id);
   const ownedIds = new Set((squadPlayersRaw ?? []).map((p) => p.game_player_id));
 
-  const allOptions = await fetchPlayerOptions(supabase, "fanteam");
+  const allOptions = await fetchPlayerOptions(supabase, fanteamGame.slug);
   const targetOptions = allOptions.filter((p) => !ownedIds.has(p.gamePlayerId));
 
   const targetGamePlayerId = playerParam ? Number(playerParam) : null;
@@ -110,7 +111,7 @@ export default async function FundATargetPage({
             {squadsRaw.map((s) => (
               <Link
                 key={s.id}
-                href={`/ask-mary/fund-a-target?squad=${s.id}${targetGamePlayerId != null ? `&player=${targetGamePlayerId}` : ""}`}
+                href={`/ask-mary/fund-a-target?squad=${s.id}&game=${fanteamGame.slug}${targetGamePlayerId != null ? `&player=${targetGamePlayerId}` : ""}`}
                 className={`rounded-md px-2.5 py-1 text-xs font-medium ${
                   s.id === selectedSquad.id ? "bg-sky-500 text-navy-950" : "text-navy-300 hover:text-white"
                 }`}
@@ -144,7 +145,7 @@ export default async function FundATargetPage({
                     : `${targetOption.fullName} directly replaces one of your own squad in the same position - already affordable, no further sale needed.`}
                 </p>
                 <div className="mt-2">
-                  <FavouredMoveCard move={analysis.targetPlan.move} squadId={selectedSquad.id} gameSlug="fanteam" />
+                  <FavouredMoveCard move={analysis.targetPlan.move} squadId={selectedSquad.id} gameSlug={fanteamGame.slug} />
                 </div>
               </>
             ) : (

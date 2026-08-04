@@ -18,9 +18,14 @@ type SquadPlayerForSummary = { game_player_id: number; game_players: { price: nu
 export default async function AskMaryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ squad?: string }>;
+  searchParams: Promise<{ squad?: string; game?: string }>;
 }) {
-  const { squad: squadParam } = await searchParams;
+  // Defaults to fanteam (Ask Mary's original, only game for most of this
+  // page's life) when absent, matching rankings/form/fixtures/
+  // algorithm-explain's shared `?game=` convention - existing bookmarks
+  // and links with no game param keep working exactly as before.
+  const { squad: squadParam, game: gameParam } = await searchParams;
+  const gameSlug = gameParam ?? "fanteam";
 
   const supabase = await createAuthServerClient();
   const {
@@ -28,19 +33,24 @@ export default async function AskMaryPage({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name, slug").eq("slug", "fanteam").single();
+  const { data: fanteamGameRow } = await supabase.from("fantasy_games").select("id, display_name, slug").eq("slug", gameSlug).single();
 
   if (!fanteamGameRow) {
     return (
       <div className="min-h-screen bg-navy-950 px-6 py-10">
         <main className="mx-auto max-w-2xl">
           <h1 className="text-2xl font-semibold text-white">Ask Mary</h1>
-          <p className="mt-4 text-sm text-red-400">FanTeam isn&apos;t configured on this platform yet.</p>
+          <p className="mt-4 text-sm text-red-400">This game isn&apos;t configured on this platform yet.</p>
         </main>
       </div>
     );
   }
   const fanteamGame = fanteamGameRow;
+  // Free-transfer banking is meaningless for games without FanTeam's real
+  // transfer-cost model (see askMaryEngine.ts's isCloudFF bypass) -
+  // showing a "N free transfer(s)" count for one of those would just be
+  // a made-up number, not degraded FanTeam data.
+  const showFreeTransfers = fanteamGame.slug !== "cloudff";
 
   const { data: squadsRaw } = await supabase
     .from("squads")
@@ -54,7 +64,7 @@ export default async function AskMaryPage({
   const header = (
     <div>
       <div className="mb-4">
-        <GameSecondaryNav gameSlug="fanteam" gameDisplayName={fanteamGame.display_name} />
+        <GameSecondaryNav gameSlug={fanteamGame.slug} gameDisplayName={fanteamGame.display_name} />
       </div>
       <h1 className="text-2xl font-semibold text-white">Ask Mary</h1>
       <p className="mt-1 text-sm text-navy-300">Your personalised Hail Mary squad adviser</p>
@@ -68,13 +78,13 @@ export default async function AskMaryPage({
           {header}
           <div className="mt-8 rounded-xl border border-navy-700 bg-navy-900 p-6">
             <p className="text-sm text-navy-300">
-              You don&apos;t have a FanTeam squad yet - Ask Mary needs a saved squad to analyse.
+              You don&apos;t have a {fanteamGame.display_name} squad yet - Ask Mary needs a saved squad to analyse.
             </p>
             <Link
-              href="/squads/new?game=fanteam"
+              href={`/squads/new?game=${fanteamGame.slug}`}
               className="mt-4 inline-block rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-navy-950 hover:bg-sky-400"
             >
-              Build a FanTeam squad
+              Build a {fanteamGame.display_name} squad
             </Link>
           </div>
         </main>
@@ -93,6 +103,7 @@ export default async function AskMaryPage({
   function askMaryUrl(overrides: Partial<{ squad: number }>) {
     const params = new URLSearchParams();
     params.set("squad", String(overrides.squad ?? selectedSquad.id));
+    params.set("game", fanteamGame.slug);
     return `/ask-mary?${params.toString()}`;
   }
 
@@ -107,7 +118,7 @@ export default async function AskMaryPage({
       <div className="min-h-screen bg-navy-950 px-6 py-10">
         <main className="mx-auto max-w-2xl">
           {header}
-          <p className="mt-8 text-sm text-red-400">No FanTeam squad rules configured - can&apos;t validate a squad without them.</p>
+          <p className="mt-8 text-sm text-red-400">No {fanteamGame.display_name} squad rules configured - can&apos;t validate a squad without them.</p>
         </main>
       </div>
     );
@@ -153,8 +164,8 @@ export default async function AskMaryPage({
       <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Current Squad</h2>
         <p className="mt-2 text-sm text-navy-200">
-          {selectedSquad.name} · £{budgetRemaining.toFixed(1)}m in the bank · {playerCount}/{squadRules.squad_size} players ·{" "}
-          {freeTransfers} free transfer{freeTransfers === 1 ? "" : "s"}
+          {selectedSquad.name} · £{budgetRemaining.toFixed(1)}m in the bank · {playerCount}/{squadRules.squad_size} players
+          {showFreeTransfers ? ` · ${freeTransfers} free transfer${freeTransfers === 1 ? "" : "s"}` : ""}
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Link href={`/squads/${selectedSquad.id}`} className="rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
@@ -226,8 +237,8 @@ export default async function AskMaryPage({
 
             {!hasCalendar && (
               <p className="text-xs text-amber-400">
-                No gameweek calendar published for FanTeam yet - showing the latest single projection instead of a
-                horizon-specific one.
+                No gameweek calendar published for {fanteamGame.display_name} yet - showing the latest single projection
+                instead of a horizon-specific one.
               </p>
             )}
 
@@ -283,7 +294,10 @@ export default async function AskMaryPage({
               <div>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Favoured Moves</h2>
-                  <Link href={`/ask-mary/fund-a-target?squad=${selectedSquad.id}`} className="text-xs font-medium text-sky-400 hover:text-sky-300">
+                  <Link
+                    href={`/ask-mary/fund-a-target?squad=${selectedSquad.id}&game=${fanteamGame.slug}`}
+                    className="text-xs font-medium text-sky-400 hover:text-sky-300"
+                  >
                     Fund a Target →
                   </Link>
                 </div>
@@ -293,7 +307,7 @@ export default async function AskMaryPage({
                 </p>
                 <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {favouredMoves.map((move) => (
-                    <FavouredMoveCard key={move.kind} move={move} squadId={selectedSquad.id} gameSlug="fanteam" />
+                    <FavouredMoveCard key={move.kind} move={move} squadId={selectedSquad.id} gameSlug={fanteamGame.slug} />
                   ))}
                 </div>
               </div>
@@ -308,7 +322,7 @@ export default async function AskMaryPage({
                   <p className="text-sm text-navy-400">No gameweek calendar published yet to build a plan from.</p>
                 ) : (
                   gameweekPlan.map((step) => (
-                    <GameweekPlanRow key={step.offset} step={step} squadId={selectedSquad.id} gameSlug="fanteam" />
+                    <GameweekPlanRow key={step.offset} step={step} squadId={selectedSquad.id} gameSlug={fanteamGame.slug} />
                   ))
                 )}
 
