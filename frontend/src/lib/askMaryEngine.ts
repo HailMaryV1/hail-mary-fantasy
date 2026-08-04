@@ -936,6 +936,19 @@ export async function runAskMaryAnalysis(
     freeAfter: number | "unlimited";
   }): string {
     const { transfers, gameweek, freeAfter } = step;
+    // Cloud FF has no free-transfer-banking concept at all (see the
+    // isCloudFF bypass above) - every transfer this engine considers for
+    // it is already free, so describe it that way unconditionally
+    // instead of talking about "banking a free transfer" that doesn't
+    // exist for this game, regardless of the FanTeam-shaped
+    // seasonStarted flag.
+    if (isCloudFF) {
+      if (transfers.length === 0) return "Hold - nothing beats what you already have here.";
+      const names = transfers.map((t) => `${t.outName} → ${t.inName}`).join(", ");
+      return transfers.length === 1
+        ? `Make this transfer - Cloud FF transfers are free: ${names}.`
+        : `Make these ${transfers.length} transfers - Cloud FF transfers are free: ${names}.`;
+    }
     if (!step.seasonStarted) {
       if (transfers.length === 0) return "Hold - nothing beats what you already have here.";
       const names = transfers.map((t) => `${t.outName} → ${t.inName}`).join(", ");
@@ -1038,7 +1051,9 @@ export async function runAskMaryAnalysis(
     const holdBoughtIds = new Set(incomingBoughtIds);
     const holdStep = buildStep({ transfers: [], ...state });
     const n = greedyStep.transfers.length;
-    holdStep.writeup = `Hold this gameweek instead of using ${n === 1 ? "a transfer" : `${n} transfers`} now - banking pays off more over the next couple of gameweeks than spending it here.`;
+    holdStep.writeup = isCloudFF
+      ? `Hold this gameweek instead of using ${n === 1 ? "a transfer" : `${n} transfers`} now - waiting pays off more over the next couple of gameweeks than spending it here.`
+      : `Hold this gameweek instead of using ${n === 1 ? "a transfer" : `${n} transfers`} now - banking pays off more over the next couple of gameweeks than spending it here.`;
     const forcedHold: StepBranch = { step: holdStep, state, soldIds: holdSoldIds, boughtIds: holdBoughtIds };
 
     return { greedy, forcedHold };
