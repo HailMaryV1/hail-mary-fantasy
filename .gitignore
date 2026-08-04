@@ -21,6 +21,7 @@ golf_tournament_raw.json
 cloudff_players_raw.json
 cloudff_fixtures_raw.json
 cloudff_player_stats_raw.json
+dreamteam_players_raw.json
 
 # Local tool config, not project source
 .claude/

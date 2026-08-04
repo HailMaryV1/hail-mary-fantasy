@@ -18,11 +18,12 @@ Deliberately excludes:
     token that eventually expires (confirmed - see scraper_fanteam.py's
     fetch_fixtures docstring). Manual/occasional path only, run by hand
     if the season's schedule ever changes.
-  - Dream Team's own fixture/gameweek calendar and score recompute -
-    players/prices ARE refreshed here (scraper_dreamteam.py +
-    import_dreamteam.py, both unauthenticated), but zero
-    game_fixture_gameweeks rows exist for Dream Team at all (confirmed
-    live) - a separate, larger piece of work, not yet built.
+  - Dream Team's own score recompute for future gameweeks - players/
+    prices AND its real gameweek calendar are both refreshed here now
+    (scraper_dreamteam.py + import_dreamteam.py, both unauthenticated;
+    the gameweek calendar is copied from FanTeam's own real
+    game_fixture_gameweeks rows rather than scraped fresh - see
+    import_dreamteam.py's docstring for why).
   - Cloud FF's own Auto Import My Squad sync (scripts/sync_provider_
     squads.py) - that's a per-user credential flow with its own
     dedicated scheduled workflows (provider_sync_requested.yml /

@@ -39,6 +39,22 @@ corrects a stale team_id, but only once the same new team has been
 seen on two separate imports, never on the first sight of a mismatch.
 No match at all -> logged and skipped, never guessed.
 
+Gameweek calendar: Dream Team's own real gameweek numbers aren't
+fetchable yet - the live gaming-api.dreamteamfc.com backend's homefeed
+endpoint (confirmed real, reachable with an anonymous token) returns an
+empty feed because the 2026/27 game itself hasn't launched ("Coming
+soon" on the real site as of 2026-08-04). But Dream Team's own rules
+(section 1.2.5.1) define GW1 as starting at the first Eligible Match's
+kickoff and every later gameweek as one real EPL round - exactly what
+FanTeam's own game_fixture_gameweeks already encodes for these same 380
+real soccer_epl fixtures (confirmed live: FanTeam's GW1 rows' earliest
+kickoff is 2026-08-21 19:00 UTC, matching Dream Team's real "8pm on 21
+August 2026" rule exactly). So this copies FanTeam's real
+(fixture_id, gameweek) pairs onto dreamteam's game_id rather than
+re-deriving them - not a match-day split like Cloud FF's own scheme
+(no per-match-day captain concept in Dream Team), a real gameweek is
+the whole round.
+
 RUN:
     python3 import_dreamteam.py
 """
@@ -338,6 +354,22 @@ def import_players(cur, game_id, players_data):
         print(f"Deactivated {len(stale_ids)} players no longer in Dream Team's live list.")
 
 
+def sync_gameweek_calendar(cur, game_id):
+    """Copy FanTeam's real (fixture_id, gameweek) pairs onto Dream Team -
+    see module docstring for why this is a copy, not a fresh scrape."""
+    cur.execute(
+        """
+        insert into game_fixture_gameweeks (game_id, fixture_id, gameweek)
+        select %s, gfg.fixture_id, gfg.gameweek
+        from game_fixture_gameweeks gfg
+        join fantasy_games fanteam on fanteam.id = gfg.game_id and fanteam.slug = 'fanteam'
+        on conflict (game_id, fixture_id) do update set gameweek = excluded.gameweek
+        """,
+        (game_id,),
+    )
+    print(f"Gameweek calendar: {cur.rowcount} fixture-gameweek mappings synced from FanTeam's real calendar.")
+
+
 def main():
     load_env()
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
@@ -354,6 +386,7 @@ def main():
         players_data = json.loads((ROOT / "dreamteam_players_raw.json").read_text(encoding="utf-8"))
 
         import_players(cur, game_id, players_data)
+        sync_gameweek_calendar(cur, game_id)
 
         conn.commit()
         print("\nDone.")
