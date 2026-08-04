@@ -160,6 +160,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
         maxCaptainUsed: squad.max_captain_used_gameweek != null,
       }}
       substitutesUsed={substitutesUsed ?? 0}
+      seasonStarted={seasonTiming.seasonStarted}
       squad={boardSquad}
       pool={boardPool}
     />

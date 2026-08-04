@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
-import { setBooster } from "../actions";
+import { setBooster, makeTransfer } from "../actions";
 
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
 
@@ -57,6 +57,7 @@ export default function DreamTeamBoard({
   planningGameweek,
   boosters,
   substitutesUsed,
+  seasonStarted,
   squad,
   pool,
 }: {
@@ -74,14 +75,17 @@ export default function DreamTeamBoard({
     maxCaptainUsed: boolean;
   };
   substitutesUsed: number;
+  seasonStarted: boolean;
   squad: BoardPlayer[];
   pool: PoolPlayer[];
 }) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [isPending, startTransition] = useTransition();
+  const [isBoosterPending, startBoosterTransition] = useTransition();
+  const [isTransferPending, startTransferTransition] = useTransition();
   const [boosterError, setBoosterError] = useState<string | null>(null);
+  const [transferError, setTransferError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
 
@@ -116,9 +120,31 @@ export default function DreamTeamBoard({
 
   function handleBooster(booster: Booster | null) {
     setBoosterError(null);
-    startTransition(async () => {
+    startBoosterTransition(async () => {
       const result = await setBooster({ squadId, booster, gameweek: planningGameweek });
       if (result?.error) setBoosterError(result.error);
+    });
+  }
+
+  const selectedPlayer = selectedId != null ? squad.find((p) => p.game_player_id === selectedId) : undefined;
+  const canTransfer = !seasonStarted || transfers > 0;
+
+  // Real legality: same position (Dream Team like-for-like), and the
+  // swap must not go over budget - freed cash from the outgoing player's
+  // price plus what's already in the bank must cover the incoming price.
+  const legalPoolIds = new Set(
+    selectedPlayer && canTransfer
+      ? pool.filter((p) => p.position === selectedPlayer.position && p.price <= bank + selectedPlayer.price).map((p) => p.game_player_id)
+      : []
+  );
+
+  function handleTransfer(inGamePlayerId: number) {
+    if (!selectedId) return;
+    setTransferError(null);
+    startTransferTransition(async () => {
+      const result = await makeTransfer({ squadId, outGamePlayerId: selectedId, inGamePlayerId });
+      if (result?.error) setTransferError(result.error);
+      else setSelectedId(null);
     });
   }
 
@@ -134,7 +160,7 @@ export default function DreamTeamBoard({
         </Link>
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatBox label="Transfers" value={String(transfers)} />
+          <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
           <StatBox label="Bank" value={`£${bank.toFixed(1)}m`} />
           <StatBox label="Team Value" value={`£${teamValue.toFixed(1)}m`} />
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
@@ -146,7 +172,7 @@ export default function DreamTeamBoard({
                 return (
                   <button
                     key={b}
-                    disabled={used || isPending}
+                    disabled={used || isBoosterPending}
                     onClick={() => handleBooster(active ? null : b)}
                     title={used ? `${BOOSTER_LABELS[b]} - already used this season` : BOOSTER_LABELS[b]}
                     className={`rounded px-2 py-1 text-[10px] font-bold ${
@@ -166,6 +192,25 @@ export default function DreamTeamBoard({
           </div>
         </div>
         {boosterError && <p className="mt-2 text-xs text-red-400">{boosterError}</p>}
+
+        {selectedPlayer && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-700 bg-sky-950/40 px-4 py-2.5">
+            <p className="text-sm text-sky-200">
+              {canTransfer ? (
+                <>
+                  Transferring out <span className="font-semibold text-white">{selectedPlayer.full_name}</span> - pick a same-position replacement
+                  in the pool.
+                </>
+              ) : (
+                <>No transfers left this gameweek - Dream Team has a hard cap, no points-hit option.</>
+              )}
+            </p>
+            <button onClick={() => setSelectedId(null)} className="text-xs font-medium text-sky-400 hover:text-sky-300">
+              Cancel
+            </button>
+          </div>
+        )}
+        {transferError && <p className="mt-2 text-xs text-red-400">{transferError}</p>}
 
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
           <div>
@@ -211,7 +256,7 @@ export default function DreamTeamBoard({
               starting={pitchPlayers}
               selectedId={selectedId}
               swappableIds={null}
-              onSelect={(p) => setSelectedId(p.game_player_id === selectedId ? null : p.game_player_id)}
+              onSelect={(p) => (isTransferPending ? undefined : setSelectedId(p.game_player_id === selectedId ? null : p.game_player_id))}
             />
           </div>
 
@@ -251,28 +296,38 @@ export default function DreamTeamBoard({
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredPool.slice(0, 50).map((p) => (
-                    <tr key={p.game_player_id} className="border-t border-navy-800">
-                      <td className="py-1.5 pr-2">
-                        <div className="font-medium text-white">{p.full_name}</div>
-                        <div className="text-[10px] text-navy-500">
-                          {p.team_name} · {p.position} · £{p.price.toFixed(1)}m
-                        </div>
-                      </td>
-                      <td className="py-1.5 pr-2 text-sky-400">{p.score != null ? p.score.toFixed(1) : "-"}</td>
-                      {p.fixtures.slice(0, 6).map((f, i) => (
-                        <td key={i} className="px-1 py-1.5 text-center">
-                          {f ? (
-                            <span className={`inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(f.difficulty)}`}>
-                              {f.isHome ? f.opponentAbbr : f.opponentAbbr.toLowerCase()}
-                            </span>
-                          ) : (
-                            <span className="text-navy-700">-</span>
-                          )}
+                  {filteredPool.slice(0, 50).map((p) => {
+                    const isLegal = legalPoolIds.has(p.game_player_id);
+                    const rowClickable = selectedPlayer && canTransfer && isLegal && !isTransferPending;
+                    return (
+                      <tr
+                        key={p.game_player_id}
+                        onClick={() => rowClickable && handleTransfer(p.game_player_id)}
+                        className={`border-t border-navy-800 ${
+                          selectedPlayer ? (isLegal ? "cursor-pointer bg-emerald-950/20 hover:bg-emerald-900/30" : "opacity-30") : ""
+                        }`}
+                      >
+                        <td className="py-1.5 pr-2">
+                          <div className="font-medium text-white">{p.full_name}</div>
+                          <div className="text-[10px] text-navy-500">
+                            {p.team_name} · {p.position} · £{p.price.toFixed(1)}m
+                          </div>
                         </td>
-                      ))}
-                    </tr>
-                  ))}
+                        <td className="py-1.5 pr-2 text-sky-400">{p.score != null ? p.score.toFixed(1) : "-"}</td>
+                        {p.fixtures.slice(0, 6).map((f, i) => (
+                          <td key={i} className="px-1 py-1.5 text-center">
+                            {f ? (
+                              <span className={`inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(f.difficulty)}`}>
+                                {f.isHome ? f.opponentAbbr : f.opponentAbbr.toLowerCase()}
+                              </span>
+                            ) : (
+                              <span className="text-navy-700">-</span>
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               {filteredPool.length > 50 && (
