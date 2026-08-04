@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
-import { makeFanteamTransfer, reorderFanteamBench, setFanteamFormation } from "../actions";
+import { makeFanteamTransfer, reorderFanteamBench, setFanteamFormation, setFanteamCaptain } from "../actions";
 
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
 
@@ -99,6 +99,7 @@ export default function FanTeamBoard({
   seasonStarted,
   formations,
   currentFormationCode,
+  isProviderSynced,
   squad,
   pool,
 }: {
@@ -117,6 +118,10 @@ export default function FanTeamBoard({
   // any of the 7 real formations - can genuinely happen (a squad synced
   // mid-transfer, or one that's never had a formation applied here yet).
   currentFormationCode: string | null;
+  // Captain/vice-captain are read-only (via PitchView's existing C/VC
+  // pills) whenever true - a provider-synced squad has them overwritten
+  // by the next scheduled FanTeam sync regardless of what's picked here.
+  isProviderSynced: boolean;
   squad: BoardPlayer[];
   pool: PoolPlayer[];
 }) {
@@ -130,6 +135,8 @@ export default function FanTeamBoard({
   const [formationError, setFormationError] = useState<string | null>(null);
   const [isBenchPending, startBenchTransition] = useTransition();
   const [benchError, setBenchError] = useState<string | null>(null);
+  const [isCaptainPending, startCaptainTransition] = useTransition();
+  const [captainError, setCaptainError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
   const [teamFilter, setTeamFilter] = useState<string>("ALL");
@@ -209,6 +216,42 @@ export default function FanTeamBoard({
       const result = await setFanteamFormation({ squadId, formationCode });
       if (result?.error) setFormationError(result.error);
     });
+  }
+
+  // Server-confirmed captain/VC, from the squad prop.
+  const serverCaptainId = squad.find((p) => p.isCaptain)?.game_player_id ?? null;
+  const serverViceCaptainId = squad.find((p) => p.isViceCaptain)?.game_player_id ?? null;
+  // Locally staged - captain and vice-captain are picked in two separate
+  // dropdown changes, but the server requires both non-null and
+  // different in one call. Without local staging, picking captain then
+  // vice-captain (starting from neither set) would never actually submit:
+  // each dropdown's onChange only knows the OTHER field's last
+  // server-confirmed value, which is still null until a save succeeds.
+  const [pendingCaptainId, setPendingCaptainId] = useState<number | null>(serverCaptainId);
+  const [pendingViceCaptainId, setPendingViceCaptainId] = useState<number | null>(serverViceCaptainId);
+  useEffect(() => {
+    setPendingCaptainId(serverCaptainId);
+    setPendingViceCaptainId(serverViceCaptainId);
+  }, [serverCaptainId, serverViceCaptainId]);
+
+  const starterOptions = squad.filter((p) => p.isStarting);
+
+  function handleSetCaptain(newCaptainId: number | null, newViceCaptainId: number | null) {
+    if (newCaptainId === null || newViceCaptainId === null || newCaptainId === newViceCaptainId) return;
+    setCaptainError(null);
+    startCaptainTransition(async () => {
+      const result = await setFanteamCaptain({ squadId, captainGamePlayerId: newCaptainId, viceCaptainGamePlayerId: newViceCaptainId });
+      if (result?.error) setCaptainError(result.error);
+    });
+  }
+
+  function handleCaptainDropdownChange(newCaptainId: number) {
+    setPendingCaptainId(newCaptainId);
+    handleSetCaptain(newCaptainId, pendingViceCaptainId);
+  }
+  function handleViceCaptainDropdownChange(newViceCaptainId: number) {
+    setPendingViceCaptainId(newViceCaptainId);
+    handleSetCaptain(pendingCaptainId, newViceCaptainId);
   }
 
   // FanTeam has no hard transfer cap like Dream Team - a transfer is
@@ -296,6 +339,47 @@ export default function FanTeamBoard({
             </p>
           </div>
         </div>
+
+        {!isProviderSynced && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-navy-700 bg-navy-900 p-3">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Captain</span>
+            <select
+              value={pendingCaptainId ?? ""}
+              disabled={isCaptainPending}
+              onChange={(e) => handleCaptainDropdownChange(Number(e.target.value))}
+              className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+            >
+              {pendingCaptainId === null && <option value="">Pick a captain</option>}
+              {starterOptions
+                .filter((p) => p.game_player_id !== pendingViceCaptainId)
+                .map((p) => (
+                  <option key={p.game_player_id} value={p.game_player_id}>
+                    {p.full_name}
+                  </option>
+                ))}
+            </select>
+            <span className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Vice-Captain</span>
+            <select
+              value={pendingViceCaptainId ?? ""}
+              disabled={isCaptainPending}
+              onChange={(e) => handleViceCaptainDropdownChange(Number(e.target.value))}
+              className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+            >
+              {pendingViceCaptainId === null && <option value="">Pick a vice-captain</option>}
+              {starterOptions
+                .filter((p) => p.game_player_id !== pendingCaptainId)
+                .map((p) => (
+                  <option key={p.game_player_id} value={p.game_player_id}>
+                    {p.full_name}
+                  </option>
+                ))}
+            </select>
+            {captainError && <p className="text-xs text-red-400">{captainError}</p>}
+            {!captainError && (pendingCaptainId === null || pendingViceCaptainId === null) && (
+              <p className="text-xs text-navy-500">Pick both to save.</p>
+            )}
+          </div>
+        )}
 
         {selectedPlayer && (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-700 bg-sky-950/40 px-4 py-2.5">

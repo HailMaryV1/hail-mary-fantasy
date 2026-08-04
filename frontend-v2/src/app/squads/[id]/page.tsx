@@ -234,23 +234,25 @@ async function renderFanteamBoard(
   },
   game: { id: number; slug: string }
 ) {
-  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, { data: formationsRaw }] = await Promise.all([
-    supabase.from("game_squad_rules").select("budget, max_per_club").eq("game_id", game.id).single(),
-    supabase
-      .from("squad_players")
-      .select(
-        "game_player_id, is_starting, bench_order, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))"
-      )
-      .eq("squad_id", squadId)
-      .returns<FanteamSquadPlayerRow[]>(),
-    supabase.from("game_player_pool").select("*").eq("game_slug", "fanteam").returns<PoolRow[]>(),
-    getSeasonTiming(supabase, game.id),
-    supabase
-      .from("game_formations")
-      .select("code, gk_count, def_count, mid_count, fwd_count")
-      .eq("game_id", game.id)
-      .returns<{ code: string; gk_count: number; def_count: number; mid_count: number; fwd_count: number }[]>(),
-  ]);
+  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, { data: formationsRaw }, { data: linkRow }] =
+    await Promise.all([
+      supabase.from("game_squad_rules").select("budget, max_per_club").eq("game_id", game.id).single(),
+      supabase
+        .from("squad_players")
+        .select(
+          "game_player_id, is_starting, bench_order, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))"
+        )
+        .eq("squad_id", squadId)
+        .returns<FanteamSquadPlayerRow[]>(),
+      supabase.from("game_player_pool").select("*").eq("game_slug", "fanteam").returns<PoolRow[]>(),
+      getSeasonTiming(supabase, game.id),
+      supabase
+        .from("game_formations")
+        .select("code, gk_count, def_count, mid_count, fwd_count")
+        .eq("game_id", game.id)
+        .returns<{ code: string; gk_count: number; def_count: number; mid_count: number; fwd_count: number }[]>(),
+      supabase.from("provider_squad_links").select("sync_enabled").eq("squad_id", squadId).maybeSingle(),
+    ]);
 
   const rules = rulesRow ?? { budget: 100, max_per_club: 3 };
   const planningGameweek = seasonTiming.planningGameweek ?? 1;
@@ -373,6 +375,7 @@ async function renderFanteamBoard(
       seasonStarted={seasonTiming.seasonStarted}
       formations={formations.map((f) => f.code)}
       currentFormationCode={currentFormationCode}
+      isProviderSynced={linkRow?.sync_enabled ?? false}
       squad={boardSquad}
       pool={boardPool}
     />

@@ -515,3 +515,65 @@ export async function setFanteamFormation({ squadId, formationCode }: { squadId:
   revalidatePath(`/squads/${squadId}`);
   return { success: true };
 }
+
+/**
+ * Sets FanTeam's captain/vice-captain (doubles/1.5x points respectively -
+ * enforced by compute_projections.py, not here). Both must be different
+ * starting-XI players. Blocked entirely for provider-synced squads
+ * (sync_provider_squads.py pulls captain/VC straight from the real
+ * FanTeam site's scraped C/VC badges and overwrites squads.
+ * captain_game_player_id/vice_captain_game_player_id unconditionally on
+ * every sync run, every ~90 minutes) - editing here would look saved
+ * and then silently revert with no explanation, the exact confusing
+ * behavior the old frontend's read-only pill deliberately avoided.
+ */
+export async function setFanteamCaptain({
+  squadId,
+  captainGamePlayerId,
+  viceCaptainGamePlayerId,
+}: {
+  squadId: number;
+  captainGamePlayerId: number;
+  viceCaptainGamePlayerId: number;
+}) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+
+  const { data: squad } = await supabase.from("squads").select("id, user_id, game_id").eq("id", squadId).single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: link } = await supabase.from("provider_squad_links").select("sync_enabled").eq("squad_id", squadId).maybeSingle();
+  if (link?.sync_enabled) {
+    return { error: "This squad is synced from FanTeam - captain/vice-captain follow the real site and can't be edited here." };
+  }
+
+  if (captainGamePlayerId === viceCaptainGamePlayerId) {
+    return { error: "Captain and vice-captain must be different players." };
+  }
+
+  const { data: starters } = await supabase.from("squad_players").select("game_player_id").eq("squad_id", squadId).eq("is_starting", true);
+  const startingIds = new Set((starters ?? []).map((s) => s.game_player_id));
+  if (!startingIds.has(captainGamePlayerId) || !startingIds.has(viceCaptainGamePlayerId)) {
+    return { error: "Captain and vice-captain must both be in the starting XI." };
+  }
+
+  const { error } = await supabase
+    .from("squads")
+    .update({ captain_game_player_id: captainGamePlayerId, vice_captain_game_player_id: viceCaptainGamePlayerId })
+    .eq("id", squadId);
+  if (error) return { error: error.message };
+
+  const { planningGameweek } = await getSeasonTiming(supabase, squad.game_id);
+  await supabase.from("squad_captain_history").insert({
+    squad_id: squadId,
+    gameweek: planningGameweek ?? 1,
+    captain_game_player_id: captainGamePlayerId,
+    vice_captain_game_player_id: viceCaptainGamePlayerId,
+  });
+
+  revalidatePath(`/squads/${squadId}`);
+  return { success: true };
+}
