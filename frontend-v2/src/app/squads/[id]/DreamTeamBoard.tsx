@@ -42,10 +42,14 @@ function difficultyColor(d: number): string {
   return "bg-red-800";
 }
 
-function fixtureLabel(tiles: (FixtureTile | null)[], count: number): string {
-  const shown = tiles.slice(0, count).filter((t): t is FixtureTile => t !== null);
-  if (shown.length === 0) return "-";
-  return shown.map((t) => (t.isHome ? t.opponentAbbr : t.opponentAbbr.toLowerCase())).join(", ");
+function fixtureTilesFor(tiles: (FixtureTile | null)[], count: number): { label: string; colorClass: string }[] {
+  return tiles
+    .slice(0, count)
+    .filter((t): t is FixtureTile => t !== null)
+    .map((t) => ({
+      label: t.isHome ? t.opponentAbbr : t.opponentAbbr.toLowerCase(),
+      colorClass: difficultyColor(t.difficulty),
+    }));
 }
 
 export default function DreamTeamBoard({
@@ -89,14 +93,8 @@ export default function DreamTeamBoard({
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
 
-  function statTextFor(p: { score: number | null; fixtures: (FixtureTile | null)[] }): string {
+  function statTextFor(p: { score: number | null }): string {
     switch (displayMode) {
-      case "next1":
-        return fixtureLabel(p.fixtures, 1);
-      case "next2":
-        return fixtureLabel(p.fixtures, 2);
-      case "next3":
-        return fixtureLabel(p.fixtures, 3);
       case "pred":
         return p.score != null ? `${p.score >= 0 ? "+" : ""}${p.score.toFixed(1)}` : "-";
       case "pts":
@@ -104,6 +102,8 @@ export default function DreamTeamBoard({
         return p.score != null ? `${p.score.toFixed(1)} pts` : "-";
     }
   }
+
+  const fixtureModeCount: Record<string, number> = { next1: 1, next2: 2, next3: 3 };
 
   const pitchPlayers: PitchPlayer[] = squad.map((p) => ({
     game_player_id: p.game_player_id,
@@ -115,7 +115,8 @@ export default function DreamTeamBoard({
     score: p.score,
     isCaptain: p.isCaptain,
     isViceCaptain: p.isViceCaptain,
-    statText: statTextFor(p),
+    statText: displayMode in fixtureModeCount ? undefined : statTextFor(p),
+    statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(p.fixtures, fixtureModeCount[displayMode]) : undefined,
   }));
 
   function handleBooster(booster: Booster | null) {

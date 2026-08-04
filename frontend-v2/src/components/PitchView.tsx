@@ -24,6 +24,12 @@ export type PitchPlayer = {
   // players" toggle) without this component needing to know what modes
   // exist. undefined keeps the normal score display.
   statText?: string;
+  // Same idea as statText but renders as colored difficulty badges (the
+  // caller supplies the color class, keeping this component purely
+  // presentational) instead of plain text - used for the fixture display
+  // modes so pitch chips match the player pool's difficulty coloring.
+  // Takes priority over statText when present.
+  statTiles?: { label: string; colorClass: string }[];
 };
 
 type Formation = { gk: number; def: number; mid: number; fwd: number };
@@ -82,7 +88,19 @@ export default function PitchView({
             <FormPill status={player.formStatus} />
           </span>
           {player.price != null && <span className="text-[10px] text-navy-300">£{Number(player.price).toFixed(1)}m</span>}
-          {player.statText !== undefined ? (
+          {player.statTiles !== undefined ? (
+            <span className="mt-0.5 flex flex-wrap items-center justify-center gap-0.5">
+              {player.statTiles.length === 0 ? (
+                <span className="text-[10px] text-navy-600">-</span>
+              ) : (
+                player.statTiles.map((t, i) => (
+                  <span key={i} className={`rounded px-1 py-0.5 text-[9px] font-bold text-white ${t.colorClass}`}>
+                    {t.label}
+                  </span>
+                ))
+              )}
+            </span>
+          ) : player.statText !== undefined ? (
             <span className="text-[10px] text-sky-400">{player.statText}</span>
           ) : (
             player.score != null && <span className="text-[10px] text-sky-400">{player.score.toFixed(1)} pts</span>
