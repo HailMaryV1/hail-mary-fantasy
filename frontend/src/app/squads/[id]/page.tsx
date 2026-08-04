@@ -1,4 +1,5 @@
 import { notFound, redirect } from "next/navigation";
+import Link from "next/link";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
 import { suggestBestXI } from "@/lib/squadOptimizer";
@@ -383,15 +384,6 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
       .map((p) => ({ ...p, score: scoreByGamePlayerId.get(p.game_player_id) ?? null, formStatus: formByGamePlayerId.get(p.game_player_id)?.status ?? null }));
     const clubCountsObj: Record<number, number> = {};
     clubCounts.forEach((count, teamId) => (clubCountsObj[teamId] = count));
-    const cloudFFStarters = players
-      .map((p) => ({
-        game_player_id: p.game_player_id,
-        full_name: p.full_name,
-        position: p.position,
-        team_name: p.team_name,
-        hail_mary_score: p.score ?? 0,
-      }))
-      .sort((a, b) => b.hail_mary_score - a.hail_mary_score);
 
     // Cloud FF has no bench, so there's no separate lineup to build - the
     // squad IS the starting XI. formationCode is derived from the squad's
@@ -454,16 +446,18 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
             <>
               <div className="mt-10">
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Captain</h2>
-                <div className="mt-2">
-                  <CaptainPicker
-                    squadId={squad.id}
-                    starters={cloudFFStarters}
-                    currentCaptainId={squad.captain_game_player_id}
-                    currentViceCaptainId={squad.vice_captain_game_player_id}
-                    recommendedCaptain={cloudFFAnalysis?.bestCaptain ? { game_player_id: cloudFFAnalysis.bestCaptain.game_player_id, full_name: cloudFFAnalysis.bestCaptain.full_name } : null}
-                    recommendedVice={cloudFFAnalysis?.viceCaptain ? { game_player_id: cloudFFAnalysis.viceCaptain.game_player_id, full_name: cloudFFAnalysis.viceCaptain.full_name } : null}
-                  />
-                </div>
+                {/* Cloud FF's real captain rule is one captain per real
+                    match-day, not per gameweek (see migration 0083's
+                    docstring) - CaptainPicker's single-captain-per-
+                    gameweek model (used below for every other game) can't
+                    represent that, so this links to the dedicated
+                    day-by-day picker instead of rendering it inline. */}
+                <Link
+                  href={`/squads/${squad.id}/captains`}
+                  className="mt-2 inline-block rounded-lg border border-navy-700 bg-navy-900 px-4 py-2 text-sm font-medium text-white hover:bg-navy-800"
+                >
+                  Manage match-day captains →
+                </Link>
               </div>
               {featuresForGame(game.slug).askMary && (
                 <div className="mt-10">
