@@ -234,7 +234,7 @@ async function renderFanteamBoard(
   },
   game: { id: number; slug: string }
 ) {
-  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming] = await Promise.all([
+  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, { data: formationsRaw }] = await Promise.all([
     supabase.from("game_squad_rules").select("budget, max_per_club").eq("game_id", game.id).single(),
     supabase
       .from("squad_players")
@@ -245,10 +245,16 @@ async function renderFanteamBoard(
       .returns<FanteamSquadPlayerRow[]>(),
     supabase.from("game_player_pool").select("*").eq("game_slug", "fanteam").returns<PoolRow[]>(),
     getSeasonTiming(supabase, game.id),
+    supabase
+      .from("game_formations")
+      .select("code, gk_count, def_count, mid_count, fwd_count")
+      .eq("game_id", game.id)
+      .returns<{ code: string; gk_count: number; def_count: number; mid_count: number; fwd_count: number }[]>(),
   ]);
 
   const rules = rulesRow ?? { budget: 100, max_per_club: 3 };
   const planningGameweek = seasonTiming.planningGameweek ?? 1;
+  const formations = formationsRaw ?? [];
 
   const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
     game_player_id: sp.game_player_id,
@@ -346,6 +352,13 @@ async function renderFanteamBoard(
     }))
     .sort((a, b) => b.score - a.score);
 
+  const startingCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
+  for (const p of squadPlayers) if (p.is_starting) startingCounts[p.position] += 1;
+  const currentFormationCode =
+    formations.find(
+      (f) => f.gk_count === startingCounts.GK && f.def_count === startingCounts.DEF && f.mid_count === startingCounts.MID && f.fwd_count === startingCounts.FWD
+    )?.code ?? null;
+
   return (
     <FanTeamBoard
       squadId={squadId}
@@ -358,6 +371,8 @@ async function renderFanteamBoard(
       wildcard2UsedGameweek={squad.wildcard_2_used_gameweek}
       maxPerClub={Number(rules.max_per_club ?? 3)}
       seasonStarted={seasonTiming.seasonStarted}
+      formations={formations.map((f) => f.code)}
+      currentFormationCode={currentFormationCode}
       squad={boardSquad}
       pool={boardPool}
     />

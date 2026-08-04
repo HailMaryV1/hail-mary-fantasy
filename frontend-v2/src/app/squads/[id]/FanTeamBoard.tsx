@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
-import { makeFanteamTransfer, reorderFanteamBench } from "../actions";
+import { makeFanteamTransfer, reorderFanteamBench, setFanteamFormation } from "../actions";
 
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
 
@@ -97,6 +97,8 @@ export default function FanTeamBoard({
   wildcard2UsedGameweek,
   maxPerClub,
   seasonStarted,
+  formations,
+  currentFormationCode,
   squad,
   pool,
 }: {
@@ -110,6 +112,11 @@ export default function FanTeamBoard({
   wildcard2UsedGameweek: number | null;
   maxPerClub: number;
   seasonStarted: boolean;
+  formations: string[];
+  // Null when the current starting XI's GK/DEF/MID/FWD counts don't match
+  // any of the 7 real formations - can genuinely happen (a squad synced
+  // mid-transfer, or one that's never had a formation applied here yet).
+  currentFormationCode: string | null;
   squad: BoardPlayer[];
   pool: PoolPlayer[];
 }) {
@@ -119,6 +126,8 @@ export default function FanTeamBoard({
   const [useWildcard, setUseWildcard] = useState(false);
   const [isTransferPending, startTransferTransition] = useTransition();
   const [transferError, setTransferError] = useState<string | null>(null);
+  const [isFormationPending, startFormationTransition] = useTransition();
+  const [formationError, setFormationError] = useState<string | null>(null);
   const [isBenchPending, startBenchTransition] = useTransition();
   const [benchError, setBenchError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -191,6 +200,14 @@ export default function FanTeamBoard({
     startBenchTransition(async () => {
       const result = await reorderFanteamBench({ squadId, gamePlayerId, targetOrder });
       if (result?.error) setBenchError(result.error);
+    });
+  }
+
+  function handleFormationChange(formationCode: string) {
+    setFormationError(null);
+    startFormationTransition(async () => {
+      const result = await setFanteamFormation({ squadId, formationCode });
+      if (result?.error) setFormationError(result.error);
     });
   }
 
@@ -307,12 +324,28 @@ export default function FanTeamBoard({
         )}
         {transferError && <p className="mt-2 text-xs text-red-400">{transferError}</p>}
         {benchError && <p className="mt-2 text-xs text-red-400">{benchError}</p>}
+        {formationError && <p className="mt-2 text-xs text-red-400">{formationError}</p>}
 
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
           <div>
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-white">{squadName}</h2>
-              <div className="relative">
+              <div className="flex items-center gap-2">
+                <select
+                  value={currentFormationCode ?? ""}
+                  disabled={isFormationPending}
+                  onChange={(e) => handleFormationChange(e.target.value)}
+                  aria-label="Formation - picking a new one auto-fills the best 11 for it from your squad"
+                  className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+                >
+                  {currentFormationCode === null && <option value="">Formation: custom</option>}
+                  {formations.map((code) => (
+                    <option key={code} value={code}>
+                      Formation: {code}
+                    </option>
+                  ))}
+                </select>
+                <div className="relative">
                 <button
                   onClick={() => setOptionsOpen((o) => !o)}
                   className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
@@ -346,6 +379,7 @@ export default function FanTeamBoard({
                     ))}
                   </div>
                 )}
+                </div>
               </div>
             </div>
             <PitchView

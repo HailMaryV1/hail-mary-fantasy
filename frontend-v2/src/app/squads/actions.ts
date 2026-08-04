@@ -431,3 +431,87 @@ export async function reorderFanteamBench({
   revalidatePath(`/squads/${squadId}`);
   return { success: true };
 }
+
+/**
+ * Switches FanTeam's starting-XI formation and auto-fills the best 11
+ * from the full 15-man squad for the new quota - the highest-projected
+ * scorer(s) in each position, same "top-N-per-position is provably
+ * optimal for a fixed formation" logic as the old frontend's
+ * suggestBestXI (no search needed - every slot within a position is
+ * interchangeable). Outfield bench priority is re-ranked by score too
+ * (best reserve = first auto-sub in), same convention used everywhere
+ * else in this file. The reserve GK is whichever of the squad's 2 real
+ * GKs isn't starting - never has a bench_order, a 15-man squad only
+ * ever has one.
+ */
+export async function setFanteamFormation({ squadId, formationCode }: { squadId: number; formationCode: string }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+
+  const { data: squad } = await supabase.from("squads").select("id, user_id, game_id").eq("id", squadId).single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: formation } = await supabase
+    .from("game_formations")
+    .select("code, gk_count, def_count, mid_count, fwd_count")
+    .eq("game_id", squad.game_id)
+    .eq("code", formationCode)
+    .single();
+  if (!formation) return { error: "Not a real formation for this game." };
+
+  const { data: squadPlayers } = await supabase
+    .from("squad_players")
+    .select("id, game_player_id, game_players(players(position))")
+    .eq("squad_id", squadId)
+    .returns<{ id: number; game_player_id: number; game_players: { players: { position: "GK" | "DEF" | "MID" | "FWD" } } }[]>();
+  if (!squadPlayers || squadPlayers.length === 0) return { error: "Couldn't load squad." };
+
+  const { data: scoreRows } = await supabase.from("player_projection_summary").select("game_player_id, hail_mary_score").eq("game_slug", "fanteam");
+  const scoreByGamePlayerId = new Map<number, number>((scoreRows ?? []).map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+
+  const quota: Record<"GK" | "DEF" | "MID" | "FWD", number> = {
+    GK: formation.gk_count,
+    DEF: formation.def_count,
+    MID: formation.mid_count,
+    FWD: formation.fwd_count,
+  };
+  const byPosition: Record<"GK" | "DEF" | "MID" | "FWD", { id: number; game_player_id: number; score: number }[]> = {
+    GK: [],
+    DEF: [],
+    MID: [],
+    FWD: [],
+  };
+  for (const sp of squadPlayers) {
+    const pos = sp.game_players.players.position;
+    byPosition[pos].push({ id: sp.id, game_player_id: sp.game_player_id, score: scoreByGamePlayerId.get(sp.game_player_id) ?? 0 });
+  }
+  for (const pos of ["GK", "DEF", "MID", "FWD"] as const) {
+    byPosition[pos].sort((a, b) => b.score - a.score);
+    if (byPosition[pos].length < quota[pos]) {
+      return { error: `Not enough ${pos} players in your squad for ${formationCode}.` };
+    }
+  }
+
+  const updates: { id: number; is_starting: boolean; bench_order: number | null }[] = [];
+  for (const pos of ["GK", "DEF", "MID", "FWD"] as const) {
+    byPosition[pos].forEach((p, i) => {
+      if (i < quota[pos]) updates.push({ id: p.id, is_starting: true, bench_order: null });
+      else if (pos === "GK") updates.push({ id: p.id, is_starting: false, bench_order: null });
+    });
+  }
+  const outfieldBench = (["DEF", "MID", "FWD"] as const)
+    .flatMap((pos) => byPosition[pos].slice(quota[pos]))
+    .sort((a, b) => b.score - a.score);
+  outfieldBench.forEach((p, i) => updates.push({ id: p.id, is_starting: false, bench_order: i + 1 }));
+
+  for (const u of updates) {
+    const { error } = await supabase.from("squad_players").update({ is_starting: u.is_starting, bench_order: u.bench_order }).eq("id", u.id);
+    if (error) return { error: error.message };
+  }
+
+  revalidatePath(`/squads/${squadId}`);
+  return { success: true };
+}
