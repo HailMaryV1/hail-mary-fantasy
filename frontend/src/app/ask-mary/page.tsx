@@ -215,7 +215,7 @@ export default async function AskMaryPage({
     );
   }
 
-  const { bestCaptain, viceCaptain, health, gameweekPlan, favouredMoves, monitorList, hasCalendar, seasonStarted } = analysis;
+  const { bestCaptain, viceCaptain, captainsByMatchDay, health, gameweekPlan, favouredMoves, monitorList, hasCalendar, seasonStarted } = analysis;
 
   // Captain/vice-captain only ever considers players already flagged
   // is_starting (askMaryEngine.ts's captaincyPool) - but a starting XI
@@ -326,24 +326,58 @@ export default async function AskMaryPage({
                   ))
                 )}
 
-                <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-                  <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain (Next Gameweek)</h3>
-                  {!bestCaptain ? (
-                    <p className="mt-2 text-sm text-navy-400">Set a starting XI to get captaincy advice.</p>
-                  ) : (
-                    <>
-                      {!startingXIComplete && (
-                        <p className="mt-2 text-xs text-amber-400">
-                          Starting XI isn&apos;t fully set ({startingCount}/{analysis.rules.starting_size}) - this pick may change once it is.
-                        </p>
-                      )}
-                      <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <CaptainOption label="Captain" player={bestCaptain} />
-                        <CaptainOption label="Vice-Captain" player={viceCaptain} />
+                {fanteamGame.slug === "cloudff" ? (
+                  <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
+                    <h3 className="text-sm font-semibold text-white">Captain by Match-Day</h3>
+                    <p className="mt-1 text-xs text-navy-500">
+                      Cloud FF captains are per match-day, not per gameweek - only players with a real fixture that
+                      day are eligible.
+                    </p>
+                    {captainsByMatchDay.length === 0 ? (
+                      <p className="mt-2 text-sm text-navy-400">No upcoming fixtures found for this squad&apos;s players yet.</p>
+                    ) : (
+                      <div className="mt-3 flex flex-col gap-2">
+                        {captainsByMatchDay.map((day) => (
+                          <div key={day.matchDate} className="rounded-lg border border-navy-800 bg-navy-950 p-2 text-sm">
+                            <span className="text-navy-400">
+                              {new Date(`${day.matchDate}T00:00:00Z`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })}:
+                            </span>{" "}
+                            {day.captain ? (
+                              <span className="text-white">
+                                {day.captain.full_name}
+                                {day.autoPicked && <span className="text-navy-500"> (auto-pick)</span>}
+                              </span>
+                            ) : (
+                              <span className="text-navy-500">No eligible player</span>
+                            )}
+                          </div>
+                        ))}
                       </div>
-                    </>
-                  )}
-                </div>
+                    )}
+                    <Link href={`/squads/${selectedSquad.id}/captains`} className="mt-3 inline-block text-xs font-medium text-sky-400 hover:text-sky-300">
+                      Manage match-day captains →
+                    </Link>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
+                    <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain (Next Gameweek)</h3>
+                    {!bestCaptain ? (
+                      <p className="mt-2 text-sm text-navy-400">Set a starting XI to get captaincy advice.</p>
+                    ) : (
+                      <>
+                        {!startingXIComplete && (
+                          <p className="mt-2 text-xs text-amber-400">
+                            Starting XI isn&apos;t fully set ({startingCount}/{analysis.rules.starting_size}) - this pick may change once it is.
+                          </p>
+                        )}
+                        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <CaptainOption label="Captain" player={bestCaptain} />
+                          <CaptainOption label="Vice-Captain" player={viceCaptain} />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>

@@ -38,21 +38,45 @@ export default function MaryRecommendationsPanel({
         {analysis.gameweekPlan.map((step) => (
           <GameweekPlanRow key={step.offset} step={step} squadId={squadId} gameSlug={gameSlug} />
         ))}
-        <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-          <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain</h3>
-          {!analysis.bestCaptain ? (
-            <p className="mt-2 text-sm text-navy-400">Set a starting XI to get captaincy advice.</p>
-          ) : (
-            <div className="mt-3 flex flex-col gap-2 text-sm">
-              <p className="text-white">
-                <span className="text-navy-500">C:</span> {analysis.bestCaptain.full_name}
-              </p>
-              <p className="text-white">
-                <span className="text-navy-500">VC:</span> {analysis.viceCaptain?.full_name ?? "-"}
-              </p>
-            </div>
-          )}
-        </div>
+        {gameSlug === "cloudff" ? (
+          <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
+            <h3 className="text-sm font-semibold text-white">Captain by Match-Day</h3>
+            {analysis.captainsByMatchDay.length === 0 ? (
+              <p className="mt-2 text-sm text-navy-400">No upcoming fixtures found yet.</p>
+            ) : (
+              <div className="mt-3 flex flex-col gap-1 text-sm">
+                {analysis.captainsByMatchDay.map((day) => (
+                  <p key={day.matchDate} className="text-white">
+                    <span className="text-navy-500">
+                      {new Date(`${day.matchDate}T00:00:00Z`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })}:
+                    </span>{" "}
+                    {day.captain?.full_name ?? "No eligible player"}
+                    {day.autoPicked && <span className="text-navy-500"> (auto-pick)</span>}
+                  </p>
+                ))}
+              </div>
+            )}
+            <Link href={`/squads/${squadId}/captains`} className="mt-3 inline-block text-xs font-medium text-sky-400 hover:text-sky-300">
+              Manage match-day captains →
+            </Link>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
+            <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain</h3>
+            {!analysis.bestCaptain ? (
+              <p className="mt-2 text-sm text-navy-400">Set a starting XI to get captaincy advice.</p>
+            ) : (
+              <div className="mt-3 flex flex-col gap-2 text-sm">
+                <p className="text-white">
+                  <span className="text-navy-500">C:</span> {analysis.bestCaptain.full_name}
+                </p>
+                <p className="text-white">
+                  <span className="text-navy-500">VC:</span> {analysis.viceCaptain?.full_name ?? "-"}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
