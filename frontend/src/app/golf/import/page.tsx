@@ -1,5 +1,5 @@
 import Link from "next/link";
-import ImportForm from "./ImportForm";
+import TournamentBuilder from "./TournamentBuilder";
 
 export default function GolfImportPage() {
   return (
@@ -9,14 +9,14 @@ export default function GolfImportPage() {
           ← FanTeam Golf
         </Link>
 
-        <h1 className="mt-3 text-2xl font-semibold text-white">Import a tournament</h1>
+        <h1 className="mt-3 text-2xl font-semibold text-white">Tournament Builder</h1>
         <p className="mt-1 text-sm text-navy-300">
-          Paste the current FanTeam Golf contest URL - a new one drops every week. Safe to re-run against the same
-          tournament any time (prices/stats update in place, nothing duplicates).
+          Import this week&apos;s field, add bookmaker odds, then compute Hail Mary Golf&apos;s picks - three steps,
+          start to finish.
         </p>
 
         <div className="mt-6">
-          <ImportForm />
+          <TournamentBuilder />
         </div>
       </main>
     </div>

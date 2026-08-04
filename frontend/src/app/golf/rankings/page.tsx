@@ -5,7 +5,44 @@ import { computeTop20MarketGaps } from "@/lib/golfValuePicks";
 
 export const dynamic = "force-dynamic";
 
-type TournamentRow = { id: number; fanteam_tournament_id: string; name: string; event_number: number | null; status: string };
+type TournamentRow = {
+  id: number;
+  fanteam_tournament_id: string;
+  name: string;
+  event_number: number | null;
+  status: string;
+  start_time: string;
+};
+
+const STATUS_LABEL: Record<string, string> = { upcoming: "Upcoming", live: "Live", completed: "Completed" };
+const STATUS_TONE: Record<string, string> = {
+  upcoming: "bg-navy-800 text-navy-300",
+  live: "bg-emerald-950 text-emerald-400",
+  completed: "bg-navy-800 text-navy-500",
+};
+
+function TournamentCard({ t }: { t: TournamentRow }) {
+  return (
+    <Link
+      href={`/golf/rankings?tournament=${t.fanteam_tournament_id}`}
+      className="flex items-center justify-between rounded-lg border border-navy-700 bg-navy-900 px-4 py-3 transition-colors hover:border-sky-500 hover:bg-navy-800"
+    >
+      <div>
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-medium text-white">{t.name}</p>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${STATUS_TONE[t.status] ?? "bg-navy-800 text-navy-400"}`}>
+            {STATUS_LABEL[t.status] ?? t.status}
+          </span>
+        </div>
+        <p className="mt-0.5 text-xs text-navy-400">
+          {t.event_number ? `Gameweek ${t.event_number} · ` : ""}
+          {new Date(t.start_time).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
+        </p>
+      </div>
+      <span className="text-xs font-medium text-sky-400">View rankings →</span>
+    </Link>
+  );
+}
 
 export default async function GolfRankingsPage({
   searchParams,
@@ -17,18 +54,64 @@ export default async function GolfRankingsPage({
 
   const { data: game } = await supabase.from("fantasy_games").select("id").eq("slug", "fanteam-golf").maybeSingle<{ id: number }>();
 
-  let tournament: TournamentRow | null = null;
+  let allTournaments: TournamentRow[] = [];
   if (game) {
-    let query = supabase
+    const { data } = await supabase
       .from("golf_tournaments")
-      .select("id, fanteam_tournament_id, name, event_number, status")
-      .eq("game_id", game.id);
-    query = tournamentParam
-      ? query.eq("fanteam_tournament_id", tournamentParam)
-      : query.order("start_time", { ascending: false }).limit(1);
-    const { data } = await query.returns<TournamentRow[]>();
-    tournament = data?.[0] ?? null;
+      .select("id, fanteam_tournament_id, name, event_number, status, start_time")
+      .eq("game_id", game.id)
+      .order("start_time", { ascending: false })
+      .returns<TournamentRow[]>();
+    allTournaments = data ?? [];
   }
+
+  // No tournament picked yet - land on a card grid (current/upcoming
+  // first, then every past tournament) rather than silently jumping into
+  // whichever is most recent, so a past week's predictions stay a click
+  // away instead of only reachable by guessing its URL param.
+  if (!tournamentParam) {
+    const [current, ...past] = allTournaments;
+    return (
+      <div className="min-h-screen bg-navy-950 px-6 py-10">
+        <main className="mx-auto max-w-3xl">
+          <Link href="/golf" className="text-sm text-navy-400 hover:text-sky-300">
+            ← FanTeam Golf
+          </Link>
+
+          <h1 className="mt-3 text-2xl font-semibold text-white">Hail Mary Golf Rankings</h1>
+          <p className="mt-1 text-sm text-navy-300">Pick a tournament to see what Mary predicted.</p>
+
+          {allTournaments.length === 0 && (
+            <p className="mt-8 text-sm text-navy-300">
+              No golf tournament found. <Link href="/golf/import" className="text-sky-400 hover:text-sky-300">Import one</Link> first.
+            </p>
+          )}
+
+          {current && (
+            <section className="mt-6">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-navy-400">Current / Upcoming</h2>
+              <div className="mt-2">
+                <TournamentCard t={current} />
+              </div>
+            </section>
+          )}
+
+          {past.length > 0 && (
+            <section className="mt-8">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-navy-400">Past Tournaments</h2>
+              <div className="mt-2 flex flex-col gap-2">
+                {past.map((t) => (
+                  <TournamentCard key={t.fanteam_tournament_id} t={t} />
+                ))}
+              </div>
+            </section>
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  const tournament = allTournaments.find((t) => t.fanteam_tournament_id === tournamentParam) ?? null;
 
   let rows: GolfRankingRow[] = [];
   if (tournament) {
@@ -94,13 +177,13 @@ export default async function GolfRankingsPage({
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-4xl">
-        <Link href="/golf" className="text-sm text-navy-400 hover:text-sky-300">
-          ← FanTeam Golf
+        <Link href="/golf/rankings" className="text-sm text-navy-400 hover:text-sky-300">
+          ← All tournaments
         </Link>
 
         <h1 className="mt-3 text-2xl font-semibold text-white">Hail Mary Golf Rankings</h1>
         <p className="mt-1 text-sm text-navy-300">
-          {tournament ? `${tournament.name}${tournament.event_number ? ` · Gameweek ${tournament.event_number}` : ""}` : "No tournament imported yet."}
+          {tournament ? `${tournament.name}${tournament.event_number ? ` · Gameweek ${tournament.event_number}` : ""}` : "Tournament not found."}
         </p>
 
         {!tournament && (
@@ -111,7 +194,8 @@ export default async function GolfRankingsPage({
 
         {tournament && rows.length === 0 && (
           <p className="mt-8 text-sm text-navy-300">
-            Tournament imported, but no projections yet. Run{" "}
+            Tournament imported, but no projections yet. Compute them from the{" "}
+            <Link href="/golf/import" className="text-sky-400 hover:text-sky-300">Tournament Builder</Link>, or run{" "}
             <code className="rounded bg-navy-800 px-1 py-0.5">python3 scripts/compute_golf_projections.py {tournament.fanteam_tournament_id}</code>.
           </p>
         )}
