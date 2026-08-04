@@ -1,0 +1,38 @@
+name: Golf compute requested
+
+# Runs scripts/compute_golf_projections.py for one tournament on demand -
+# dispatched by frontend/src/app/golf/import/actions.ts's
+# dispatchGolfCompute (the Tournament Builder wizard's step 3 "Compute &
+# Picks" button), same workflow_dispatch pattern as
+# provider_sync_requested.yml. workflow_dispatch only, no schedule - this
+# is a one-shot action the user triggers themselves after importing a
+# tournament and (optionally) pasting odds, not a recurring job.
+on:
+  workflow_dispatch:
+    inputs:
+      tournament_ref:
+        description: "FanTeam tournament ID (or golf_tournaments.id) to recompute projections for"
+        required: true
+
+concurrency:
+  group: golf-compute
+  cancel-in-progress: false
+
+jobs:
+  compute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary
+
+      - name: Recompute Hail Mary Golf projections
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/compute_golf_projections.py "${{ github.event.inputs.tournament_ref }}"
