@@ -1,0 +1,296 @@
+"use client";
+
+import { useState, useTransition } from "react";
+import Link from "next/link";
+import PitchView, { type PitchPlayer } from "@/components/PitchView";
+import { setBooster } from "../actions";
+
+export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
+
+export type BoardPlayer = {
+  game_player_id: number;
+  full_name: string;
+  position: "GK" | "DEF" | "MID" | "FWD";
+  team_name: string;
+  price: number;
+  score: number | null;
+  isCaptain: boolean;
+  isViceCaptain: boolean;
+  fixtures: (FixtureTile | null)[];
+};
+
+export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain">;
+
+type Booster = "goal_bonus" | "twelfth_man" | "max_captain";
+type DisplayMode = "next1" | "next2" | "next3" | "pts" | "pred";
+
+const BOOSTER_LABELS: Record<Booster, string> = {
+  goal_bonus: "Goal Bonus",
+  twelfth_man: "12th Man",
+  max_captain: "Max Captain",
+};
+const BOOSTER_SHORT: Record<Booster, string> = { goal_bonus: "GB", twelfth_man: "12M", max_captain: "MC" };
+
+// attack_score is 0-1, higher = a better attacking fixture (easier) for
+// that team - real data already computed for the Fixtures page, reused
+// here as a simple 5-tier difficulty color.
+function difficultyColor(d: number): string {
+  if (d >= 0.6) return "bg-emerald-600";
+  if (d >= 0.45) return "bg-emerald-800";
+  if (d >= 0.35) return "bg-navy-700";
+  if (d >= 0.25) return "bg-amber-800";
+  return "bg-red-800";
+}
+
+function fixtureLabel(tiles: (FixtureTile | null)[], count: number): string {
+  const shown = tiles.slice(0, count).filter((t): t is FixtureTile => t !== null);
+  if (shown.length === 0) return "-";
+  return shown.map((t) => (t.isHome ? t.opponentAbbr : t.opponentAbbr.toLowerCase())).join(", ");
+}
+
+export default function DreamTeamBoard({
+  squadId,
+  squadName,
+  transfers,
+  bank,
+  teamValue,
+  planningGameweek,
+  boosters,
+  substitutesUsed,
+  squad,
+  pool,
+}: {
+  squadId: number;
+  squadName: string;
+  transfers: number;
+  bank: number;
+  teamValue: number;
+  planningGameweek: number;
+  boosters: {
+    active: Booster | null;
+    activeGameweek: number | null;
+    goalBonusUsed: boolean;
+    twelfthManUsed: boolean;
+    maxCaptainUsed: boolean;
+  };
+  substitutesUsed: number;
+  squad: BoardPlayer[];
+  pool: PoolPlayer[];
+}) {
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [isPending, startTransition] = useTransition();
+  const [boosterError, setBoosterError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
+
+  function statTextFor(p: { score: number | null; fixtures: (FixtureTile | null)[] }): string {
+    switch (displayMode) {
+      case "next1":
+        return fixtureLabel(p.fixtures, 1);
+      case "next2":
+        return fixtureLabel(p.fixtures, 2);
+      case "next3":
+        return fixtureLabel(p.fixtures, 3);
+      case "pred":
+        return p.score != null ? `${p.score >= 0 ? "+" : ""}${p.score.toFixed(1)}` : "-";
+      case "pts":
+      default:
+        return p.score != null ? `${p.score.toFixed(1)} pts` : "-";
+    }
+  }
+
+  const pitchPlayers: PitchPlayer[] = squad.map((p) => ({
+    game_player_id: p.game_player_id,
+    full_name: p.full_name,
+    position: p.position,
+    team_name: p.team_name,
+    is_starting: true,
+    price: p.price,
+    score: p.score,
+    isCaptain: p.isCaptain,
+    isViceCaptain: p.isViceCaptain,
+    statText: statTextFor(p),
+  }));
+
+  function handleBooster(booster: Booster | null) {
+    setBoosterError(null);
+    startTransition(async () => {
+      const result = await setBooster({ squadId, booster, gameweek: planningGameweek });
+      if (result?.error) setBoosterError(result.error);
+    });
+  }
+
+  const filteredPool = pool.filter(
+    (p) => (posFilter === "ALL" || p.position === posFilter) && (search === "" || p.full_name.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  return (
+    <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
+      <div className="mx-auto max-w-7xl">
+        <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
+          ← Back to main menu
+        </Link>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <StatBox label="Transfers" value={String(transfers)} />
+          <StatBox label="Bank" value={`£${bank.toFixed(1)}m`} />
+          <StatBox label="Team Value" value={`£${teamValue.toFixed(1)}m`} />
+          <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Boosters/Subs</p>
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {(["goal_bonus", "twelfth_man", "max_captain"] as const).map((b) => {
+                const used = b === "goal_bonus" ? boosters.goalBonusUsed : b === "twelfth_man" ? boosters.twelfthManUsed : boosters.maxCaptainUsed;
+                const active = boosters.active === b && boosters.activeGameweek === planningGameweek;
+                return (
+                  <button
+                    key={b}
+                    disabled={used || isPending}
+                    onClick={() => handleBooster(active ? null : b)}
+                    title={used ? `${BOOSTER_LABELS[b]} - already used this season` : BOOSTER_LABELS[b]}
+                    className={`rounded px-2 py-1 text-[10px] font-bold ${
+                      used
+                        ? "cursor-not-allowed bg-navy-800 text-navy-600 line-through"
+                        : active
+                          ? "bg-amber-500 text-navy-950"
+                          : "bg-navy-800 text-navy-200 hover:bg-navy-700"
+                    }`}
+                  >
+                    {BOOSTER_SHORT[b]}
+                  </button>
+                );
+              })}
+              <span className="rounded bg-navy-800 px-2 py-1 text-[10px] font-bold text-navy-300">Subs {substitutesUsed}/10</span>
+            </div>
+          </div>
+        </div>
+        {boosterError && <p className="mt-2 text-xs text-red-400">{boosterError}</p>}
+
+        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-white">{squadName}</h2>
+              <div className="relative">
+                <button
+                  onClick={() => setOptionsOpen((o) => !o)}
+                  className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
+                >
+                  ☰ Options
+                </button>
+                {optionsOpen && (
+                  <div className="absolute right-0 top-full z-10 mt-1 w-56 rounded-xl border border-navy-700 bg-navy-900 p-2 shadow-xl">
+                    <p className="px-2 py-1 text-[10px] font-semibold uppercase text-navy-500">Show on players</p>
+                    {(
+                      [
+                        ["next1", "Next GW Fix"],
+                        ["next2", "Next 2 GW Fix"],
+                        ["next3", "Next 3 GW Fix"],
+                        ["pts", "Pts"],
+                        ["pred", `Pred +/- GW${planningGameweek}`],
+                      ] as [DisplayMode, string][]
+                    ).map(([mode, label]) => (
+                      <button
+                        key={mode}
+                        onClick={() => {
+                          setDisplayMode(mode);
+                          setOptionsOpen(false);
+                        }}
+                        className={`block w-full rounded-lg px-2 py-1.5 text-left text-xs ${
+                          displayMode === mode ? "bg-sky-500 font-medium text-navy-950" : "text-navy-200 hover:bg-navy-800"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <PitchView
+              starting={pitchPlayers}
+              selectedId={selectedId}
+              swappableIds={null}
+              onSelect={(p) => setSelectedId(p.game_player_id === selectedId ? null : p.game_player_id)}
+            />
+          </div>
+
+          <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
+            <h2 className="text-sm font-semibold text-white">Browse all available players</h2>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(["ALL", "GK", "DEF", "MID", "FWD"] as const).map((pos) => (
+                <button
+                  key={pos}
+                  onClick={() => setPosFilter(pos)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    posFilter === pos ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"
+                  }`}
+                >
+                  {pos}
+                </button>
+              ))}
+            </div>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search player..."
+              className="mt-2 w-full rounded-lg border border-navy-700 bg-navy-950 px-3 py-2 text-sm text-white placeholder:text-navy-500 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+            />
+
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-navy-500">
+                    <th className="pb-2 pr-2 font-medium">Player</th>
+                    <th className="pb-2 pr-2 font-medium">Pts</th>
+                    {Array.from({ length: 6 }, (_, i) => (
+                      <th key={i} className="px-1 pb-2 text-center font-medium">
+                        GW{planningGameweek + i}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPool.slice(0, 50).map((p) => (
+                    <tr key={p.game_player_id} className="border-t border-navy-800">
+                      <td className="py-1.5 pr-2">
+                        <div className="font-medium text-white">{p.full_name}</div>
+                        <div className="text-[10px] text-navy-500">
+                          {p.team_name} · {p.position} · £{p.price.toFixed(1)}m
+                        </div>
+                      </td>
+                      <td className="py-1.5 pr-2 text-sky-400">{p.score != null ? p.score.toFixed(1) : "-"}</td>
+                      {p.fixtures.slice(0, 6).map((f, i) => (
+                        <td key={i} className="px-1 py-1.5 text-center">
+                          {f ? (
+                            <span className={`inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(f.difficulty)}`}>
+                              {f.isHome ? f.opponentAbbr : f.opponentAbbr.toLowerCase()}
+                            </span>
+                          ) : (
+                            <span className="text-navy-700">-</span>
+                          )}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {filteredPool.length > 50 && (
+                <p className="mt-2 text-center text-[10px] text-navy-500">Showing top 50 of {filteredPool.length} - narrow your search to see more.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatBox({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">{label}</p>
+      <p className="mt-0.5 text-lg font-semibold text-white">{value}</p>
+    </div>
+  );
+}
