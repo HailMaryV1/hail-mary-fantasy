@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
-import { makeFanteamTransfer, reorderFanteamBench, setFanteamFormation, setFanteamCaptain } from "../actions";
+import { makeFanteamTransfer, reorderFanteamBench, setFanteamFormation, setFanteamCaptain, swapFanteamLineup } from "../actions";
 
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
 
@@ -137,6 +137,8 @@ export default function FanTeamBoard({
   const [benchError, setBenchError] = useState<string | null>(null);
   const [isCaptainPending, startCaptainTransition] = useTransition();
   const [captainError, setCaptainError] = useState<string | null>(null);
+  const [isSwapPending, startSwapTransition] = useTransition();
+  const [swapError, setSwapError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
   const [teamFilter, setTeamFilter] = useState<string>("ALL");
@@ -258,6 +260,25 @@ export default function FanTeamBoard({
   // always allowed, just at a real cost (see costPreview below).
   const selectedPlayer = selectedId != null ? squad.find((p) => p.game_player_id === selectedId) : undefined;
 
+  // Same-position, opposite starting/bench status - a real sub, not a
+  // transfer. Formation counts are automatically preserved by a
+  // same-position swap, so nothing else needs checking client-side (the
+  // server re-validates anyway).
+  const legalSwapIds = new Set(
+    selectedPlayer
+      ? squad.filter((p) => p.position === selectedPlayer.position && p.isStarting !== selectedPlayer.isStarting).map((p) => p.game_player_id)
+      : []
+  );
+
+  function handleSwapLineup(playerAId: number, playerBId: number) {
+    setSwapError(null);
+    startSwapTransition(async () => {
+      const result = await swapFanteamLineup({ squadId, playerAId, playerBId });
+      if (result?.error) setSwapError(result.error);
+      else setSelectedId(null);
+    });
+  }
+
   // Real legality preview: same position, budget, and FanTeam's real
   // max-3-per-club limit. The server (makeFanteamTransfer) is the source
   // of truth and re-checks all of this - this is just so illegal pool
@@ -315,6 +336,10 @@ export default function FanTeamBoard({
 
   const sortColumnLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "Pts";
 
+  // Captains score double - a simple sum, not the more elaborate
+  // auto-sub-probability-weighted total used elsewhere.
+  const projectedPoints = squad.filter((p) => p.isStarting).reduce((sum, p) => sum + (p.score ?? 0) * (p.isCaptain ? 2 : 1), 0);
+
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
       <div className="mx-auto max-w-7xl">
@@ -322,10 +347,11 @@ export default function FanTeamBoard({
           ← Back to main menu
         </Link>
 
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
           <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
           <StatBox label="Bank" value={`£${bank.toFixed(1)}m`} />
           <StatBox label="Team Value" value={`£${teamValue.toFixed(1)}m`} />
+          <StatBox label="Projected Points" value={projectedPoints.toFixed(1)} />
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
             <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Wildcard</p>
             <p className="mt-0.5 text-sm font-semibold text-white">
@@ -384,8 +410,9 @@ export default function FanTeamBoard({
         {selectedPlayer && (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-700 bg-sky-950/40 px-4 py-2.5">
             <p className="text-sm text-sky-200">
-              Transferring out <span className="font-semibold text-white">{selectedPlayer.full_name}</span> - pick a same-position
-              replacement. Next transfer: <span className="font-semibold text-white">{costPreview}</span>
+              <span className="font-semibold text-white">{selectedPlayer.full_name}</span> selected - pick a same-position
+              replacement below to transfer, or click a highlighted {selectedPlayer.isStarting ? "bench" : "starting"} player on
+              the pitch to sub instead. Next transfer: <span className="font-semibold text-white">{costPreview}</span>
             </p>
             <div className="flex items-center gap-3">
               {wildcardOfferable && (
@@ -407,6 +434,7 @@ export default function FanTeamBoard({
           </div>
         )}
         {transferError && <p className="mt-2 text-xs text-red-400">{transferError}</p>}
+        {swapError && <p className="mt-2 text-xs text-red-400">{swapError}</p>}
         {benchError && <p className="mt-2 text-xs text-red-400">{benchError}</p>}
         {formationError && <p className="mt-2 text-xs text-red-400">{formationError}</p>}
 
@@ -470,8 +498,19 @@ export default function FanTeamBoard({
               starting={starters}
               bench={bench}
               selectedId={selectedId}
-              swappableIds={null}
-              onSelect={(p) => (isTransferPending ? undefined : setSelectedId(p.game_player_id === selectedId ? null : p.game_player_id))}
+              swappableIds={selectedPlayer ? legalSwapIds : null}
+              onSelect={(p) => {
+                if (isTransferPending || isSwapPending) return;
+                if (p.game_player_id === selectedId) {
+                  setSelectedId(null);
+                  return;
+                }
+                if (selectedPlayer && legalSwapIds.has(p.game_player_id)) {
+                  handleSwapLineup(selectedPlayer.game_player_id, p.game_player_id);
+                  return;
+                }
+                setSelectedId(p.game_player_id);
+              }}
               onReorderBench={isBenchPending ? undefined : handleReorderBench}
             />
           </div>

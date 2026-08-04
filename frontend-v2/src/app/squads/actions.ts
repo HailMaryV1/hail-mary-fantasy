@@ -5,6 +5,26 @@ import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
 
 type Booster = "goal_bonus" | "twelfth_man" | "max_captain";
+type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
+
+/**
+ * Real rule: captain/vice-captain must be in the starting XI (enforced
+ * at pick time by setFanteamCaptain). A lineup change (manual sub or
+ * formation switch) can legitimately bench whoever currently holds
+ * either role - clears it rather than leaving a stale pick pointing at
+ * a benched player, since guessing a replacement isn't this action's
+ * job.
+ */
+async function clearInvalidCaptaincy(supabase: Supabase, squadId: number, benchedGamePlayerIds: Set<number>) {
+  const { data: squad } = await supabase.from("squads").select("captain_game_player_id, vice_captain_game_player_id").eq("id", squadId).single();
+  if (!squad) return;
+  const patch: Record<string, null> = {};
+  if (squad.captain_game_player_id !== null && benchedGamePlayerIds.has(squad.captain_game_player_id)) patch.captain_game_player_id = null;
+  if (squad.vice_captain_game_player_id !== null && benchedGamePlayerIds.has(squad.vice_captain_game_player_id)) patch.vice_captain_game_player_id = null;
+  if (Object.keys(patch).length > 0) {
+    await supabase.from("squads").update(patch).eq("id", squadId);
+  }
+}
 
 /**
  * A real like-for-like transfer (out one squad player, in one pool
@@ -495,22 +515,25 @@ export async function setFanteamFormation({ squadId, formationCode }: { squadId:
     }
   }
 
-  const updates: { id: number; is_starting: boolean; bench_order: number | null }[] = [];
+  const updates: { id: number; game_player_id: number; is_starting: boolean; bench_order: number | null }[] = [];
   for (const pos of ["GK", "DEF", "MID", "FWD"] as const) {
     byPosition[pos].forEach((p, i) => {
-      if (i < quota[pos]) updates.push({ id: p.id, is_starting: true, bench_order: null });
-      else if (pos === "GK") updates.push({ id: p.id, is_starting: false, bench_order: null });
+      if (i < quota[pos]) updates.push({ id: p.id, game_player_id: p.game_player_id, is_starting: true, bench_order: null });
+      else if (pos === "GK") updates.push({ id: p.id, game_player_id: p.game_player_id, is_starting: false, bench_order: null });
     });
   }
   const outfieldBench = (["DEF", "MID", "FWD"] as const)
     .flatMap((pos) => byPosition[pos].slice(quota[pos]))
     .sort((a, b) => b.score - a.score);
-  outfieldBench.forEach((p, i) => updates.push({ id: p.id, is_starting: false, bench_order: i + 1 }));
+  outfieldBench.forEach((p, i) => updates.push({ id: p.id, game_player_id: p.game_player_id, is_starting: false, bench_order: i + 1 }));
 
   for (const u of updates) {
     const { error } = await supabase.from("squad_players").update({ is_starting: u.is_starting, bench_order: u.bench_order }).eq("id", u.id);
     if (error) return { error: error.message };
   }
+
+  const benchedIds = new Set(updates.filter((u) => !u.is_starting).map((u) => u.game_player_id));
+  await clearInvalidCaptaincy(supabase, squadId, benchedIds);
 
   revalidatePath(`/squads/${squadId}`);
   return { success: true };
@@ -573,6 +596,55 @@ export async function setFanteamCaptain({
     captain_game_player_id: captainGamePlayerId,
     vice_captain_game_player_id: viceCaptainGamePlayerId,
   });
+
+  revalidatePath(`/squads/${squadId}`);
+  return { success: true };
+}
+
+/**
+ * Manually swaps one starting-XI player for one same-position bench
+ * player - a real sub, not a transfer (no budget/club-limit check, no
+ * change to which 15 players are owned, no cost). A same-position swap
+ * always preserves the current formation's GK/DEF/MID/FWD counts
+ * automatically, so no formation re-validation is needed either. The
+ * two players simply trade is_starting and bench_order wholesale - the
+ * promoted player takes on the demoted player's old bench slot (or lack
+ * of one, for GK<->GK).
+ */
+export async function swapFanteamLineup({ squadId, playerAId, playerBId }: { squadId: number; playerAId: number; playerBId: number }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+
+  const { data: squad } = await supabase.from("squads").select("id, user_id").eq("id", squadId).single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: rows } = await supabase
+    .from("squad_players")
+    .select("id, game_player_id, is_starting, bench_order, game_players(players(position))")
+    .eq("squad_id", squadId)
+    .in("game_player_id", [playerAId, playerBId])
+    .returns<{ id: number; game_player_id: number; is_starting: boolean; bench_order: number | null; game_players: { players: { position: string } } }[]>();
+  if (!rows || rows.length !== 2) return { error: "Couldn't find both players." };
+
+  const a = rows.find((r) => r.game_player_id === playerAId)!;
+  const b = rows.find((r) => r.game_player_id === playerBId)!;
+  if (a.game_players.players.position !== b.game_players.players.position) {
+    return { error: "Can only swap players in the same position." };
+  }
+  if (a.is_starting === b.is_starting) {
+    return { error: "One player must be starting and the other on the bench." };
+  }
+
+  const { error: errA } = await supabase.from("squad_players").update({ is_starting: b.is_starting, bench_order: b.bench_order }).eq("id", a.id);
+  if (errA) return { error: errA.message };
+  const { error: errB } = await supabase.from("squad_players").update({ is_starting: a.is_starting, bench_order: a.bench_order }).eq("id", b.id);
+  if (errB) return { error: errB.message };
+
+  const demoted = a.is_starting ? a.game_player_id : b.game_player_id;
+  await clearInvalidCaptaincy(supabase, squadId, new Set([demoted]));
 
   revalidatePath(`/squads/${squadId}`);
   return { success: true };
