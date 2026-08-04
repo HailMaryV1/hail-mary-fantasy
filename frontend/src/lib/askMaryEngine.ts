@@ -7,6 +7,7 @@ import { type FixtureDifficultyRow } from "@/lib/fixtureRuns";
 import { deriveTeamFixtureRatings, type TeamFixtureRating } from "@/lib/fixtureSwing";
 import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "@/lib/playerStatus";
 import { buildFormByGamePlayerId, type FormStatus } from "@/lib/hailMaryForm";
+import { getMatchDaysForSquad, resolveAutoPick } from "@/lib/matchDayCaptains";
 import {
   transferCost as fanteamTransferCost,
   isWildcardActive as fanteamIsWildcardActive,
@@ -188,6 +189,18 @@ type WorkingSquadPlayer = {
 
 type CaptaincyPick = { game_player_id: number; full_name: string; team_name: string; score: number; lineup: string | null };
 
+// Cloud FF's real captain rule - one captain per calendar match-day, not
+// per gameweek (see migration 0083's docstring) - additive to bestCaptain/
+// viceCaptain below, which keep serving every other game's real single-
+// captain-per-gameweek rule unchanged. Only ever populated for cloudff.
+export type MatchDayCaptainPick = {
+  matchDate: string;
+  gameweek: number;
+  captain: { game_player_id: number; full_name: string; team_name: string; score: number } | null;
+  vice: { game_player_id: number; full_name: string; team_name: string; score: number } | null;
+  autoPicked: boolean;
+};
+
 export type AskMaryAnalysis = {
   squadPlayers: {
     game_player_id: number;
@@ -218,6 +231,7 @@ export type AskMaryAnalysis = {
   targetPlan: TargetPlanResult | null;
   bestCaptain: CaptaincyPick | null;
   viceCaptain: CaptaincyPick | null;
+  captainsByMatchDay: MatchDayCaptainPick[];
   health: SquadHealthReport;
   monitorList: {
     gamePlayerId: number;
@@ -1692,6 +1706,36 @@ export async function runAskMaryAnalysis(
   const bestCaptain = captaincyPool[0] ?? null;
   const viceCaptain = captaincyPool[1] ?? null;
 
+  // Cloud FF's real captain rule - one per match-day, not per gameweek
+  // (see MatchDayCaptainPick's own comment above). bestCaptain/viceCaptain
+  // above are untouched and keep serving every other game's picker.
+  let captainsByMatchDay: MatchDayCaptainPick[] = [];
+  if (isCloudFF && planningGameweek !== null) {
+    const matchDays = await getMatchDaysForSquad(
+      supabase,
+      fanteamGame.id,
+      squad.id,
+      planningGameweek,
+      planningGameweek + GAMEWEEK_PLAN_LENGTH - 1
+    );
+    captainsByMatchDay = matchDays.map((day) => {
+      const auto = resolveAutoPick(day);
+      const ranked = day.eligiblePlayers
+        .map((p) => ({ game_player_id: p.gamePlayerId, full_name: p.fullName, team_name: p.teamName, score: avgForCaptain(p.gamePlayerId) }))
+        .sort((a, b) => b.score - a.score);
+      const captain = auto
+        ? { game_player_id: auto.captain.gamePlayerId, full_name: auto.captain.fullName, team_name: auto.captain.teamName, score: avgForCaptain(auto.captain.gamePlayerId) }
+        : (ranked[0] ?? null);
+      return {
+        matchDate: day.matchDate,
+        gameweek: day.gameweek,
+        captain,
+        vice: auto ? null : (ranked[1] ?? null),
+        autoPicked: auto !== null,
+      };
+    });
+  }
+
   // Players to Monitor uses a 5-GW window, independent of the gameweek
   // plan's own step-by-step scoring.
   const planningHorizonForNarrative = 5;
@@ -1861,6 +1905,7 @@ export async function runAskMaryAnalysis(
     targetPlan,
     bestCaptain,
     viceCaptain,
+    captainsByMatchDay,
     health,
     monitorList,
   };
