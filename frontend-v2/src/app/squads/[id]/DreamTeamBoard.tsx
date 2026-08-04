@@ -125,6 +125,9 @@ export default function DreamTeamBoard({
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
   const [maxValue, setMaxValue] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<SortBy>("pts");
+  const [teamFilter, setTeamFilter] = useState<string>("ALL");
+
+  const teams = Array.from(new Set(pool.map((p) => p.team_name))).sort();
 
   function statTextFor(p: { score: number | null }): string {
     switch (displayMode) {
@@ -186,10 +189,13 @@ export default function DreamTeamBoard({
     .filter(
       (p) =>
         (posFilter === "ALL" || p.position === posFilter) &&
+        (teamFilter === "ALL" || p.team_name === teamFilter) &&
         (search === "" || p.full_name.toLowerCase().includes(search.toLowerCase())) &&
         (maxValue === null || p.price <= maxValue)
     )
     .sort((a, b) => sortValue(b, sortBy) - sortValue(a, sortBy));
+
+  const sortColumnLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "Pts";
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
@@ -316,6 +322,18 @@ export default function DreamTeamBoard({
             </div>
             <div className="mt-2 flex flex-wrap gap-2">
               <select
+                value={teamFilter}
+                onChange={(e) => setTeamFilter(e.target.value)}
+                className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+              >
+                <option value="ALL">All clubs</option>
+                {teams.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+              <select
                 value={maxValue ?? ""}
                 onChange={(e) => setMaxValue(e.target.value === "" ? null : Number(e.target.value))}
                 className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
@@ -351,7 +369,7 @@ export default function DreamTeamBoard({
                 <thead>
                   <tr className="text-navy-500">
                     <th className="pb-2 pr-2 font-medium">Player</th>
-                    <th className="pb-2 pr-2 font-medium">Pts</th>
+                    <th className="pb-2 pr-2 font-medium">{sortColumnLabel}</th>
                     {Array.from({ length: 6 }, (_, i) => (
                       <th key={i} className="px-1 pb-2 text-center font-medium">
                         GW{planningGameweek + i}
@@ -377,7 +395,9 @@ export default function DreamTeamBoard({
                             {p.team_name} · {p.position} · £{p.price.toFixed(1)}m
                           </div>
                         </td>
-                        <td className="py-1.5 pr-2 text-sky-400">{p.score != null ? p.score.toFixed(1) : "-"}</td>
+                        <td className="py-1.5 pr-2 text-sky-400">
+                          {sortBy === "pts" ? (p.score != null ? p.score.toFixed(1) : "-") : sortValue(p, sortBy).toFixed(2)}
+                        </td>
                         {p.fixtures.slice(0, 6).map((f, i) => (
                           <td key={i} className="px-1 py-1.5 text-center">
                             {f ? (
