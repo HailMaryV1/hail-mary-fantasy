@@ -21,8 +21,28 @@ both endpoints are confirmed live, unauthenticated JSON:
         vocabulary - reused directly by import_cloudff.py rather than a
         separately-guessed mapping.
 
-No login needed for either - matches the pattern already established for
-FanTeam's own player-pool pull (scraper_fanteam.py).
+    GET https://europe-west2-cloudfantasy-449312.cloudfunctions.net/getPlayerStats?startGW=1&endGW=1000
+        -> [{"id", "TotalPoints", "TotalSavesPts", "TotalTacklePts",
+             "TotalAccuratePassPts", "TotalOnTargetScoringAttPts",
+             "TotalGoals", "TotalAssists", "TotalOwnGoals",
+             "TotalMissedPenalties", "TotalMinutesPlayed",
+             "TotalGoalsConceded", "TotalPenaltySaves", "TotalCleanSheets",
+             "TotalSaves", "TotalTackles", "TotalAccuratePasses",
+             "TotalOnTargetAttempts", "TotalYellowCards", "TotalRedCards",
+             "TotalStartingXI", "TotalSubs", "Ownership", ...}, ...]
+        This is Cloud FF's real "Bonus Points System" - the SavePts/
+        TklPts/PassPts/SOTPts tiers cloud-ff.co.uk/stats displays per
+        player, already pre-tiered into point totals by Cloud FF's own
+        backend (not raw counts needing a step-function on our side).
+        Confirmed live, unauthenticated, season-cumulative with
+        startGW=1&endGW=1000. Also confirmed to genuinely support
+        narrower windows (?startGW=5&endGW=5 returns real single-
+        gameweek totals, not the season total truncated) - see
+        scripts/capture_gameweek_actuals.py for the per-gameweek pull
+        this same endpoint feeds.
+
+No login needed for any of these - matches the pattern already established
+for FanTeam's own player-pool pull (scraper_fanteam.py).
 
 RUN:
     python3 scraper_cloudff.py
@@ -35,6 +55,7 @@ ROOT = Path(__file__).resolve().parent
 
 PLAYER_LIST_URL = "https://europe-west2-cloudfantasy-449312.cloudfunctions.net/getPlayerList"
 FIXTURES_URL = "https://storage.googleapis.com/cloudfixtures/fixtures.json"
+PLAYER_STATS_URL = "https://europe-west2-cloudfantasy-449312.cloudfunctions.net/getPlayerStats?startGW=1&endGW=1000"
 
 
 def fetch_json(url):
@@ -51,6 +72,10 @@ def main():
     fixtures = fetch_json(FIXTURES_URL)
     (ROOT / "cloudff_fixtures_raw.json").write_text(json.dumps(fixtures, indent=2))
     print(f"Saved {len(fixtures)} real fixtures to cloudff_fixtures_raw.json")
+
+    player_stats = fetch_json(PLAYER_STATS_URL)
+    (ROOT / "cloudff_player_stats_raw.json").write_text(json.dumps(player_stats, indent=2))
+    print(f"Saved {len(player_stats)} real player stat totals to cloudff_player_stats_raw.json")
 
 
 if __name__ == "__main__":

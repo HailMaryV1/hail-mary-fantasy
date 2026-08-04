@@ -147,6 +147,14 @@ STAT_COLUMNS = {
     "big_chance_created": "big_chance_created",
     "tackle": "tackle",
     "penalty_miss": "penalty_miss",
+    # Cloud FF-only stats (migration 0082) - raw-only, same pattern as
+    # big_chance_created/tackle above. Harmless no-ops for every other
+    # game: no matching game_scoring_rules row means these always
+    # contribute 0 there (see price_projected_stats).
+    "save_pts": "save_pts",
+    "tackle_pts": "tackle_pts",
+    "pass_pts": "pass_pts",
+    "sot_pts": "sot_pts",
 }
 # How each stat's per-90 rate gets fixture-adjusted.
 #   "attack": scaled by attack_score / neutral_attack
@@ -176,6 +184,10 @@ STAT_FIXTURE_MODE = {
     "big_chance_created": "attack",  # same driver as goal/assist/shot_on_target
     "tackle": "pressure",  # more defensive workload against stronger attacks, same bucket as save
     "penalty_miss": "flat",  # rare event, no fixture signal predicts it - same treatment as cards
+    "save_pts": "pressure",  # same bucket as save/tackle - a keeper facing more shots earns more save points
+    "tackle_pts": "pressure",  # same bucket as tackle - more defensive workload against stronger attacks
+    "pass_pts": "attack",  # same driver as goal/assist/shot_on_target
+    "sot_pts": "attack",  # same driver as goal/assist/shot_on_target
 }
 # goals_conceded_per_2's point value in the matrix is "per 2 conceded" -
 # our projected rate is per single goal, so halve it before pricing.
@@ -217,6 +229,22 @@ RAW_STAT_ALIASES = {
         "ppm_claim": "claims",
         "ppm_punch": "punches",
         "ppm_keeper_sweep": "keeperSweeps",
+    },
+    # Cloud FF's own real per-player season totals (getPlayerStats - see
+    # scraper_cloudff.py) are pulled in by seed_cloudff_historical_stats.py
+    # using these exact raw_stats key names. shots_on_target/own_goal/
+    # penalty_save don't need an entry here - that script deliberately
+    # writes them under FanTeam's own "SOT"/"ownGoals"/"penaltySaves" key
+    # names, so the hardcoded SQL ->> extracts above already pick them up
+    # with zero alias needed. penalty_miss DOES need one - it already has
+    # a real seeded game_scoring_rules row (-2, migration 0073) but was
+    # silently fed 0.0 with no cloudff alias to read it from.
+    "cloudff": {
+        "penalty_miss": "penaltyMisses",
+        "save_pts": "savePts",
+        "tackle_pts": "tacklePts",
+        "pass_pts": "passPts",
+        "sot_pts": "sotPts",
     },
 }
 
@@ -2089,6 +2117,17 @@ def main():
                 "big_chance_created": aliased.get("big_chance_created", 0.0),
                 "tackle": aliased.get("tackle", 0.0),
                 "penalty_miss": aliased.get("penalty_miss", 0.0),
+                # Cloud FF's real "Bonus Points System" (save/tackle/pass/
+                # shot-on-target tiers) - already pre-tiered into point
+                # totals by Cloud FF's own backend (see scraper_cloudff.py
+                # and seed_cloudff_historical_stats.py), so these are
+                # summed straight through at 1 point per unit in
+                # game_scoring_rules rather than re-derived from raw
+                # counts. 0.0 for any game without a matching alias.
+                "save_pts": aliased.get("save_pts", 0.0),
+                "tackle_pts": aliased.get("tackle_pts", 0.0),
+                "pass_pts": aliased.get("pass_pts", 0.0),
+                "sot_pts": aliased.get("sot_pts", 0.0),
                 # Bonus Points PPM components (Section 3.2.4.4) - see
                 # compute_bonus_points(). 0.0 for any game without a
                 # matching alias.
