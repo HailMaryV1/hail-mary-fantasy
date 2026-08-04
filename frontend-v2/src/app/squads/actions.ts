@@ -196,3 +196,159 @@ export async function recordSubstitute({
   revalidatePath(`/squads/${squadId}`);
   return { success: true };
 }
+
+// FanTeam's real transfer economy: 1 free transfer per gameweek, -4
+// points per transfer beyond that, waived entirely for a gameweek where
+// a wildcard is active. Distinct from Dream Team's hard-cap-no-hit model
+// (makeTransfer above) - a different game, a different real rule.
+const FANTEAM_TRANSFER_HIT_COST = -4;
+
+function fanteamWildcardWindow(gameweek: number): "wc1" | "wc2" | null {
+  if (gameweek >= 2 && gameweek <= 19) return "wc1";
+  if (gameweek >= 20 && gameweek <= 38) return "wc2";
+  return null;
+}
+
+type FanteamSquadPlayerRow = {
+  id: number;
+  game_player_id: number;
+  is_starting: boolean;
+  game_players: { price: number; players: { position: string; team_id: number } };
+};
+
+/**
+ * A real like-for-like FanTeam transfer (out one squad player, in one
+ * pool player of the same position), enforcing FanTeam's real rules:
+ * £100m budget, max 3 players per club, and the free-transfer/-4pt/
+ * wildcard cost economy. Pre-season (before this game's real gameweek 1
+ * kicks off) is free and unlimited, same convention as Dream Team's
+ * makeTransfer.
+ *
+ * NOTE: "+1 free transfer per gameweek" accrual is NOT implemented here
+ * - a known, real gap (see the old frontend's migration 0022 docstring
+ * and this project's GW1 launch checklist) - free_transfers only ever
+ * goes down via this action, never up, until a live "a new gameweek has
+ * started" trigger exists to build that against.
+ */
+export async function makeFanteamTransfer({
+  squadId,
+  outGamePlayerId,
+  inGamePlayerId,
+  useWildcard,
+}: {
+  squadId: number;
+  outGamePlayerId: number;
+  inGamePlayerId: number;
+  useWildcard: boolean;
+}) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+
+  const { data: squad } = await supabase
+    .from("squads")
+    .select("id, user_id, game_id, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek")
+    .eq("id", squadId)
+    .single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: rules } = await supabase.from("game_squad_rules").select("budget, max_per_club").eq("game_id", squad.game_id).single();
+  if (!rules) return { error: "No squad rules configured for this game." };
+
+  const { data: squadPlayers } = await supabase
+    .from("squad_players")
+    .select("id, game_player_id, is_starting, game_players(price, players(position, team_id))")
+    .eq("squad_id", squadId)
+    .returns<FanteamSquadPlayerRow[]>();
+  if (!squadPlayers) return { error: "Couldn't load squad." };
+
+  const outgoing = squadPlayers.find((r) => r.game_player_id === outGamePlayerId);
+  if (!outgoing) return { error: "That player isn't in this squad." };
+  if (squadPlayers.some((r) => r.game_player_id === inGamePlayerId)) return { error: "That player is already in this squad." };
+
+  const { data: incoming } = await supabase
+    .from("game_players")
+    .select("id, price, is_active, players(position, team_id)")
+    .eq("id", inGamePlayerId)
+    .single<{ id: number; price: number; is_active: boolean; players: { position: string; team_id: number } }>();
+  if (!incoming || !incoming.is_active) return { error: "That player isn't available." };
+  if (incoming.players.position !== outgoing.game_players.players.position) {
+    return { error: "Replacement must be the same position." };
+  }
+
+  const currentTotal = squadPlayers.reduce((sum, r) => sum + Number(r.game_players.price), 0);
+  const newTotal = currentTotal - Number(outgoing.game_players.price) + Number(incoming.price);
+  if (newTotal > Number(rules.budget)) {
+    return { error: `That transfer costs £${newTotal.toFixed(1)}m, over the £${Number(rules.budget).toFixed(1)}m budget.` };
+  }
+
+  if (rules.max_per_club) {
+    const clubCounts = new Map<number, number>();
+    for (const r of squadPlayers) {
+      if (r.game_player_id === outGamePlayerId) continue;
+      clubCounts.set(r.game_players.players.team_id, (clubCounts.get(r.game_players.players.team_id) ?? 0) + 1);
+    }
+    const newClubCount = (clubCounts.get(incoming.players.team_id) ?? 0) + 1;
+    if (newClubCount > rules.max_per_club) {
+      return { error: `Max ${rules.max_per_club} players allowed from the same club.` };
+    }
+  }
+
+  const { seasonStarted, planningGameweek } = await getSeasonTiming(supabase, squad.game_id);
+
+  let costPoints = 0;
+  let usedWildcard = false;
+  let newFreeTransfers = squad.free_transfers;
+  const squadUpdate: Record<string, number> = {};
+
+  if (seasonStarted && planningGameweek !== null) {
+    const wildcardAlreadyActive = squad.wildcard_1_used_gameweek === planningGameweek || squad.wildcard_2_used_gameweek === planningGameweek;
+
+    if (wildcardAlreadyActive) {
+      usedWildcard = true;
+    } else if (useWildcard) {
+      const window = fanteamWildcardWindow(planningGameweek);
+      if (window === "wc1" && squad.wildcard_1_used_gameweek === null) {
+        squadUpdate.wildcard_1_used_gameweek = planningGameweek;
+      } else if (window === "wc2" && squad.wildcard_2_used_gameweek === null) {
+        squadUpdate.wildcard_2_used_gameweek = planningGameweek;
+      } else {
+        return { error: "No wildcard is available to use this gameweek (wrong window or already used)." };
+      }
+      usedWildcard = true;
+      newFreeTransfers = 0;
+    } else if (squad.free_transfers > 0) {
+      newFreeTransfers = squad.free_transfers - 1;
+    } else {
+      costPoints = FANTEAM_TRANSFER_HIT_COST;
+    }
+  }
+
+  const { error: deleteError } = await supabase.from("squad_players").delete().eq("squad_id", squadId).eq("game_player_id", outGamePlayerId);
+  if (deleteError) return { error: deleteError.message };
+
+  const { error: insertError } = await supabase
+    .from("squad_players")
+    .insert({ squad_id: squadId, game_player_id: inGamePlayerId, is_starting: outgoing.is_starting });
+  if (insertError) return { error: insertError.message };
+
+  const { error: squadError } = await supabase
+    .from("squads")
+    .update({ ...squadUpdate, free_transfers: newFreeTransfers })
+    .eq("id", squadId);
+  if (squadError) return { error: squadError.message };
+
+  await supabase.from("squad_transfers").insert({
+    squad_id: squadId,
+    gameweek: planningGameweek ?? 1,
+    out_game_player_id: outGamePlayerId,
+    in_game_player_id: inGamePlayerId,
+    cost_points: costPoints,
+    used_wildcard: usedWildcard,
+  });
+
+  revalidatePath(`/squads/${squadId}`);
+  return { success: true, costPoints };
+}

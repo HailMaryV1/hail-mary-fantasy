@@ -1,0 +1,461 @@
+"use client";
+
+import { useState, useTransition } from "react";
+import Link from "next/link";
+import PitchView, { type PitchPlayer } from "@/components/PitchView";
+import { makeFanteamTransfer } from "../actions";
+
+export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
+
+export type BoardPlayer = {
+  game_player_id: number;
+  full_name: string;
+  position: "GK" | "DEF" | "MID" | "FWD";
+  team_name: string;
+  team_id: number;
+  price: number;
+  score: number | null;
+  isCaptain: boolean;
+  isViceCaptain: boolean;
+  isStarting: boolean;
+  // Real bench priority (1/2/3 for the 3 outfield reserves, null for
+  // starters and the single reserve GK - a 15-man squad only ever has
+  // one bench GK, so there's nothing to order there).
+  benchOrder: number | null;
+  fixtures: (FixtureTile | null)[];
+  goalProjected: number;
+  assistProjected: number;
+  bonusProjected: number;
+};
+
+export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain" | "isStarting" | "benchOrder">;
+
+type DisplayMode = "next1" | "next2" | "next3" | "pts" | "pred";
+type SortBy = "pts" | "goals" | "assists" | "bonus";
+
+const SORT_OPTIONS: [SortBy, string][] = [
+  ["pts", "Pts"],
+  ["goals", "Goals"],
+  ["assists", "Assists"],
+  ["bonus", "Bonus"],
+];
+const VALUE_BANDS = [4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 9, 10, 12, 14];
+
+function sortValue(p: PoolPlayer, sortBy: SortBy): number {
+  switch (sortBy) {
+    case "goals":
+      return p.goalProjected;
+    case "assists":
+      return p.assistProjected;
+    case "bonus":
+      return p.bonusProjected;
+    case "pts":
+    default:
+      return p.score ?? -Infinity;
+  }
+}
+
+// attack_score is 0-1, higher = a better attacking fixture (easier) for
+// that team - same tiering used on the Dream Team board.
+function difficultyColor(d: number): string {
+  if (d >= 0.6) return "bg-emerald-600";
+  if (d >= 0.45) return "bg-emerald-800";
+  if (d >= 0.35) return "bg-navy-700";
+  if (d >= 0.25) return "bg-amber-800";
+  return "bg-red-800";
+}
+
+function fixtureTilesFor(tiles: (FixtureTile | null)[], count: number): { label: string; colorClass: string }[] {
+  return tiles
+    .slice(0, count)
+    .filter((t): t is FixtureTile => t !== null)
+    .map((t) => ({
+      label: t.isHome ? t.opponentAbbr : t.opponentAbbr.toLowerCase(),
+      colorClass: difficultyColor(t.difficulty),
+    }));
+}
+
+// FanTeam's real wildcard windows (WC1: gameweeks 2-19, WC2: 20-38) -
+// mirrors the same real constants enforced server-side in
+// makeFanteamTransfer, duplicated here only for the client-side
+// availability preview (fixed real-world gameweek ranges, not
+// application logic that can drift).
+function wildcardWindowFor(gameweek: number): "wc1" | "wc2" | null {
+  if (gameweek >= 2 && gameweek <= 19) return "wc1";
+  if (gameweek >= 20 && gameweek <= 38) return "wc2";
+  return null;
+}
+
+export default function FanTeamBoard({
+  squadId,
+  squadName,
+  transfers,
+  bank,
+  teamValue,
+  planningGameweek,
+  wildcard1UsedGameweek,
+  wildcard2UsedGameweek,
+  maxPerClub,
+  seasonStarted,
+  squad,
+  pool,
+}: {
+  squadId: number;
+  squadName: string;
+  transfers: number;
+  bank: number;
+  teamValue: number;
+  planningGameweek: number;
+  wildcard1UsedGameweek: number | null;
+  wildcard2UsedGameweek: number | null;
+  maxPerClub: number;
+  seasonStarted: boolean;
+  squad: BoardPlayer[];
+  pool: PoolPlayer[];
+}) {
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [useWildcard, setUseWildcard] = useState(false);
+  const [isTransferPending, startTransferTransition] = useTransition();
+  const [transferError, setTransferError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
+  const [teamFilter, setTeamFilter] = useState<string>("ALL");
+  const [maxValue, setMaxValue] = useState<number | null>(null);
+  const [sortBy, setSortBy] = useState<SortBy>("pts");
+
+  const teams = Array.from(new Set(pool.map((p) => p.team_name))).sort();
+
+  const wildcardWindow = wildcardWindowFor(planningGameweek);
+  const wildcardActiveThisGameweek = wildcard1UsedGameweek === planningGameweek || wildcard2UsedGameweek === planningGameweek;
+  const wc1Available = wildcardWindow === "wc1" && wildcard1UsedGameweek === null;
+  const wc2Available = wildcardWindow === "wc2" && wildcard2UsedGameweek === null;
+  const wildcardOfferable = seasonStarted && !wildcardActiveThisGameweek && (wc1Available || wc2Available);
+
+  function statTextFor(p: { score: number | null }): string {
+    switch (displayMode) {
+      case "pred":
+        return p.score != null ? `${p.score >= 0 ? "+" : ""}${p.score.toFixed(1)}` : "-";
+      case "pts":
+      default:
+        return p.score != null ? `${p.score.toFixed(1)} pts` : "-";
+    }
+  }
+
+  const fixtureModeCount: Record<string, number> = { next1: 1, next2: 2, next3: 3 };
+
+  function toPitchPlayer(p: BoardPlayer): PitchPlayer {
+    return {
+      game_player_id: p.game_player_id,
+      full_name: p.full_name,
+      position: p.position,
+      team_name: p.team_name,
+      is_starting: p.isStarting,
+      price: p.price,
+      score: p.score,
+      isCaptain: p.isCaptain,
+      isViceCaptain: p.isViceCaptain,
+      statText: displayMode in fixtureModeCount ? undefined : statTextFor(p),
+      statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(p.fixtures, fixtureModeCount[displayMode]) : undefined,
+    };
+  }
+
+  const starters = squad.filter((p) => p.isStarting).map(toPitchPlayer);
+  // Reserve GK first (the one bench player with no benchOrder), then the
+  // 3 outfield reserves in their real priority order.
+  const bench = squad
+    .filter((p) => !p.isStarting)
+    .sort((a, b) => (a.benchOrder ?? -1) - (b.benchOrder ?? -1))
+    .map(toPitchPlayer);
+
+  // FanTeam has no hard transfer cap like Dream Team - a transfer is
+  // always allowed, just at a real cost (see costPreview below).
+  const selectedPlayer = selectedId != null ? squad.find((p) => p.game_player_id === selectedId) : undefined;
+
+  // Real legality preview: same position, budget, and FanTeam's real
+  // max-3-per-club limit. The server (makeFanteamTransfer) is the source
+  // of truth and re-checks all of this - this is just so illegal pool
+  // rows visibly dim before a doomed click.
+  const clubCounts = new Map<number, number>();
+  if (selectedPlayer) {
+    for (const p of squad) {
+      if (p.game_player_id === selectedPlayer.game_player_id) continue;
+      clubCounts.set(p.team_id, (clubCounts.get(p.team_id) ?? 0) + 1);
+    }
+  }
+  const legalPoolIds = new Set(
+    selectedPlayer
+      ? pool
+          .filter(
+            (p) =>
+              p.position === selectedPlayer.position &&
+              p.price <= bank + selectedPlayer.price &&
+              (clubCounts.get(p.team_id) ?? 0) + 1 <= maxPerClub
+          )
+          .map((p) => p.game_player_id)
+      : []
+  );
+
+  const costPreview = !seasonStarted
+    ? "Free (pre-season)"
+    : wildcardActiveThisGameweek || useWildcard
+      ? "Free (wildcard)"
+      : transfers > 0
+        ? `Free (${transfers} transfer${transfers === 1 ? "" : "s"} left)`
+        : "-4 pts (no free transfers left)";
+
+  function handleTransfer(inGamePlayerId: number) {
+    if (!selectedId) return;
+    setTransferError(null);
+    startTransferTransition(async () => {
+      const result = await makeFanteamTransfer({ squadId, outGamePlayerId: selectedId, inGamePlayerId, useWildcard });
+      if (result?.error) setTransferError(result.error);
+      else {
+        setSelectedId(null);
+        setUseWildcard(false);
+      }
+    });
+  }
+
+  const filteredPool = pool
+    .filter(
+      (p) =>
+        (posFilter === "ALL" || p.position === posFilter) &&
+        (teamFilter === "ALL" || p.team_name === teamFilter) &&
+        (search === "" || p.full_name.toLowerCase().includes(search.toLowerCase())) &&
+        (maxValue === null || p.price <= maxValue)
+    )
+    .sort((a, b) => sortValue(b, sortBy) - sortValue(a, sortBy));
+
+  const sortColumnLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "Pts";
+
+  return (
+    <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
+      <div className="mx-auto max-w-7xl">
+        <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
+          ← Back to main menu
+        </Link>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
+          <StatBox label="Bank" value={`£${bank.toFixed(1)}m`} />
+          <StatBox label="Team Value" value={`£${teamValue.toFixed(1)}m`} />
+          <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
+            <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Wildcard</p>
+            <p className="mt-0.5 text-sm font-semibold text-white">
+              {wildcardActiveThisGameweek
+                ? "Active this GW"
+                : wildcard1UsedGameweek != null && wildcard2UsedGameweek != null
+                  ? "Both used"
+                  : wc1Available || wc2Available
+                    ? "Available"
+                    : "Not in window"}
+            </p>
+          </div>
+        </div>
+
+        {selectedPlayer && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-700 bg-sky-950/40 px-4 py-2.5">
+            <p className="text-sm text-sky-200">
+              Transferring out <span className="font-semibold text-white">{selectedPlayer.full_name}</span> - pick a same-position
+              replacement. Next transfer: <span className="font-semibold text-white">{costPreview}</span>
+            </p>
+            <div className="flex items-center gap-3">
+              {wildcardOfferable && (
+                <label className="flex items-center gap-1.5 text-xs text-sky-200">
+                  <input type="checkbox" checked={useWildcard} onChange={(e) => setUseWildcard(e.target.checked)} />
+                  Use {wc1Available ? "Wildcard 1" : "Wildcard 2"}
+                </label>
+              )}
+              <button
+                onClick={() => {
+                  setSelectedId(null);
+                  setUseWildcard(false);
+                }}
+                className="text-xs font-medium text-sky-400 hover:text-sky-300"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        {transferError && <p className="mt-2 text-xs text-red-400">{transferError}</p>}
+
+        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-white">{squadName}</h2>
+              <div className="relative">
+                <button
+                  onClick={() => setOptionsOpen((o) => !o)}
+                  className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
+                >
+                  ☰ Options
+                </button>
+                {optionsOpen && (
+                  <div className="absolute right-0 top-full z-10 mt-1 w-56 rounded-xl border border-navy-700 bg-navy-900 p-2 shadow-xl">
+                    <p className="px-2 py-1 text-[10px] font-semibold uppercase text-navy-500">Show on players</p>
+                    {(
+                      [
+                        ["next1", "Next GW Fix"],
+                        ["next2", "Next 2 GW Fix"],
+                        ["next3", "Next 3 GW Fix"],
+                        ["pts", "Pts"],
+                        ["pred", `Pred +/- GW${planningGameweek}`],
+                      ] as [DisplayMode, string][]
+                    ).map(([mode, label]) => (
+                      <button
+                        key={mode}
+                        onClick={() => {
+                          setDisplayMode(mode);
+                          setOptionsOpen(false);
+                        }}
+                        className={`block w-full rounded-lg px-2 py-1.5 text-left text-xs ${
+                          displayMode === mode ? "bg-sky-500 font-medium text-navy-950" : "text-navy-200 hover:bg-navy-800"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <PitchView
+              starting={starters}
+              bench={bench}
+              selectedId={selectedId}
+              swappableIds={null}
+              onSelect={(p) => (isTransferPending ? undefined : setSelectedId(p.game_player_id === selectedId ? null : p.game_player_id))}
+            />
+          </div>
+
+          <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
+            <h2 className="text-sm font-semibold text-white">Browse all available players</h2>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(["ALL", "GK", "DEF", "MID", "FWD"] as const).map((pos) => (
+                <button
+                  key={pos}
+                  onClick={() => setPosFilter(pos)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium ${
+                    posFilter === pos ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"
+                  }`}
+                >
+                  {pos}
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <select
+                value={teamFilter}
+                onChange={(e) => setTeamFilter(e.target.value)}
+                className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+              >
+                <option value="ALL">All clubs</option>
+                {teams.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={maxValue ?? ""}
+                onChange={(e) => setMaxValue(e.target.value === "" ? null : Number(e.target.value))}
+                className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+              >
+                <option value="">All values</option>
+                {VALUE_BANDS.map((v) => (
+                  <option key={v} value={v}>
+                    £{v}m or less
+                  </option>
+                ))}
+              </select>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as SortBy)}
+                className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+              >
+                {SORT_OPTIONS.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    Sort: {label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search player..."
+              className="mt-2 w-full rounded-lg border border-navy-700 bg-navy-950 px-3 py-2 text-sm text-white placeholder:text-navy-500 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+            />
+
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-navy-500">
+                    <th className="pb-2 pr-2 font-medium">Player</th>
+                    <th className="pb-2 pr-2 font-medium">{sortColumnLabel}</th>
+                    {Array.from({ length: 6 }, (_, i) => (
+                      <th key={i} className="px-1 pb-2 text-center font-medium">
+                        GW{planningGameweek + i}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPool.slice(0, 50).map((p) => {
+                    const isLegal = legalPoolIds.has(p.game_player_id);
+                    const rowClickable = selectedPlayer && isLegal && !isTransferPending;
+                    return (
+                      <tr
+                        key={p.game_player_id}
+                        onClick={() => rowClickable && handleTransfer(p.game_player_id)}
+                        className={`border-t border-navy-800 ${
+                          selectedPlayer ? (isLegal ? "cursor-pointer bg-emerald-950/20 hover:bg-emerald-900/30" : "opacity-30") : ""
+                        }`}
+                      >
+                        <td className="py-1.5 pr-2">
+                          <div className="font-medium text-white">{p.full_name}</div>
+                          <div className="text-[10px] text-navy-500">
+                            {p.team_name} · {p.position} · £{p.price.toFixed(1)}m
+                          </div>
+                        </td>
+                        <td className="py-1.5 pr-2 text-sky-400">
+                          {sortBy === "pts" ? (p.score != null ? p.score.toFixed(1) : "-") : sortValue(p, sortBy).toFixed(2)}
+                        </td>
+                        {p.fixtures.slice(0, 6).map((f, i) => (
+                          <td key={i} className="px-1 py-1.5 text-center">
+                            {f ? (
+                              <span className={`inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(f.difficulty)}`}>
+                                {f.isHome ? f.opponentAbbr : f.opponentAbbr.toLowerCase()}
+                              </span>
+                            ) : (
+                              <span className="text-navy-700">-</span>
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {filteredPool.length > 50 && (
+                <p className="mt-2 text-center text-[10px] text-navy-500">Showing top 50 of {filteredPool.length} - narrow your search to see more.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatBox({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">{label}</p>
+      <p className="mt-0.5 text-lg font-semibold text-white">{value}</p>
+    </div>
+  );
+}

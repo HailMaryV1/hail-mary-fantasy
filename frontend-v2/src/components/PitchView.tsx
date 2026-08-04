@@ -40,11 +40,17 @@ type Formation = { gk: number; def: number; mid: number; fwd: number };
  */
 export default function PitchView({
   starting,
+  bench,
   selectedId,
   swappableIds,
   onSelect,
 }: {
   starting: PitchPlayer[];
+  // Optional - games with a real bench (FanTeam) pass their reserves here,
+  // already in real display order (reserve GK first, then outfield by
+  // bench_order); games with no bench concept (Dream Team) omit it
+  // entirely and nothing extra renders.
+  bench?: PitchPlayer[];
   selectedId: number | null;
   swappableIds: Set<number> | null;
   onSelect: (player: PitchPlayer) => void;
@@ -124,6 +130,13 @@ export default function PitchView({
           </div>
         ))}
       </div>
+
+      {bench !== undefined && bench.length > 0 && (
+        <div className="relative border-t border-white/10 bg-black/20 px-1 py-3 sm:px-3">
+          <p className="mb-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white/50">Bench</p>
+          <div className="flex justify-evenly gap-0.5 sm:gap-1">{bench.map((p) => chip(p))}</div>
+        </div>
+      )}
     </div>
   );
 }
