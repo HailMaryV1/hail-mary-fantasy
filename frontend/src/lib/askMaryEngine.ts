@@ -7,7 +7,11 @@ import { type FixtureDifficultyRow } from "@/lib/fixtureRuns";
 import { deriveTeamFixtureRatings, type TeamFixtureRating } from "@/lib/fixtureSwing";
 import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "@/lib/playerStatus";
 import { buildFormByGamePlayerId, type FormStatus } from "@/lib/hailMaryForm";
-import { transferCost, isWildcardActive, accrueFreeTransfers } from "@/lib/transferEconomy";
+import {
+  transferCost as fanteamTransferCost,
+  isWildcardActive as fanteamIsWildcardActive,
+  accrueFreeTransfers as fanteamAccrueFreeTransfers,
+} from "@/lib/transferEconomy";
 import {
   scoreMoveCandidates,
   STRATEGY_WEIGHTS,
@@ -262,6 +266,28 @@ export async function runAskMaryAnalysis(
   // site below) since it still feeds getHorizonMap and the archived
   // prediction's planning_horizon column.
   const captainHorizonGameweeks = 1;
+
+  // Cloud FF's real transfer model (50 transfers/season total + one
+  // Overhaul window, zero points penalty ever) has no home in the schema
+  // yet - no season-total-cap column exists anywhere. Mirrors
+  // executeTransfer's existing isCloudFF bypass (squads/actions.ts) here
+  // on the search side too: every transfer this engine considers for
+  // Cloud FF is treated as free and never wildcard-blocked, rather than
+  // running FanTeam's real cost function against free_transfers/wildcard
+  // columns that don't mean anything for Cloud FF. A flagged, temporary
+  // simplification, not the real model - every call below this point
+  // uses these local shadows instead of transferEconomy.ts directly, so
+  // no individual call site needs its own game-slug branch.
+  const isCloudFF = fanteamGame.slug === "cloudff";
+  function transferCost(freeTransfersRemaining: number, wildcardActive: boolean): number {
+    return isCloudFF ? 0 : fanteamTransferCost(freeTransfersRemaining, wildcardActive);
+  }
+  function isWildcardActive(gameweek: number, wildcard1UsedGameweek: number | null, wildcard2UsedGameweek: number | null): boolean {
+    return isCloudFF ? false : fanteamIsWildcardActive(gameweek, wildcard1UsedGameweek, wildcard2UsedGameweek);
+  }
+  function accrueFreeTransfers(current: number): number {
+    return isCloudFF ? current : fanteamAccrueFreeTransfers(current);
+  }
 
   // Every query below reads only the input params (fanteamGame.id,
   // fanteamGame.slug, or squad.id) - none of them depend on
