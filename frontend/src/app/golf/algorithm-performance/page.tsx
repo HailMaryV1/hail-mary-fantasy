@@ -57,72 +57,77 @@ async function fetchTeamGrades(): Promise<TeamGrade[]> {
     .not("golf_tournament_id", "is", null)
     .returns<SquadRow[]>();
 
-  const grades: TeamGrade[] = [];
+  // Each squad's grade is scoped to its own tournament_id/player ids, with
+  // no shared state across iterations - run every squad's lookup
+  // concurrently instead of one round trip at a time, then sort once at
+  // the end exactly as the original sequential loop did.
+  const gradeResults = await Promise.all(
+    (squads ?? []).map(async (squad): Promise<TeamGrade | null> => {
+      const gamePlayerIds = squad.squad_players.map((sp) => sp.game_player_id);
+      if (gamePlayerIds.length === 0) return null;
 
-  for (const squad of squads ?? []) {
-    const gamePlayerIds = squad.squad_players.map((sp) => sp.game_player_id);
-    if (gamePlayerIds.length === 0) continue;
+      const { data: preds } = await authSupabase
+        .from("golf_tournament_predictions")
+        .select("game_player_id, price, expected_points, actual_points")
+        .eq("tournament_id", squad.golf_tournament_id)
+        .in("game_player_id", gamePlayerIds)
+        .returns<PredictionGradeRow[]>();
 
-    const { data: preds } = await authSupabase
-      .from("golf_tournament_predictions")
-      .select("game_player_id, price, expected_points, actual_points")
-      .eq("tournament_id", squad.golf_tournament_id)
-      .in("game_player_id", gamePlayerIds)
-      .returns<PredictionGradeRow[]>();
+      // No frozen prediction yet for every golfer on this team (registration
+      // for that tournament hasn't closed) - nothing to grade yet, skip.
+      if (!preds || preds.length !== gamePlayerIds.length) return null;
 
-    // No frozen prediction yet for every golfer on this team (registration
-    // for that tournament hasn't closed) - nothing to grade yet, skip.
-    if (!preds || preds.length !== gamePlayerIds.length) continue;
-
-    const nameByPlayer = new Map(
-      squad.squad_players.map((sp) => [sp.game_player_id, sp.game_players?.golfers?.full_name ?? "Unknown"])
-    );
-
-    const asPlayers = (points: (p: PredictionGradeRow) => number): GolfOptimizerPlayer[] =>
-      preds.map((p) => ({
-        gamePlayerId: p.game_player_id,
-        fullName: nameByPlayer.get(p.game_player_id) ?? "Unknown",
-        price: p.price != null ? Number(p.price) : 0,
-        expectedPoints: points(p),
-        floor: 0,
-        ceiling: 0,
-        makeCutProbability: null,
-      }));
-
-    const expectedResult = computeTeamTotal(
-      asPlayers((p) => (p.expected_points != null ? Number(p.expected_points) : 0)),
-      squad.golf_captain_game_player_id
-    );
-
-    const pending = preds.some((p) => p.actual_points == null);
-    let actualTotal: number | null = null;
-    let diff: number | null = null;
-    if (!pending) {
-      // Same captain the expected-side total used (whether stored or
-      // auto-detected) - grades the team on the captain choice actually
-      // in play, rather than letting "highest scorer" silently shift to a
-      // different golfer once real results are in.
-      const actualResult = computeTeamTotal(
-        asPlayers((p) => (p.actual_points != null ? Number(p.actual_points) : 0)),
-        expectedResult.captainId
+      const nameByPlayer = new Map(
+        squad.squad_players.map((sp) => [sp.game_player_id, sp.game_players?.golfers?.full_name ?? "Unknown"])
       );
-      actualTotal = actualResult.total;
-      diff = Math.round((actualResult.total - expectedResult.total) * 100) / 100;
-    }
 
-    const tournament = squad.golf_tournaments;
-    grades.push({
-      squadId: squad.id,
-      squadName: squad.name,
-      tournamentLabel: tournament ? `${tournament.name}${tournament.event_number ? ` · GW${tournament.event_number}` : ""}` : "Unknown",
-      captainName: nameByPlayer.get(expectedResult.captainId ?? -1) ?? null,
-      expectedTotal: expectedResult.total,
-      actualTotal,
-      diff,
-      pending,
-    });
-  }
+      const asPlayers = (points: (p: PredictionGradeRow) => number): GolfOptimizerPlayer[] =>
+        preds.map((p) => ({
+          gamePlayerId: p.game_player_id,
+          fullName: nameByPlayer.get(p.game_player_id) ?? "Unknown",
+          price: p.price != null ? Number(p.price) : 0,
+          expectedPoints: points(p),
+          floor: 0,
+          ceiling: 0,
+          makeCutProbability: null,
+        }));
 
+      const expectedResult = computeTeamTotal(
+        asPlayers((p) => (p.expected_points != null ? Number(p.expected_points) : 0)),
+        squad.golf_captain_game_player_id
+      );
+
+      const pending = preds.some((p) => p.actual_points == null);
+      let actualTotal: number | null = null;
+      let diff: number | null = null;
+      if (!pending) {
+        // Same captain the expected-side total used (whether stored or
+        // auto-detected) - grades the team on the captain choice actually
+        // in play, rather than letting "highest scorer" silently shift to a
+        // different golfer once real results are in.
+        const actualResult = computeTeamTotal(
+          asPlayers((p) => (p.actual_points != null ? Number(p.actual_points) : 0)),
+          expectedResult.captainId
+        );
+        actualTotal = actualResult.total;
+        diff = Math.round((actualResult.total - expectedResult.total) * 100) / 100;
+      }
+
+      const tournament = squad.golf_tournaments;
+      return {
+        squadId: squad.id,
+        squadName: squad.name,
+        tournamentLabel: tournament ? `${tournament.name}${tournament.event_number ? ` · GW${tournament.event_number}` : ""}` : "Unknown",
+        captainName: nameByPlayer.get(expectedResult.captainId ?? -1) ?? null,
+        expectedTotal: expectedResult.total,
+        actualTotal,
+        diff,
+        pending,
+      };
+    })
+  );
+
+  const grades = gradeResults.filter((g): g is TeamGrade => g !== null);
   grades.sort((a, b) => (b.actualTotal ?? b.expectedTotal) - (a.actualTotal ?? a.expectedTotal));
   return grades;
 }

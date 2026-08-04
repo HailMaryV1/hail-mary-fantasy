@@ -59,70 +59,78 @@ export default async function ComparePage({
 
   const supabase = createServerSupabaseClient();
 
-  const players: ComparedPlayer[] = [];
-  for (const gamePlayerId of ids) {
-    const { data: gamePlayer } = await supabase
-      .from("game_players")
-      .select("fantasy_games(slug)")
-      .eq("id", gamePlayerId)
-      .maybeSingle<{ fantasy_games: { slug: string } }>();
-    if (!gamePlayer) continue;
-    const gameSlug = gamePlayer.fantasy_games.slug;
+  // Each id's lookup (game lookup + horizon RPC + a conditional fixture
+  // RPC or fallback query) is fully independent of every other id's - run
+  // them all concurrently rather than one id at a time. Promise.all
+  // preserves input order in its output array, so building `players` from
+  // the resolved results (filtering out skipped ids) lands in the same
+  // order the original sequential loop produced.
+  const playerResults = await Promise.all(
+    ids.map(async (gamePlayerId): Promise<ComparedPlayer | null> => {
+      const { data: gamePlayer } = await supabase
+        .from("game_players")
+        .select("fantasy_games(slug)")
+        .eq("id", gamePlayerId)
+        .maybeSingle<{ fantasy_games: { slug: string } }>();
+      if (!gamePlayer) return null;
+      const gameSlug = gamePlayer.fantasy_games.slug;
 
-    // .returns<T[]>() on an .rpc() chain trips postgrest-js's own
-    // "can't cast single object to array" false-positive when there's no
-    // generated Database type backing the call (not the case here) - cast
-    // the destructured data after await instead, same runtime shape.
-    const { data: horizonRowsRaw } = await supabase
-      .rpc("player_score_by_horizon", { p_game_slug: gameSlug, p_num_gameweeks: activeHorizon.gameweeks })
-      .eq("game_player_id", gamePlayerId);
-    const horizonRows = horizonRowsRaw as HorizonSummaryRow[] | null;
-    const horizonRow = horizonRows?.[0] ?? null;
+      // .returns<T[]>() on an .rpc() chain trips postgrest-js's own
+      // "can't cast single object to array" false-positive when there's no
+      // generated Database type backing the call (not the case here) - cast
+      // the destructured data after await instead, same runtime shape.
+      const { data: horizonRowsRaw } = await supabase
+        .rpc("player_score_by_horizon", { p_game_slug: gameSlug, p_num_gameweeks: activeHorizon.gameweeks })
+        .eq("game_player_id", gamePlayerId);
+      const horizonRows = horizonRowsRaw as HorizonSummaryRow[] | null;
+      const horizonRow = horizonRows?.[0] ?? null;
 
-    if (horizonRow) {
-      const { data: fixtureRowsRaw } = await supabase.rpc("player_projection_fixtures_by_horizon", {
-        p_game_player_id: gamePlayerId,
-        p_num_gameweeks: 1,
-      });
-      const fixtureRows = fixtureRowsRaw as { opponent: string; is_home: boolean }[] | null;
-      players.push({
-        gamePlayerId,
-        fullName: horizonRow.full_name,
-        position: horizonRow.position,
-        teamName: horizonRow.team_name,
-        price: horizonRow.price,
-        score: horizonRow.avg_score,
-        pointsPer90: horizonRow.points_per_90,
-        horizonAvailable: true,
-        nextFixture: fixtureRows?.[0] ? { opponent: fixtureRows[0].opponent, is_home: fixtureRows[0].is_home } : null,
-      });
-    } else {
-      const { data: summaryRow } = await supabase
-        .from("player_projection_summary")
-        .select("*")
-        .eq("game_player_id", gamePlayerId)
-        .maybeSingle<SummaryRow>();
-      if (!summaryRow) continue;
-      const { data: fixtureRows } = await supabase
-        .from("player_projection_fixtures")
-        .select("opponent, is_home")
-        .eq("game_player_id", gamePlayerId)
-        .order("kickoff_at")
-        .limit(1)
-        .returns<{ opponent: string; is_home: boolean }[]>();
-      players.push({
-        gamePlayerId,
-        fullName: summaryRow.full_name,
-        position: summaryRow.position,
-        teamName: summaryRow.team_name,
-        price: summaryRow.price,
-        score: summaryRow.hail_mary_score,
-        pointsPer90: summaryRow.points_per_90,
-        horizonAvailable: false,
-        nextFixture: fixtureRows?.[0] ?? null,
-      });
-    }
-  }
+      if (horizonRow) {
+        const { data: fixtureRowsRaw } = await supabase.rpc("player_projection_fixtures_by_horizon", {
+          p_game_player_id: gamePlayerId,
+          p_num_gameweeks: 1,
+        });
+        const fixtureRows = fixtureRowsRaw as { opponent: string; is_home: boolean }[] | null;
+        return {
+          gamePlayerId,
+          fullName: horizonRow.full_name,
+          position: horizonRow.position,
+          teamName: horizonRow.team_name,
+          price: horizonRow.price,
+          score: horizonRow.avg_score,
+          pointsPer90: horizonRow.points_per_90,
+          horizonAvailable: true,
+          nextFixture: fixtureRows?.[0] ? { opponent: fixtureRows[0].opponent, is_home: fixtureRows[0].is_home } : null,
+        };
+      } else {
+        const { data: summaryRow } = await supabase
+          .from("player_projection_summary")
+          .select("*")
+          .eq("game_player_id", gamePlayerId)
+          .maybeSingle<SummaryRow>();
+        if (!summaryRow) return null;
+        const { data: fixtureRows } = await supabase
+          .from("player_projection_fixtures")
+          .select("opponent, is_home")
+          .eq("game_player_id", gamePlayerId)
+          .order("kickoff_at")
+          .limit(1)
+          .returns<{ opponent: string; is_home: boolean }[]>();
+        return {
+          gamePlayerId,
+          fullName: summaryRow.full_name,
+          position: summaryRow.position,
+          teamName: summaryRow.team_name,
+          price: summaryRow.price,
+          score: summaryRow.hail_mary_score,
+          pointsPer90: summaryRow.points_per_90,
+          horizonAvailable: false,
+          nextFixture: fixtureRows?.[0] ?? null,
+        };
+      }
+    })
+  );
+  const players: ComparedPlayer[] = playerResults.filter((p): p is ComparedPlayer => p !== null);
 
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
