@@ -47,7 +47,16 @@ function StepHeader({ step, furthestReached, onJump }: { step: number; furthestR
   );
 }
 
-export default function TournamentBuilder() {
+export default function TournamentBuilder({
+  existingTournaments,
+}: {
+  // Lets step 1 be bypassed for a tournament that's already been
+  // imported (by this wizard, or manually) - necessary since step 2/3
+  // are otherwise unreachable whenever a fresh import fails (e.g.
+  // FanTeam's player-pool endpoint currently rejects unauthenticated
+  // requests - see golf/import/actions.ts's importGolfTournament).
+  existingTournaments: { id: number; fanteamTournamentId: string; name: string }[];
+}) {
   const [step, setStep] = useState(1);
   const [furthestReached, setFurthestReached] = useState(1);
   const [tournament, setTournament] = useState<Tournament | null>(null);
@@ -73,6 +82,11 @@ export default function TournamentBuilder() {
   function goTo(n: number) {
     setStep(n);
     setFurthestReached((f) => Math.max(f, n));
+  }
+
+  function handleContinueExisting(t: { id: number; fanteamTournamentId: string; name: string }) {
+    setTournament({ id: t.id, fanteamId: t.fanteamTournamentId, name: t.name });
+    goTo(2);
   }
 
   function handleImportSubmit(e: React.FormEvent) {
@@ -188,6 +202,26 @@ export default function TournamentBuilder() {
               >
                 Continue to odds →
               </button>
+            </div>
+          )}
+
+          {existingTournaments.length > 0 && (
+            <div className="mt-6 border-t border-navy-800 pt-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-navy-500">Already imported</p>
+              <p className="mt-1 text-xs text-navy-400">Skip straight to odds/compute for a tournament that&apos;s already in the system.</p>
+              <div className="mt-2 flex flex-col gap-2">
+                {existingTournaments.slice(0, 5).map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => handleContinueExisting(t)}
+                    className="flex items-center justify-between rounded-lg border border-navy-700 bg-navy-900 px-3 py-2 text-left text-sm text-navy-200 transition-colors hover:border-sky-500 hover:bg-navy-800"
+                  >
+                    {t.name}
+                    <span className="text-xs font-medium text-sky-400">Continue →</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
