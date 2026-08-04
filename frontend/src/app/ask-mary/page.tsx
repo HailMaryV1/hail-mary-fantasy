@@ -55,7 +55,7 @@ export default async function AskMaryPage({
   const { data: squadsRaw } = await supabase
     .from("squads")
     .select(
-      "id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, preferred_strategy, preferred_captain_horizon"
+      "id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, goal_bonus_used_gameweek, twelfth_man_used_gameweek, max_captain_used_gameweek, preferred_strategy, preferred_captain_horizon"
     )
     .eq("user_id", user.id)
     .eq("game_id", fanteamGame.id)
@@ -215,7 +215,7 @@ export default async function AskMaryPage({
     );
   }
 
-  const { bestCaptain, viceCaptain, captainsByMatchDay, health, gameweekPlan, favouredMoves, monitorList, hasCalendar, seasonStarted } = analysis;
+  const { bestCaptain, viceCaptain, captainsByMatchDay, boosterAdvice, health, gameweekPlan, favouredMoves, monitorList, hasCalendar, seasonStarted } = analysis;
 
   // Captain/vice-captain only ever considers players already flagged
   // is_starting (askMaryEngine.ts's captaincyPool) - but a starting XI
@@ -376,6 +376,29 @@ export default async function AskMaryPage({
                         </div>
                       </>
                     )}
+                  </div>
+                )}
+
+                {fanteamGame.slug === "dreamteam" && boosterAdvice.length > 0 && (
+                  <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
+                    <h3 className="text-sm font-semibold text-white">Should you play a Booster?</h3>
+                    <p className="mt-1 text-xs text-navy-500">
+                      Each of your 3 season Boosters can only be used once - ranked by projected value for this
+                      gameweek.
+                    </p>
+                    <div className="mt-3 flex flex-col gap-2">
+                      {boosterAdvice.map((b) => (
+                        <div key={b.booster} className="rounded-lg border border-navy-800 bg-navy-950 p-2 text-sm">
+                          <div className="flex items-center justify-between">
+                            <span className={b.alreadyUsed ? "text-navy-500 line-through" : "text-white"}>{b.label}</span>
+                            {!b.alreadyUsed && <span className="text-sky-400">+{b.expectedGain.toFixed(1)} pts</span>}
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-navy-400">
+                            {b.alreadyUsed ? "Already used this season." : b.reasoning}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

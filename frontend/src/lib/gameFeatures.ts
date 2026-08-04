@@ -29,7 +29,13 @@ export type GameFeatureSet = {
 
 export const GAME_FEATURES: Record<string, GameFeatureSet> = {
   fanteam: { rankings: true, fixtures: true, activity: true, askMary: true, performanceLab: true, hailMaryForm: true, engineExplain: true },
-  dreamteam: { rankings: true, fixtures: true, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: true },
+  // Ask Mary + Performance Lab turned on now that Dream Team has a real
+  // gameweek calendar (copied from FanTeam's, see import_dreamteam.py)
+  // and askMaryEngine.ts models its real budget/transfer/booster rules
+  // (see transferEconomy.ts's dreamteam* functions, boosterAdvice.ts).
+  // hailMaryForm stays off - no capture pipeline runs against Dream
+  // Team's calendar yet.
+  dreamteam: { rankings: true, fixtures: true, activity: false, askMary: true, performanceLab: true, hailMaryForm: false, engineExplain: true },
   "nfl-fanteam": { rankings: true, fixtures: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: false },
   // Ask Mary + Performance Lab verified against Cloud FF's real rules
   // (11-player squad no bench, £100m budget, always-free transfer

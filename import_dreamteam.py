@@ -167,7 +167,7 @@ def import_players(cur, game_id, players_data):
     last_team_change_by_id: dict[int, datetime] = {row[0]: row[1] for row in cur.fetchall()}
 
     team_id_cache: dict[str, int] = {}
-    matched, created, ambiguous, updated_team, status_written, new_canonical_player = 0, 0, 0, 0, 0, 0
+    matched, created, ambiguous, updated_team, status_written, new_canonical_player, price_changes = 0, 0, 0, 0, 0, 0, 0
     seen_external_ids = set()
 
     for p in players_data:
@@ -303,7 +303,7 @@ def import_players(cur, game_id, players_data):
             # confirmed on a second run.
             cur.execute("update players set pending_team_id = null, pending_team_seen_at = null where id = %s", (player_id,))
 
-        cur.execute("select id from game_players where game_id = %s and player_id = %s", (game_id, player_id))
+        cur.execute("select id, price from game_players where game_id = %s and player_id = %s", (game_id, player_id))
         row = cur.fetchone()
         external_id = p["id"]
         seen_external_ids.add(external_id)
@@ -314,11 +314,23 @@ def import_players(cur, game_id, players_data):
         # expects "STR".
         native_position = p["position"]
         if row:
-            game_player_id = row[0]
+            game_player_id, old_price = row
             cur.execute(
                 "update game_players set external_id = %s, position_code = %s, price = %s, is_active = true, updated_at = now() where id = %s",
                 (external_id, native_position, p["price"], game_player_id),
             )
+            # Dream Team's own backend already applies its real ±£0.3m/GW
+            # price-update rule (section 1.2.5.6) server-side - this just
+            # logs the change it already made, the same way team_changed
+            # logs a real transfer rather than deciding one happened.
+            if old_price is not None and float(old_price) != float(p["price"]):
+                direction = "risen" if float(p["price"]) > float(old_price) else "fallen"
+                price_changes += 1
+                log_event(
+                    cur, "price_changed", f"{canonical_name} has {direction} to £{p['price']}m (was £{old_price}m)",
+                    game_id=game_id, game_player_id=game_player_id,
+                    details={"player_id": player_id, "old_price": float(old_price), "new_price": float(p["price"])},
+                )
         else:
             log_event(
                 cur, "player_added", f"{canonical_name} added to Dream Team ({native_position})",
@@ -340,7 +352,7 @@ def import_players(cur, game_id, players_data):
     print(
         f"Players: {matched} matched, {new_canonical_player} new canonical players created, "
         f"{ambiguous} unmatched/ambiguous (skipped). {status_written} game_players rows written "
-        f"({created} newly linked). {updated_team} team changes committed."
+        f"({created} newly linked). {updated_team} team changes, {price_changes} price changes committed."
     )
 
     cur.execute("select external_id from game_players where game_id = %s and is_active = true", (game_id,))

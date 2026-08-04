@@ -45,3 +45,29 @@ export function transferCost(freeTransfersRemaining: number, wildcardActive: boo
   if (wildcardActive) return 0;
   return freeTransfersRemaining > 0 ? 0 : TRANSFER_HIT_COST;
 }
+
+// Dream Team's real transfer economy (from the user's own copy of Dream
+// Team's official rules, section 1.2.5.2): 2 transfers per gameweek,
+// rolling over unused ones up to a max of 6 - confirmed hard-capped, no
+// point-cost-per-extra-transfer mechanism exists like FanTeam's (the user
+// confirmed this directly rather than it being inferred from the rules
+// text, which is silent on what happens past the cap). No wildcard
+// concept either.
+export const DREAMTEAM_STARTING_FREE_TRANSFERS = 2;
+export const DREAMTEAM_MAX_BANKED_FREE_TRANSFERS = 6;
+
+export function dreamteamAccrueFreeTransfers(current: number): number {
+  return Math.min(current + DREAMTEAM_STARTING_FREE_TRANSFERS, DREAMTEAM_MAX_BANKED_FREE_TRANSFERS);
+}
+
+/**
+ * A hard cap has no "cost above the cap," so -Infinity is used rather
+ * than a real point value - this plugs straight into every existing
+ * netGain = expectedGain + cost calculation in askMaryEngine.ts (see
+ * e.g. singleNetGain) so an over-the-cap transfer is never chosen,
+ * without that search logic needing a separate "is this even legal"
+ * branch of its own.
+ */
+export function dreamteamTransferCost(freeTransfersRemaining: number): number {
+  return freeTransfersRemaining > 0 ? 0 : -Infinity;
+}

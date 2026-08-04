@@ -53,7 +53,9 @@ export default async function FundATargetPage({
 
   const { data: squadsRaw } = await supabase
     .from("squads")
-    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek")
+    .select(
+      "id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, goal_bonus_used_gameweek, twelfth_man_used_gameweek, max_captain_used_gameweek"
+    )
     .eq("user_id", user.id)
     .eq("game_id", fanteamGame.id)
     .order("created_at", { ascending: false });

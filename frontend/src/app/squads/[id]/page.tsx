@@ -73,7 +73,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
   const { data: squad } = await supabase
     .from("squads")
     .select(
-      "id, name, user_id, game_id, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, captain_game_player_id, vice_captain_game_player_id, preferred_strategy, preferred_captain_horizon, fantasy_games(id, slug, display_name)"
+      "id, name, user_id, game_id, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, goal_bonus_used_gameweek, twelfth_man_used_gameweek, max_captain_used_gameweek, captain_game_player_id, vice_captain_game_player_id, preferred_strategy, preferred_captain_horizon, fantasy_games(id, slug, display_name)"
     )
     .eq("id", squadId)
     .single();

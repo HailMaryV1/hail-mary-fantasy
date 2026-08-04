@@ -8,10 +8,13 @@ import { deriveTeamFixtureRatings, type TeamFixtureRating } from "@/lib/fixtureS
 import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "@/lib/playerStatus";
 import { buildFormByGamePlayerId, type FormStatus } from "@/lib/hailMaryForm";
 import { getMatchDaysForSquad, resolveAutoPick } from "@/lib/matchDayCaptains";
+import { evaluateGoalBonus, evaluateTwelfthMan, evaluateMaxCaptain, rankBoosters, type BoosterOption, type XIProjection, type PoolProjection } from "@/lib/boosterAdvice";
 import {
   transferCost as fanteamTransferCost,
   isWildcardActive as fanteamIsWildcardActive,
   accrueFreeTransfers as fanteamAccrueFreeTransfers,
+  dreamteamTransferCost,
+  dreamteamAccrueFreeTransfers,
 } from "@/lib/transferEconomy";
 import {
   scoreMoveCandidates,
@@ -232,6 +235,7 @@ export type AskMaryAnalysis = {
   bestCaptain: CaptaincyPick | null;
   viceCaptain: CaptaincyPick | null;
   captainsByMatchDay: MatchDayCaptainPick[];
+  boosterAdvice: BoosterOption[];
   health: SquadHealthReport;
   monitorList: {
     gamePlayerId: number;
@@ -266,6 +270,9 @@ export async function runAskMaryAnalysis(
     free_transfers: number;
     wildcard_1_used_gameweek?: number | null;
     wildcard_2_used_gameweek?: number | null;
+    goal_bonus_used_gameweek?: number | null;
+    twelfth_man_used_gameweek?: number | null;
+    max_captain_used_gameweek?: number | null;
   },
   fanteamGame: { id: number; display_name: string; slug: string },
   activeStrategy: Strategy,
@@ -293,14 +300,23 @@ export async function runAskMaryAnalysis(
   // uses these local shadows instead of transferEconomy.ts directly, so
   // no individual call site needs its own game-slug branch.
   const isCloudFF = fanteamGame.slug === "cloudff";
+  // Dream Team's real transfer economy (transferEconomy.ts's dreamteam*
+  // functions - see that file's docstring): a hard cap, never a points
+  // hit, and no wildcard concept at all.
+  const isDreamTeam = fanteamGame.slug === "dreamteam";
   function transferCost(freeTransfersRemaining: number, wildcardActive: boolean): number {
-    return isCloudFF ? 0 : fanteamTransferCost(freeTransfersRemaining, wildcardActive);
+    if (isCloudFF) return 0;
+    if (isDreamTeam) return dreamteamTransferCost(freeTransfersRemaining);
+    return fanteamTransferCost(freeTransfersRemaining, wildcardActive);
   }
   function isWildcardActive(gameweek: number, wildcard1UsedGameweek: number | null, wildcard2UsedGameweek: number | null): boolean {
-    return isCloudFF ? false : fanteamIsWildcardActive(gameweek, wildcard1UsedGameweek, wildcard2UsedGameweek);
+    if (isCloudFF || isDreamTeam) return false;
+    return fanteamIsWildcardActive(gameweek, wildcard1UsedGameweek, wildcard2UsedGameweek);
   }
   function accrueFreeTransfers(current: number): number {
-    return isCloudFF ? current : fanteamAccrueFreeTransfers(current);
+    if (isCloudFF) return current;
+    if (isDreamTeam) return dreamteamAccrueFreeTransfers(current);
+    return fanteamAccrueFreeTransfers(current);
   }
 
   // Every query below reads only the input params (fanteamGame.id,
@@ -1736,6 +1752,70 @@ export async function runAskMaryAnalysis(
     });
   }
 
+  // Dream Team's 3 real season Boosters (section 1.2.5.8) - see
+  // boosterAdvice.ts for what each one's expectedGain actually means
+  // (Goal Bonus/12th Man are real expected-value math, Max Captain is a
+  // deliberately labelled heuristic, not a real points estimate).
+  let boosterAdvice: BoosterOption[] = [];
+  if (isDreamTeam && planningGameweek !== null && bestCaptain) {
+    const startingSquadPlayers = squadPlayers.filter((p) => p.is_starting);
+    const startingXIIds = new Set(startingSquadPlayers.map((p) => p.game_player_id));
+
+    const { data: goalRows } = await supabase
+      .from("player_projection_summary")
+      .select("game_player_id, inputs")
+      .in("game_player_id", Array.from(startingXIIds))
+      .eq("gameweek", planningGameweek);
+    const goalProjectedById = new Map<number, number>();
+    for (const row of goalRows ?? []) {
+      const fixtures = (row.inputs as { fixtures?: { stats?: { goal?: { projected?: number } } }[] } | null)?.fixtures ?? [];
+      const total = fixtures.reduce((sum, f) => sum + (f.stats?.goal?.projected ?? 0), 0);
+      goalProjectedById.set(row.game_player_id, total);
+    }
+
+    const startingXI: XIProjection[] = startingSquadPlayers.map((p) => ({
+      game_player_id: p.game_player_id,
+      full_name: p.full_name,
+      isCaptain: p.game_player_id === bestCaptain.game_player_id,
+      goalProjected: goalProjectedById.get(p.game_player_id) ?? 0,
+      projectedScore: avgFor(captainScoreMap, p.game_player_id),
+    }));
+    const poolCandidates: PoolProjection[] = pool.map((p) => ({
+      game_player_id: p.game_player_id,
+      full_name: p.full_name,
+      projectedScore: avgFor(captainScoreMap, p.game_player_id),
+    }));
+    const captainProjected = avgFor(captainScoreMap, bestCaptain.game_player_id);
+
+    const goalBonus = evaluateGoalBonus(startingXI);
+    const twelfthMan = evaluateTwelfthMan(poolCandidates, startingXIIds);
+    const maxCaptain = evaluateMaxCaptain(startingXI, captainProjected);
+
+    boosterAdvice = rankBoosters([
+      {
+        booster: "goal_bonus",
+        label: "Goal Bonus",
+        alreadyUsed: squad.goal_bonus_used_gameweek != null,
+        expectedGain: goalBonus.gain,
+        reasoning: goalBonus.reasoning,
+      },
+      {
+        booster: "twelfth_man",
+        label: "12th Man",
+        alreadyUsed: squad.twelfth_man_used_gameweek != null,
+        expectedGain: twelfthMan.gain,
+        reasoning: twelfthMan.reasoning,
+      },
+      {
+        booster: "max_captain",
+        label: "Max Captain",
+        alreadyUsed: squad.max_captain_used_gameweek != null,
+        expectedGain: maxCaptain.gain,
+        reasoning: maxCaptain.reasoning,
+      },
+    ]);
+  }
+
   // Players to Monitor uses a 5-GW window, independent of the gameweek
   // plan's own step-by-step scoring.
   const planningHorizonForNarrative = 5;
@@ -1961,6 +2041,7 @@ export async function runAskMaryAnalysis(
     bestCaptain,
     viceCaptain,
     captainsByMatchDay,
+    boosterAdvice,
     health,
     monitorList,
   };
