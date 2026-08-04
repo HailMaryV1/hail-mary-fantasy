@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSquadStatuses } from "@/lib/squadStatus";
 
 // See rankings/page.tsx for why this is needed - Supabase's .rpc() POSTs
 // to a fixed URL regardless of parameters, so Next's fetch Data Cache can
@@ -20,10 +19,19 @@ export default async function GatewayPage() {
   const { data: rulesRows } = await supabase.from("game_squad_rules").select("game_id");
   const configuredGameIds = new Set((rulesRows ?? []).map((r) => r.game_id));
 
-  const statuses = await getSquadStatuses(supabase, user.id);
-  const squadCountByGameSlug = new Map<string, number>();
-  for (const s of statuses) {
-    squadCountByGameSlug.set(s.gameSlug, (squadCountByGameSlug.get(s.gameSlug) ?? 0) + 1);
+  // Deliberately NOT getSquadStatuses (see lib/squadStatus.ts) - this page
+  // only ever needs a per-game squad COUNT, but that helper does a full
+  // sequential per-squad loop (budget calc + a real player_score_by_horizon
+  // RPC call, one round trip at a time) meant for pages that actually show
+  // that richer detail (games/[slug]/page.tsx, squads/page.tsx). Confirmed
+  // live (2026-08-03) this was the real cause of a slow-feeling landing
+  // page - 16 real squads meant ~40 sequential DB round trips, including
+  // real scoring computation, just to render "3 squads" as plain text. One
+  // cheap query, no RPC, no per-squad loop.
+  const { data: squadGameIds } = await supabase.from("squads").select("game_id").eq("user_id", user.id);
+  const squadCountByGameId = new Map<number, number>();
+  for (const row of squadGameIds ?? []) {
+    squadCountByGameId.set(row.game_id, (squadCountByGameId.get(row.game_id) ?? 0) + 1);
   }
 
   return (
@@ -37,7 +45,7 @@ export default async function GatewayPage() {
         <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
           {(games ?? []).map((g) => {
             const isConfigured = configuredGameIds.has(g.id);
-            const squadCount = squadCountByGameSlug.get(g.slug) ?? 0;
+            const squadCount = squadCountByGameId.get(g.id) ?? 0;
             return (
               <Link
                 key={g.id}
