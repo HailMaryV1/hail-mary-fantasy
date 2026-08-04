@@ -105,17 +105,6 @@ export default async function GolfTeamPage({
       });
   }
 
-  let watchedIds: number[] = [];
-  if (user && game) {
-    const { data: watched } = await supabase
-      .from("watchlist_entries")
-      .select("game_player_id")
-      .eq("user_id", user.id)
-      .eq("game_id", game.id)
-      .returns<{ game_player_id: number }[]>();
-    watchedIds = (watched ?? []).map((w) => w.game_player_id);
-  }
-
   let savedTeams: { id: number; name: string; players: string[] }[] = [];
   if (tournament && user) {
     const { data: squads } = await supabase
@@ -172,7 +161,6 @@ export default async function GolfTeamPage({
             budget={Number(rules.budget)}
             savedTeams={savedTeams}
             isLoggedIn={!!user}
-            watchedIds={watchedIds}
           />
         )}
       </main>

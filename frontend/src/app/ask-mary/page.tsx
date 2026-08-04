@@ -5,7 +5,6 @@ import type { Strategy } from "@/lib/recommendationScoring";
 import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
 import GameweekPlanRow from "./GameweekPlanRow";
 import FavouredMoveCard from "./FavouredMoveCard";
-import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
 import GameSecondaryNav from "../GameSecondaryNav";
 
 // RPC results depend on the chosen horizon/strategy/squad but Supabase's
@@ -46,7 +45,7 @@ export default async function AskMaryPage({
   const { data: squadsRaw } = await supabase
     .from("squads")
     .select(
-      "id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, preferred_strategy, preferred_captain_horizon, is_scratch"
+      "id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, preferred_strategy, preferred_captain_horizon"
     )
     .eq("user_id", user.id)
     .eq("game_id", fanteamGame.id)
@@ -144,7 +143,6 @@ export default async function AskMaryPage({
           }`}
         >
           {s.name}
-          {s.is_scratch && <span className="ml-1 text-navy-500">(test)</span>}
         </Link>
       ))}
     </div>
@@ -310,7 +308,7 @@ export default async function AskMaryPage({
                   <p className="text-sm text-navy-400">No gameweek calendar published yet to build a plan from.</p>
                 ) : (
                   gameweekPlan.map((step) => (
-                    <GameweekPlanRow key={step.offset} step={step} squadId={selectedSquad.id} gameId={fanteamGame.id} gameSlug="fanteam" />
+                    <GameweekPlanRow key={step.offset} step={step} squadId={selectedSquad.id} gameSlug="fanteam" />
                   ))
                 )}
 
@@ -351,14 +349,6 @@ export default async function AskMaryPage({
                       {p.position} · {p.teamName} · £{p.price.toFixed(1)}m · HMS {p.hailMaryScore != null ? p.hailMaryScore.toFixed(1) : "-"}
                     </p>
                     <p className="mt-0.5 text-[11px] text-emerald-400">Fixture swing begins GW{p.startsInGameweek}</p>
-                    <div className="mt-1.5">
-                      <AskMaryWatchlistButton
-                        gameId={fanteamGame.id}
-                        gamePlayerId={p.gamePlayerId}
-                        defaultReasons={["fixture_swing"]}
-                        notes={`Added from ASK MARY - positive fixture swing begins GW${p.startsInGameweek}.`}
-                      />
-                    </div>
                   </div>
                 ))}
               </div>

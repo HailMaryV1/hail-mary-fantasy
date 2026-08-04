@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabase";
-import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import GolfRankingsTable, { type GolfRankingRow } from "./GolfRankingsTable";
 import { computeTop20MarketGaps } from "@/lib/golfValuePicks";
 
@@ -17,24 +16,6 @@ export default async function GolfRankingsPage({
   const supabase = createServerSupabaseClient();
 
   const { data: game } = await supabase.from("fantasy_games").select("id").eq("slug", "fanteam-golf").maybeSingle<{ id: number }>();
-
-  // Separate auth-aware client just for "who's logged in, what have they
-  // starred" - the rest of this page's data is public and stays on the
-  // anon client above.
-  const authClient = await createAuthServerClient();
-  const {
-    data: { user },
-  } = await authClient.auth.getUser();
-  let watched: { gamePlayerId: number; entryId: number }[] = [];
-  if (user && game) {
-    const { data } = await authClient
-      .from("watchlist_entries")
-      .select("id, game_player_id")
-      .eq("user_id", user.id)
-      .eq("game_id", game.id)
-      .returns<{ id: number; game_player_id: number }[]>();
-    watched = (data ?? []).map((w) => ({ gamePlayerId: w.game_player_id, entryId: w.id }));
-  }
 
   let tournament: TournamentRow | null = null;
   if (game) {
@@ -135,9 +116,7 @@ export default async function GolfRankingsPage({
           </p>
         )}
 
-        {tournament && rows.length > 0 && (
-          <GolfRankingsTable data={rows} gameId={game!.id} watched={watched} isLoggedIn={!!user} />
-        )}
+        {tournament && rows.length > 0 && <GolfRankingsTable data={rows} />}
       </main>
     </div>
   );

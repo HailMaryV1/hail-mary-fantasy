@@ -488,7 +488,6 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
           <div className="mt-6">
             <LineupBuilder
               squadId={squad.id}
-              gameId={game.id}
               startingSize={rules.starting_size}
               formations={formations ?? []}
               players={players}
@@ -537,7 +536,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
 
           {game.slug === "fanteam" && (
             <div className="mt-10">
-              <MaryRecommendationsPanel squadId={squad.id} gameId={game.id} gameSlug={game.slug} analysis={analysis} />
+              <MaryRecommendationsPanel squadId={squad.id} gameSlug={game.slug} analysis={analysis} />
             </div>
           )}
 

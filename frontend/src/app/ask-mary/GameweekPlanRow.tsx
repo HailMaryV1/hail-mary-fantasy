@@ -3,7 +3,6 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { applyRecommendation } from "../squads/actions";
-import AskMaryWatchlistButton from "./AskMaryWatchlistButton";
 import FormPill from "../FormPill";
 import type { GameweekPlanStep, BundleTransfer } from "@/lib/askMaryEngine";
 
@@ -24,12 +23,10 @@ const RISK_TONE: Record<BundleTransfer["risk"], string> = {
 export default function GameweekPlanRow({
   step,
   squadId,
-  gameId,
   gameSlug,
 }: {
   step: GameweekPlanStep;
   squadId: number;
-  gameId: number;
   gameSlug: string;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -123,12 +120,6 @@ export default function GameweekPlanRow({
                       <span>Gain: {t.pointsGain >= 0 ? "+" : ""}{t.pointsGain.toFixed(1)} pts</span>
                       <span>Cost: {t.costPoints === 0 ? "free" : `${t.costPoints} pts`}</span>
                       <span>Mary Move Score: {t.overall}/100</span>
-                      <AskMaryWatchlistButton
-                        gameId={gameId}
-                        gamePlayerId={t.inGamePlayerId}
-                        defaultReasons={["buy_target"]}
-                        notes={`Added from ASK MARY - GW${step.gameweek} plan. ${t.reasons[0]?.text ?? ""}`.trim()}
-                      />
                     </div>
                     {t.alternatives && t.alternatives.length > 0 && (
                       <p className="mt-1 text-xs text-sky-300">

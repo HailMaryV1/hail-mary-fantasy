@@ -17,12 +17,10 @@ import GameweekPlanRow from "@/app/ask-mary/GameweekPlanRow";
  */
 export default function MaryRecommendationsPanel({
   squadId,
-  gameId,
   gameSlug,
   analysis,
 }: {
   squadId: number;
-  gameId: number;
   gameSlug: string;
   analysis: AskMaryAnalysis | null;
 }) {
@@ -38,7 +36,7 @@ export default function MaryRecommendationsPanel({
       </div>
       <div className="mt-2 flex flex-col gap-2">
         {analysis.gameweekPlan.map((step) => (
-          <GameweekPlanRow key={step.offset} step={step} squadId={squadId} gameId={gameId} gameSlug={gameSlug} />
+          <GameweekPlanRow key={step.offset} step={step} squadId={squadId} gameSlug={gameSlug} />
         ))}
         <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
           <h3 className="text-sm font-semibold text-white">Captain &amp; Vice-Captain</h3>

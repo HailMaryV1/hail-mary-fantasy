@@ -6,9 +6,9 @@ import NflSquadBuilder from "./NflSquadBuilder";
 export default async function NewSquadPage({
   searchParams,
 }: {
-  searchParams: Promise<{ game?: string; squad?: string; scratch?: string }>;
+  searchParams: Promise<{ game?: string; squad?: string }>;
 }) {
-  const { game: gameSlug, squad: squadParam, scratch: scratchParam } = await searchParams;
+  const { game: gameSlug, squad: squadParam } = await searchParams;
   // Cloud FF is deliberately NOT offered as a creation option anywhere in
   // the UI (real rule: "You can create one team only," and the real team
   // already exists via provider sync - a create button here would risk a
@@ -16,7 +16,6 @@ export default async function NewSquadPage({
   // only so the "Edit squad" link on the synced squad's own card
   // (/squads/new?game=cloudff&squad=23) works instead of dead-ending.
   if (gameSlug !== "dreamteam" && gameSlug !== "fanteam" && gameSlug !== "nfl-fanteam" && gameSlug !== "cloudff") redirect("/squads");
-  const isScratch = scratchParam === "1";
 
   const supabase = await createAuthServerClient();
 
@@ -74,17 +73,12 @@ export default async function NewSquadPage({
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-3xl">
         <h1 className="text-2xl font-semibold text-white">
-          {editingSquadId ? `Edit ${initialName}` : isScratch ? `Build a test squad to analyse` : `Build your ${game.display_name} squad`}
+          {editingSquadId ? `Edit ${initialName}` : `Build your ${game.display_name} squad`}
         </h1>
         <p className="mt-1 text-sm text-navy-300">
           £{Number(rules.budget).toFixed(0)}m budget · {rules.squad_size} players
           {rules.max_per_club ? ` · max ${rules.max_per_club} per club` : ""}
         </p>
-        {isScratch && !editingSquadId && (
-          <p className="mt-2 text-sm text-amber-400">
-            This won&apos;t show up as a real team - it&apos;s for testing an alternative squad through Ask Mary only.
-          </p>
-        )}
 
         <div className="mt-6">
           {gameSlug === "nfl-fanteam" ? (
@@ -104,7 +98,6 @@ export default async function NewSquadPage({
               editingSquadId={editingSquadId}
               initialName={initialName}
               initialSelected={initialSelected}
-              isScratch={isScratch}
             />
           )}
         </div>

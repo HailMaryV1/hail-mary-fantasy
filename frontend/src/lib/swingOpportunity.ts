@@ -70,9 +70,9 @@ function normalize(value: number, min: number, max: number): number {
 /**
  * Scores every candidate against the whole pool passed in (league-wide,
  * not per-club) so the same score is comparable across clubs - this is
- * what makes the service reusable by both the per-club Fixture Swing
- * Panel and the cross-club Watchlist page, rather than one baked into
- * each page separately. Missing data (no calendar yet, no historical
+ * what makes the service reusable across every per-club Fixture Swing
+ * Panel instance, rather than one baked into each page separately.
+ * Missing data (no calendar yet, no historical
  * rate) is treated as the pool's own minimum for that factor rather than
  * excluding the candidate - "fail open," matching this codebase's
  * established pattern (compute_projections.py's status_multiplier

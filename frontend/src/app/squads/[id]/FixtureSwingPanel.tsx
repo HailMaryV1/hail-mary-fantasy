@@ -208,7 +208,6 @@ export default async function FixtureSwingPanel({
         strip={strip}
         recs={recs}
         noRecsMessage={noRecsMessage}
-        gameId={gameId}
       />
     );
   }

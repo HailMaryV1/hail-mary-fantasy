@@ -52,7 +52,7 @@ export default async function FundATargetPage({
 
   const { data: squadsRaw } = await supabase
     .from("squads")
-    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, is_scratch")
+    .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek")
     .eq("user_id", user.id)
     .eq("game_id", fanteamGame.id)
     .order("created_at", { ascending: false });
@@ -116,7 +116,6 @@ export default async function FundATargetPage({
                 }`}
               >
                 {s.name}
-                {s.is_scratch && <span className="ml-1 text-navy-500">(test)</span>}
               </Link>
             ))}
           </div>

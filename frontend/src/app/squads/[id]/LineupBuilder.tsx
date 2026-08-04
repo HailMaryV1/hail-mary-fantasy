@@ -2,7 +2,6 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { saveLineup, saveTeamForGameweek, applyRecommendation } from "../actions";
-import { addToWatchlist } from "@/app/watchlist/actions";
 import { findLegalReplacementsForOutgoing, type TransferCandidate } from "@/lib/transferMatching";
 import PitchView from "../PitchView";
 import PlayerActionMenu, { type PlayerAction } from "../PlayerActionMenu";
@@ -89,7 +88,6 @@ function toCandidate(player: Player): TransferCandidate {
 
 export default function LineupBuilder({
   squadId,
-  gameId,
   startingSize,
   formations,
   players,
@@ -102,7 +100,6 @@ export default function LineupBuilder({
   seasonGameweeks,
 }: {
   squadId: number;
-  gameId: number;
   startingSize: number;
   formations: Formation[];
   players: Player[];
@@ -448,19 +445,6 @@ export default function LineupBuilder({
     applyTransfer(player.game_player_id, candidates[0].candidate.gamePlayerId);
   }
 
-  function handleWatchlist(player: Player) {
-    setActionError(null);
-    startActionTransition(async () => {
-      const result = await addToWatchlist({
-        gameId,
-        gamePlayerId: player.game_player_id,
-        reasons: ["sell_watch"],
-        notes: "Added from My Team.",
-      });
-      if (result?.error) setActionError(result.error);
-    });
-  }
-
   const menuActions: PlayerAction[] = menuPlayer
     ? [
         { label: "Swap (starting ↔ bench)", onClick: () => setSelectedForSwapId(menuPlayer.game_player_id) },
@@ -473,7 +457,6 @@ export default function LineupBuilder({
           },
         },
         { label: "Remove Player", onClick: () => handleRemove(menuPlayer), disabled: isActionPending },
-        { label: "Add to Watchlist", onClick: () => handleWatchlist(menuPlayer), disabled: isActionPending },
       ]
     : [];
 
@@ -584,7 +567,7 @@ export default function LineupBuilder({
       <p className="mb-2 text-xs text-navy-400">
         {selectedForSwapId !== null
           ? "Pick a highlighted player to complete the swap - any swap that leaves a valid formation is allowed, not just same-position."
-          : "Tap a player for options - swap, transfer, remove, or add to your watchlist."}
+          : "Tap a player for options - swap, transfer, or remove."}
       </p>
 
       <PitchView

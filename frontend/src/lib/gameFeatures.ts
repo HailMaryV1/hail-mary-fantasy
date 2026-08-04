@@ -2,16 +2,15 @@
 // deliberately explicit rather than assuming every game has every
 // feature. Dream Team has no live scrape source (a longstanding,
 // documented gap elsewhere in this app) so Ask Mary/Performance Lab/
-// Watchlist/Activity would just be empty or misleading there. NFL FanTeam
+// Activity would just be empty or misleading there. NFL FanTeam
 // has real 2025 historical stats and squad-building now (Stage 1-3), but
 // no live tournament/fixture schedule yet (the next one opens close to
-// the 2026-27 season, ~Sept 2026) - so fixtures/watchlist/activity/Ask
+// the 2026-27 season, ~Sept 2026) - so fixtures/activity/Ask
 // Mary/Performance Lab, which all assume an in-season data source, stay
 // off until that exists.
 export type GameFeatureSet = {
   rankings: boolean;
   fixtures: boolean;
-  watchlist: boolean;
   activity: boolean;
   askMary: boolean;
   performanceLab: boolean;
@@ -29,22 +28,21 @@ export type GameFeatureSet = {
 };
 
 export const GAME_FEATURES: Record<string, GameFeatureSet> = {
-  fanteam: { rankings: true, fixtures: true, watchlist: true, activity: true, askMary: true, performanceLab: true, hailMaryForm: true, engineExplain: true },
-  dreamteam: { rankings: true, fixtures: true, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: true },
-  "nfl-fanteam": { rankings: true, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: false },
+  fanteam: { rankings: true, fixtures: true, activity: true, askMary: true, performanceLab: true, hailMaryForm: true, engineExplain: true },
+  dreamteam: { rankings: true, fixtures: true, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: true },
+  "nfl-fanteam": { rankings: true, fixtures: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: false },
   // Cloud FF frontend wiring is intentionally minimal for now (see
   // supabase/migrations/0079_cloudff_squad_rules.sql commit) - only
-  // Player Rankings is being turned on. Fixtures/Watchlist/Activity/Ask
+  // Player Rankings is being turned on. Fixtures/Activity/Ask
   // Mary/Performance Lab/Engine Validation are all real, working features
   // elsewhere, but none have been built or verified against Cloud FF's
   // real rules yet, so they stay off rather than show something untested.
-  cloudff: { rankings: true, fixtures: false, watchlist: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: false },
+  cloudff: { rankings: true, fixtures: false, activity: false, askMary: false, performanceLab: false, hailMaryForm: false, engineExplain: false },
 };
 
 export const NO_FEATURES: GameFeatureSet = {
   rankings: false,
   fixtures: false,
-  watchlist: false,
   activity: false,
   askMary: false,
   performanceLab: false,

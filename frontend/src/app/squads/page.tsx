@@ -28,13 +28,7 @@ export default async function SquadsPage() {
   const { data: rulesRows } = await supabase.from("game_squad_rules").select("game_id");
   const configuredGameIds = new Set((rulesRows ?? []).map((r) => r.game_id));
 
-  // Scratch squads (see migration 0059) are for testing an alternative
-  // route through Ask Mary, not real entries - kept out of the main
-  // per-game groups below entirely and shown in their own section, so
-  // they're never mistaken for a real team.
-  const statuses = allStatuses.filter((s) => !s.isScratch && configuredGameIds.has(s.gameId));
-  const scratchStatuses = allStatuses.filter((s) => s.isScratch);
-  const sourceNameById = new Map(allStatuses.map((s) => [s.id, s.name]));
+  const statuses = allStatuses.filter((s) => configuredGameIds.has(s.gameId));
 
   // Grouped by game (was one flat created_at-desc list before - a
   // FanTeam football squad and three FanTeam Golf squads interleaved by
@@ -68,13 +62,6 @@ export default async function SquadsPage() {
               className="rounded-lg border border-navy-700 bg-navy-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-800"
             >
               + FanTeam squad
-            </Link>
-            <Link
-              href="/squads/new?game=fanteam&scratch=1"
-              title="Build a squad purely to test through Ask Mary - won't show up as a real team"
-              className="rounded-lg border border-dashed border-navy-600 bg-navy-900 px-3 py-1.5 text-sm font-medium text-navy-300 hover:border-sky-500 hover:text-white"
-            >
-              + Test squad
             </Link>
           </div>
         </div>
@@ -136,35 +123,6 @@ export default async function SquadsPage() {
             </div>
           ))}
         </div>
-
-        {scratchStatuses.length > 0 && (
-          <div className="mt-10">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">
-              Test Squads <span className="text-navy-600">- not real teams</span>
-            </h2>
-            <div className="mt-3 flex flex-col gap-3">
-              {scratchStatuses.map((s) => (
-                <div key={s.id} className="rounded-xl border border-dashed border-navy-700 bg-navy-900/60 p-4">
-                  <p className="font-medium text-white">{s.name}</p>
-                  {s.scratchSourceSquadId != null && (
-                    <p className="mt-0.5 text-xs text-navy-500">
-                      Testing an alternative to {sourceNameById.get(s.scratchSourceSquadId) ?? "a deleted squad"}
-                    </p>
-                  )}
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <Link
-                      href={`/ask-mary?squad=${s.id}`}
-                      className="rounded-lg bg-sky-500 px-3 py-1.5 text-sm font-medium text-navy-950 hover:bg-sky-400"
-                    >
-                      Analyse in Ask Mary
-                    </Link>
-                  </div>
-                  <SquadCardActions squadId={s.id} squadName={s.name} gameSlug={s.gameSlug} isScratch />
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </main>
     </div>
   );

@@ -12,11 +12,6 @@ export type SquadStatus = {
   currentGameweek: number | null;
   nextGameweekScore: number | null;
   needsAttention: boolean;
-  // A test squad created purely to analyse through Ask Mary (see
-  // migration 0059) - never a real entry. Kept out of /squads' main
-  // per-game groups and Performance Lab's grading.
-  isScratch: boolean;
-  scratchSourceSquadId: number | null;
 };
 
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
@@ -51,7 +46,7 @@ type SquadPlayerRow = { game_player_id: number; is_starting: boolean; game_playe
 export async function getSquadStatuses(supabase: Supabase, userId: string): Promise<SquadStatus[]> {
   const { data: squads } = await supabase
     .from("squads")
-    .select("id, name, game_id, free_transfers, is_scratch, scratch_source_squad_id, fantasy_games(slug, display_name)")
+    .select("id, name, game_id, free_transfers, fantasy_games(slug, display_name)")
     .eq("user_id", userId)
     .eq("is_archived", false)
     .order("created_at", { ascending: false });
@@ -141,8 +136,6 @@ export async function getSquadStatuses(supabase: Supabase, userId: string): Prom
         currentGameweek,
         nextGameweekScore,
         needsAttention,
-        isScratch: squad.is_scratch,
-        scratchSourceSquadId: squad.scratch_source_squad_id,
       };
     })
   );

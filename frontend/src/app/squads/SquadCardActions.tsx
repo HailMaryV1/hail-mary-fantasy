@@ -2,38 +2,21 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { deleteSquad, renameSquad, duplicateSquadAsScratch } from "./actions";
+import { deleteSquad, renameSquad } from "./actions";
 
 export default function SquadCardActions({
   squadId,
   squadName,
   gameSlug,
-  isScratch,
 }: {
   squadId: number;
   squadName: string;
   gameSlug: string;
-  // Hides "Duplicate to test" for squads that are already a test squad -
-  // testing a test isn't a real workflow, and Ask Mary's own squad
-  // selector already lets you pick any squad to analyse.
-  isScratch?: boolean;
 }) {
   const [mode, setMode] = useState<"idle" | "rename" | "confirmDelete">("idle");
   const [name, setName] = useState(squadName);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const [isDuplicating, startDuplicateTransition] = useTransition();
-  const [duplicateError, setDuplicateError] = useState<string | null>(null);
-
-  function handleDuplicate() {
-    setDuplicateError(null);
-    startDuplicateTransition(async () => {
-      const result = await duplicateSquadAsScratch(squadId);
-      if (result?.error) setDuplicateError(result.error);
-      // On success this redirects straight to Ask Mary for the new
-      // scratch squad - nothing left to reset state on here.
-    });
-  }
 
   function handleRename() {
     setError(null);
@@ -124,23 +107,12 @@ export default function SquadCardActions({
       >
         Rename
       </button>
-      {gameSlug === "fanteam" && !isScratch && (
-        <button
-          onClick={handleDuplicate}
-          disabled={isDuplicating}
-          title="Clone this squad into a test squad, then open it in Ask Mary"
-          className="rounded-lg border border-dashed border-navy-600 px-3 py-1.5 text-sm font-medium text-navy-300 hover:border-sky-500 hover:text-white disabled:opacity-40"
-        >
-          {isDuplicating ? "Duplicating..." : "Duplicate to test"}
-        </button>
-      )}
       <button
         onClick={() => setMode("confirmDelete")}
         className="rounded-lg border border-navy-700 px-3 py-1.5 text-sm font-medium text-red-400 hover:bg-red-950"
       >
         Delete
       </button>
-      {duplicateError && <p className="w-full text-xs text-red-400">{duplicateError}</p>}
     </div>
   );
 }

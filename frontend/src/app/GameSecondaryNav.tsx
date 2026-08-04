@@ -11,7 +11,6 @@ export default function GameSecondaryNav({ gameSlug, gameDisplayName }: { gameSl
   const links: { label: string; href: string }[] = [{ label: "My Teams", href: `/games/${gameSlug}` }];
   if (features.askMary) links.push({ label: "Ask Mary", href: "/ask-mary" });
   if (features.performanceLab) links.push({ label: "Performance Lab", href: "/performance-lab" });
-  if (features.watchlist) links.push({ label: "Watchlist", href: "/watchlist" });
   if (features.rankings) links.push({ label: "Player Rankings", href: `/rankings?game=${gameSlug}` });
   if (features.hailMaryForm) links.push({ label: "Hail Mary Form", href: `/form?game=${gameSlug}` });
   // Not one of the 6 named links in the nav redesign, but Fixtures is a

@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Badge from "../Badge";
-import AddToWatchlistButton from "./AddToWatchlistButton";
 import { getTeamColors } from "@/lib/teamColors";
 
 export type SwingRecPlayer = {
@@ -36,7 +35,6 @@ export default function SwingTeamRow({
   strip,
   recs,
   noRecsMessage,
-  gameId,
 }: {
   teamName: string;
   kind: "good" | "bad";
@@ -47,7 +45,6 @@ export default function SwingTeamRow({
   strip: SwingFixtureStripEntry[];
   recs: SwingRecPlayer[];
   noRecsMessage: string;
-  gameId: number;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -127,13 +124,6 @@ export default function SwingTeamRow({
                     {r.position} · £{r.price.toFixed(1)}m · HMS {r.hailMaryScore != null ? r.hailMaryScore.toFixed(1) : "-"} · xPts5{" "}
                     {r.expectedPointsNext5 != null ? r.expectedPointsNext5.toFixed(1) : "-"}
                   </p>
-                  <div className="mt-1.5">
-                    <AddToWatchlistButton
-                      gameId={gameId}
-                      gamePlayerId={r.gamePlayerId}
-                      defaultReasons={r.label === "Best Differential" ? ["differential", "fixture_swing"] : ["fixture_swing"]}
-                    />
-                  </div>
                 </div>
               ))}
             </div>

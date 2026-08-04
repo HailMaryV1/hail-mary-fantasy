@@ -21,14 +21,12 @@ export default function GolfTeamBuilder({
   budget,
   savedTeams,
   isLoggedIn,
-  watchedIds,
 }: {
   tournamentId: number;
   pool: GolfOptimizerPlayer[];
   budget: number;
   savedTeams: { id: number; name: string; players: string[] }[];
   isLoggedIn: boolean;
-  watchedIds: number[];
 }) {
   const [variant, setVariant] = useState<GolfTeamVariant>("ceiling_max");
   const [lockedIds, setLockedIds] = useState<number[]>([]);
@@ -46,9 +44,7 @@ export default function GolfTeamBuilder({
   const [poolSearch, setPoolSearch] = useState("");
   const [poolSortKey, setPoolSortKey] = useState<PoolSortKey>("expectedPoints");
   const [poolSortDir, setPoolSortDir] = useState<"asc" | "desc">("desc");
-  const [watchlistOnly, setWatchlistOnly] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
-  const watchedSet = useMemo(() => new Set(watchedIds), [watchedIds]);
 
   const byId = useMemo(() => new Map(pool.map((p) => [p.gamePlayerId, p])), [pool]);
 
@@ -124,14 +120,13 @@ export default function GolfTeamBuilder({
     return pool
       .filter((p) => !team.some((t) => t.gamePlayerId === p.gamePlayerId))
       .filter((p) => !q || p.fullName.toLowerCase().includes(q))
-      .filter((p) => !watchlistOnly || watchedSet.has(p.gamePlayerId))
       .slice()
       .sort((a, b) => {
         const av = poolSortKey === "expectedPoints" ? a.expectedPoints : a.price;
         const bv = poolSortKey === "expectedPoints" ? b.expectedPoints : b.price;
         return poolSortDir === "desc" ? bv - av : av - bv;
       });
-  }, [pool, team, poolSearch, poolSortKey, poolSortDir, watchlistOnly, watchedSet]);
+  }, [pool, team, poolSearch, poolSortKey, poolSortDir]);
 
   function toggleLock(id: number) {
     setLockedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -256,18 +251,10 @@ export default function GolfTeamBuilder({
               >
                 Price{poolSortKey === "price" ? (poolSortDir === "desc" ? " ↓" : " ↑") : ""}
               </button>
-              <button
-                onClick={() => setWatchlistOnly((v) => !v)}
-                className={`ml-auto rounded-md px-2 py-1 font-medium ${watchlistOnly ? "bg-amber-950 text-amber-400" : "hover:text-white"}`}
-                title="Show only golfers on your watchlist"
-              >
-                ★ Watchlist
-              </button>
             </div>
             <div className="flex max-h-[28rem] flex-col gap-1 overflow-y-auto">
               {filteredPool.slice(0, 100).map((p) => {
                 const clickable = canBringIn(p);
-                const isWatched = watchedSet.has(p.gamePlayerId);
                 const marketGapFlag = classifyMarketGap(p.price, p.marketGap);
                 return (
                   <button
@@ -280,7 +267,6 @@ export default function GolfTeamBuilder({
                   >
                     <span className="min-w-0 text-white">
                       <span className="block truncate" title={p.fullName}>
-                        {isWatched && <span className="mr-1 text-amber-400">★</span>}
                         {p.fullName}
                         {marketGapFlag === "value" && (
                           <span
@@ -306,9 +292,7 @@ export default function GolfTeamBuilder({
                 );
               })}
               {filteredPool.length === 0 && (
-                <p className="px-2 py-4 text-center text-xs text-navy-400">
-                  {watchlistOnly ? "No watchlisted golfers left to bring in." : "No golfers match."}
-                </p>
+                <p className="px-2 py-4 text-center text-xs text-navy-400">No golfers match.</p>
               )}
             </div>
           </div>
