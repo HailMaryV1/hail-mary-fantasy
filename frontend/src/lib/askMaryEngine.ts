@@ -1860,7 +1860,10 @@ export async function runAskMaryAnalysis(
       }
     }
 
-    if (bestCaptain && viceCaptain) {
+    // Not recorded for cloudff - its real captain rule is per match-day
+    // (see below), so this gameweek-level pick is never shown anywhere
+    // in its UI and would just be dead, ungraded data.
+    if (bestCaptain && viceCaptain && !isCloudFF) {
       predictionRecords.push({
         ...baseContext,
         gameweek: planningGameweek,
@@ -1887,6 +1890,58 @@ export async function runAskMaryAnalysis(
         warnings: [],
       });
     }
+
+    // Cloud FF's real captain rule - one prediction row per real match-
+    // day, not the single gameweek-level "best_captain" row above (which
+    // stays exactly as-is for every other game). Reuses the same generic
+    // predictions table/recordPredictionsFn - predictionArchive.ts is
+    // already documented as deliberately game-agnostic. Graded at
+    // gameweek level by evaluate_predictions.py, per the accepted
+    // approximation (see capture_gameweek_actuals.py's docstring for the
+    // full reasoning - no real per-fixture-within-a-gameweek data source
+    // exists yet).
+    // Real match-days can share the same gameweek (e.g. Fri/Sat/Sun
+    // fixtures all in gameweek 1) - the predictions_dedup_key unique
+    // index (migration 0041) is keyed on (gameweek, planning_horizon,
+    // kind, rank), with no match_date column, so same-gameweek days need
+    // distinct `rank` values to avoid colliding with each other at the
+    // DB level - the same mechanism a multi-leg transfer bundle already
+    // uses (rank: i + 1) to keep its own legs distinct.
+    captainsByMatchDay.forEach((day, index) => {
+      if (!day.captain) return;
+      predictionRecords.push({
+        ...baseContext,
+        gameweek: day.gameweek,
+        planningHorizon: 1,
+        kind: "captain",
+        recommendationType: "match_day_captain",
+        rank: index + 1,
+        outGamePlayerId: null,
+        inGamePlayerId: null,
+        outPrice: null,
+        inPrice: null,
+        transferCost: null,
+        captainGamePlayerId: day.captain.game_player_id,
+        viceCaptainGamePlayerId: day.vice?.game_player_id ?? null,
+        expectedPointsBefore: null,
+        expectedPointsAfter: null,
+        expectedGain: null,
+        hailMaryScoreDiff: null,
+        fixtureSwingDiff: null,
+        maryMoveScore: null,
+        confidence: null,
+        risk: null,
+        reasons: [
+          {
+            code: day.autoPicked ? "auto_pick" : "top_scorer",
+            text: day.autoPicked
+              ? `${day.captain.full_name} is the only squad player with a fixture on ${day.matchDate}.`
+              : `${day.captain.full_name} is the highest-projected squad player with a fixture on ${day.matchDate}.`,
+          },
+        ],
+        warnings: [],
+      });
+    });
 
     if (predictionRecords.length > 0) {
       await recordPredictionsFn(predictionRecords).catch(() => ({}));

@@ -32,9 +32,20 @@ export async function recordPredictions(records: PredictionRecord[]) {
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in." };
 
+  // recommendationType included alongside (planningHorizon, kind) so a
+  // real unique-constraint conflict in one recommendationType's group
+  // (e.g. Cloud FF's gameweek-level "best_captain" row already existing
+  // from an earlier save) can't sink an unrelated recommendationType's
+  // batch in the same INSERT call (e.g. "match_day_captain" rows, which
+  // share (planningHorizon=1, kind="captain") with best_captain but are
+  // genuinely different recommendations) - a single multi-row .insert()
+  // fails as one unit on any row's conflict, so these need to stay in
+  // separate calls. A no-op for every pre-existing kind: each (planning
+  // Horizon, kind) combination has only ever had one recommendationType
+  // in practice (gw_plan transfers/holds, best_captain).
   const byGroup = new Map<string, PredictionRecord[]>();
   for (const r of records) {
-    const key = `${r.planningHorizon}:${r.kind}`;
+    const key = `${r.planningHorizon}:${r.kind}:${r.recommendationType}`;
     const list = byGroup.get(key) ?? [];
     list.push(r);
     byGroup.set(key, list);
