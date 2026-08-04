@@ -72,18 +72,6 @@ export default async function PerformanceLabPage({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const header = (
-    <div>
-      <div className="mb-4">
-        <GameSecondaryNav gameSlug="fanteam" gameDisplayName="FanTeam" />
-      </div>
-      <h1 className="text-2xl font-semibold text-white">Mary Performance Lab</h1>
-      <p className="mt-1 text-sm text-navy-300">
-        Every recommendation Ask Mary has made, measured against what actually happened.
-      </p>
-    </div>
-  );
-
   const { data: allSquadsRaw } = await supabase
     .from("squads")
     .select("id, name, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, fantasy_games(id, slug, display_name)")
@@ -99,6 +87,27 @@ export default async function PerformanceLabPage({
   };
   const allSquads = (allSquadsRaw ?? []) as unknown as SquadWithGame[];
   const squadNameById = new Map(allSquads.map((s) => [s.id, s.name]));
+
+  // This page aggregates across every game, but the nav header still
+  // needs one game to highlight - whichever squad is currently selected
+  // (or the most recent squad, same default as every other squad-picker
+  // page) rather than always claiming to be FanTeam regardless of what's
+  // actually being viewed.
+  const selectedSquadId = squadParam ? Number(squadParam) : null;
+  const headerGame = (selectedSquadId != null ? allSquads.find((s) => s.id === selectedSquadId)?.fantasy_games : null) ??
+    allSquads[0]?.fantasy_games ?? { slug: "fanteam", display_name: "FanTeam" };
+
+  const header = (
+    <div>
+      <div className="mb-4">
+        <GameSecondaryNav gameSlug={headerGame.slug} gameDisplayName={headerGame.display_name} />
+      </div>
+      <h1 className="text-2xl font-semibold text-white">Mary Performance Lab</h1>
+      <p className="mt-1 text-sm text-navy-300">
+        Every recommendation Ask Mary has made, measured against what actually happened.
+      </p>
+    </div>
+  );
 
   if (allSquads.length === 0) {
     return (
@@ -155,7 +164,6 @@ export default async function PerformanceLabPage({
 
   const squadIdsInvolved = Array.from(new Set(allPredictions.map((p) => p.squad_id)));
 
-  const selectedSquadId = squadParam ? Number(squadParam) : null;
   const predictions = selectedSquadId != null ? allPredictions.filter((p) => p.squad_id === selectedSquadId) : allPredictions;
 
   const predictionIds = predictions.map((p) => p.id);
@@ -171,7 +179,11 @@ export default async function PerformanceLabPage({
   const { data: algoVersions } = await supabase.from("algorithm_versions").select("id, version_label");
   const versionLabelById = new Map((algoVersions ?? []).map((v) => [v.id, v.version_label as string]));
 
-  const { data: pool } = await supabase.from("game_player_pool").select("game_player_id, full_name").eq("game_slug", "fanteam");
+  // Not filtered to one game's slug - predictions can span every game
+  // the user plays (allSquads above), and game_player_id is already
+  // game-scoped, so a name lookup by id alone is correct regardless of
+  // which game each prediction's players belong to.
+  const { data: pool } = await supabase.from("game_player_pool").select("game_player_id, full_name");
   const nameById = new Map((pool ?? []).map((p) => [p.game_player_id, p.full_name as string]));
 
   // "Did the user actually make this move" - reconciled at read time
