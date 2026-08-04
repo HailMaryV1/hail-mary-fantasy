@@ -179,11 +179,25 @@ export default async function PerformanceLabPage({
   const { data: algoVersions } = await supabase.from("algorithm_versions").select("id, version_label");
   const versionLabelById = new Map((algoVersions ?? []).map((v) => [v.id, v.version_label as string]));
 
-  // Not filtered to one game's slug - predictions can span every game
-  // the user plays (allSquads above), and game_player_id is already
-  // game-scoped, so a name lookup by id alone is correct regardless of
-  // which game each prediction's players belong to.
-  const { data: pool } = await supabase.from("game_player_pool").select("game_player_id, full_name");
+  // Looked up by the exact IDs these predictions actually reference, not
+  // a whole game's pool - game_player_pool has ~2,000 rows across every
+  // game on the platform, well past PostgREST's default 1,000-row cap,
+  // so even a single-game-scoped select can still silently truncate and
+  // drop names once a user plays enough games (confirmed live: Cloud
+  // FF's Gabriel rendered as "#3695" both unfiltered AND filtered to
+  // just this user's involved game slugs, since fanteam+cloudff+
+  // nfl-fanteam's combined pools alone already exceed 1,000 rows).
+  // Filtering by the handful of IDs actually in play sidesteps the
+  // row-cap class of bug entirely instead of trying to stay under it.
+  const referencedGamePlayerIds = Array.from(
+    new Set(
+      allPredictions.flatMap((p) => [p.out_game_player_id, p.in_game_player_id, p.captain_game_player_id, p.vice_captain_game_player_id].filter((id): id is number => id != null))
+    )
+  );
+  const { data: pool } =
+    referencedGamePlayerIds.length > 0
+      ? await supabase.from("game_player_pool").select("game_player_id, full_name").in("game_player_id", referencedGamePlayerIds)
+      : { data: [] };
   const nameById = new Map((pool ?? []).map((p) => [p.game_player_id, p.full_name as string]));
 
   // "Did the user actually make this move" - reconciled at read time

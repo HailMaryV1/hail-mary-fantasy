@@ -15,6 +15,7 @@ import CaptainPicker from "./CaptainPicker";
 import TransferBoard from "./TransferBoard";
 import MaryRecommendationsPanel from "./MaryRecommendationsPanel";
 import FixtureSwingPanel from "./FixtureSwingPanel";
+import SaveTeamButton from "./SaveTeamButton";
 import RecentTransfers from "./RecentTransfers";
 import ProviderSyncStatus from "./ProviderSyncStatus";
 
@@ -96,7 +97,12 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
   const game = squad.fantasy_games as unknown as { id: number; slug: string; display_name: string };
   const hasBench = rules.squad_size > rules.starting_size;
 
-  const { data: formations } = hasBench
+  // Formations are a separate concept from having a bench - Cloud FF uses
+  // formations (uses_formations=true) despite squad_size === starting_size
+  // (no bench at all), so this needs its own check rather than reusing
+  // hasBench, which only NFL FanTeam (no formations, no bench) and Cloud
+  // FF (formations, no bench) both happen to share the `false` bench half of.
+  const { data: formations } = rules.uses_formations
     ? await supabase
         .from("game_formations")
         .select("code, gk_count, def_count, mid_count, fwd_count")
@@ -387,6 +393,42 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
       }))
       .sort((a, b) => b.hail_mary_score - a.hail_mary_score);
 
+    // Cloud FF has no bench, so there's no separate lineup to build - the
+    // squad IS the starting XI. formationCode is derived from the squad's
+    // real current composition (validated legal at transfer time by
+    // performSwap) purely so Save Team's writeLineup can record it, not
+    // something the user picks here.
+    const cloudFFFormationCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 } as Record<string, number>;
+    players.forEach((p) => (cloudFFFormationCounts[p.position] = (cloudFFFormationCounts[p.position] ?? 0) + 1));
+    const cloudFFFormationCode =
+      (formations ?? []).find(
+        (f) =>
+          f.gk_count === cloudFFFormationCounts.GK &&
+          f.def_count === cloudFFFormationCounts.DEF &&
+          f.mid_count === cloudFFFormationCounts.MID &&
+          f.fwd_count === cloudFFFormationCounts.FWD
+      )?.code ?? null;
+
+    // Same single-source-of-truth reasoning as the hasBench branch below -
+    // computed once here, fed to both the Captain picker's recommendation
+    // and Mary's Recommendations panel, gated on featuresForGame so a
+    // future no-bench game without Ask Mary support doesn't get this for
+    // free.
+    const cloudFFAnalysis = featuresForGame(game.slug).askMary
+      ? await runAskMaryAnalysis(
+          supabase,
+          {
+            id: squad.id,
+            name: squad.name,
+            free_transfers: squad.free_transfers,
+            wildcard_1_used_gameweek: squad.wildcard_1_used_gameweek,
+            wildcard_2_used_gameweek: squad.wildcard_2_used_gameweek,
+          },
+          { id: game.id, display_name: game.display_name, slug: game.slug },
+          "balanced" as Strategy
+        )
+      : null;
+
     return (
       <div className="min-h-screen bg-navy-950 px-6 py-10">
         <main className="mx-auto max-w-6xl">
@@ -409,19 +451,33 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
             />
           </div>
           {game.slug === "cloudff" && (
-            <div className="mt-10">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Captain</h2>
-              <div className="mt-2">
-                <CaptainPicker
-                  squadId={squad.id}
-                  starters={cloudFFStarters}
-                  currentCaptainId={squad.captain_game_player_id}
-                  currentViceCaptainId={squad.vice_captain_game_player_id}
-                  recommendedCaptain={null}
-                  recommendedVice={null}
-                />
+            <>
+              <div className="mt-10">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Captain</h2>
+                <div className="mt-2">
+                  <CaptainPicker
+                    squadId={squad.id}
+                    starters={cloudFFStarters}
+                    currentCaptainId={squad.captain_game_player_id}
+                    currentViceCaptainId={squad.vice_captain_game_player_id}
+                    recommendedCaptain={cloudFFAnalysis?.bestCaptain ? { game_player_id: cloudFFAnalysis.bestCaptain.game_player_id, full_name: cloudFFAnalysis.bestCaptain.full_name } : null}
+                    recommendedVice={cloudFFAnalysis?.viceCaptain ? { game_player_id: cloudFFAnalysis.viceCaptain.game_player_id, full_name: cloudFFAnalysis.viceCaptain.full_name } : null}
+                  />
+                </div>
               </div>
-            </div>
+              {featuresForGame(game.slug).askMary && (
+                <div className="mt-10">
+                  <SaveTeamButton
+                    squadId={squad.id}
+                    formationCode={cloudFFFormationCode}
+                    startingGamePlayerIds={players.map((p) => p.game_player_id)}
+                  />
+                  <div className="mt-6">
+                    <MaryRecommendationsPanel squadId={squad.id} gameSlug={game.slug} analysis={cloudFFAnalysis} />
+                  </div>
+                </div>
+              )}
+            </>
           )}
           {hasCalendar && !seasonStarted && <RecentTransfers squadId={squadId} transfers={recentTransfers} />}
         </main>

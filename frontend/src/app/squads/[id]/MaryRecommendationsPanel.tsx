@@ -30,7 +30,7 @@ export default function MaryRecommendationsPanel({
     <div className="mb-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Recommendations</h2>
-        <Link href={`/ask-mary?squad=${squadId}`} className="text-xs font-medium text-sky-400 hover:text-sky-300">
+        <Link href={`/ask-mary?squad=${squadId}&game=${gameSlug}`} className="text-xs font-medium text-sky-400 hover:text-sky-300">
           View Full Analysis →
         </Link>
       </div>
