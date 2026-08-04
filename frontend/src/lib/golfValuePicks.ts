@@ -1,11 +1,12 @@
 /**
- * Golf "market gap" detector - flags golfers whose pasted top20-finish
- * market odds disagree meaningfully with what their FanTeam price alone
- * would predict. Confirmed against the real Rocket Classic field (82
- * golfers with both a price and top20 odds): price and market-implied
- * top20 probability correlate at 0.94 - FanTeam clearly prices around
- * market perception, so a golfer sitting well off the price->probability
- * line the rest of the field draws is a real signal worth surfacing, in
+ * Golf "market gap" detector - flags golfers whose pasted finish-position
+ * market odds (whichever one you actually pasted - win/top5/top10/top20)
+ * disagree meaningfully with what their FanTeam price alone would
+ * predict. Confirmed against the real Rocket Classic field (82 golfers
+ * with both a price and top20 odds): price and market-implied
+ * probability correlate at 0.94 - FanTeam clearly prices around market
+ * perception, so a golfer sitting well off the price->probability line
+ * the rest of the field draws is a real signal worth surfacing, in
  * EITHER direction:
  *
  *   - VALUE: market fancies them well above what their price predicts -
@@ -19,18 +20,20 @@
  *     premium for.
  *
  * Recomputed fresh on every page load directly from golf_tournament_entries
- * (price) + golf_tournament_odds (market='top20', already pasted at
- * /golf/odds) - deliberately NOT baked into compute_golf_projections.py's
+ * (price) + golf_tournament_odds (whichever market pickBestMarket() picks -
+ * see below) - deliberately NOT baked into compute_golf_projections.py's
  * Python pipeline, so a badge reflects odds the moment they're pasted
  * rather than waiting for the next projections recompute. The same gap
  * number also feeds golfTeamOptimizer.ts's DANGER_PENALTY, so a
  * price-gap-flagged golfer isn't just shown a warning - the team-builder
  * itself is nudged away from picking them (see baseMetric() there).
  *
- * Only the 'top20' market is used (not 'win'/'top5'/'top10') to match
- * what's actually been pasted so far - if that changes, this can take a
- * market parameter, but there's no need to over-generalize before a
- * second market is actually in use for this purpose.
+ * Originally hardcoded to 'top20' only, on the assumption that would be
+ * the one market actually pasted - wrong in practice (the Tournament
+ * Builder wizard's odds step defaults to 'top10', and that's what got
+ * pasted for the Wyndham Championship), so every VALUE/DANGER badge
+ * silently found zero data. pickBestMarket() below picks whichever
+ * market actually has odds for this tournament instead of assuming one.
  */
 
 export type ValuePriceRow = { gamePlayerId: number; golferId: number; price: number };
@@ -52,15 +55,45 @@ export const DANGER_MIN_PRICE = 15.0;
 // arbitrarily steep/meaningless line.
 const MIN_SAMPLE_SIZE = 8;
 
-// The bookies' actual top20 probability, what this golfer's PRICE ALONE
-// would predict for that probability (from the field's own price->odds
-// line), and the difference between them - kept as three separate
-// numbers (not just the gap) so the UI can say something concrete
-// ("bookies say 23%, FanTeam's price says 9%") instead of just "+14pts".
+// The bookies' actual probability (whichever finish-position market got
+// used), what this golfer's PRICE ALONE would predict for that
+// probability (from the field's own price->odds line), and the
+// difference between them - kept as three separate numbers (not just
+// the gap) so the UI can say something concrete ("bookies say 23%,
+// FanTeam's price says 9%") instead of just "+14pts".
 export type MarketGapInfo = { gap: number; marketProbability: number; predictedProbability: number };
 
-/** gamePlayerId -> bookies-vs-price-predicted top20 info, for every golfer with both a price and pasted top20 odds - unfiltered/unthresholded, callers classify via classifyMarketGap(). */
-export function computeTop20MarketGaps(priceRows: ValuePriceRow[], oddsRows: ValueOddsRow[]): Map<number, MarketGapInfo> {
+export type OddsRowWithMarket = { golferId: number; market: string; impliedProbability: number | null };
+
+// Preference order for tie-breaking when two markets happen to have the
+// same number of pasted rows for a tournament - a finish-position market
+// (top10/top20) is the more directly comparable signal, 'win' is the
+// least (far fewer golfers have a meaningful win probability at all).
+const MARKET_PREFERENCE = ["top10", "top20", "top5", "win"];
+
+/**
+ * Picks whichever market actually has odds pasted for this tournament,
+ * rather than assuming one. A real user pastes exactly one market most
+ * weeks - whichever's easiest to find on a bookmaker's page that week -
+ * so there's no fixed market to hardcode. Returns null when nothing's
+ * been pasted at all yet.
+ */
+export function pickBestMarket(oddsRows: OddsRowWithMarket[]): string | null {
+  const counts = new Map<string, number>();
+  for (const o of oddsRows) {
+    if (o.impliedProbability == null) continue;
+    counts.set(o.market, (counts.get(o.market) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  const ranked = [...counts.entries()].sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1];
+    return MARKET_PREFERENCE.indexOf(a[0]) - MARKET_PREFERENCE.indexOf(b[0]);
+  });
+  return ranked[0][0];
+}
+
+/** gamePlayerId -> bookies-vs-price-predicted info, for every golfer with both a price and pasted odds in the chosen market - unfiltered/unthresholded, callers classify via classifyMarketGap(). */
+export function computeMarketGaps(priceRows: ValuePriceRow[], oddsRows: ValueOddsRow[]): Map<number, MarketGapInfo> {
   const probByGolfer = new Map(oddsRows.filter((o) => o.impliedProbability != null).map((o) => [o.golferId, o.impliedProbability as number]));
 
   const paired = priceRows
@@ -89,7 +122,7 @@ export function computeTop20MarketGaps(priceRows: ValuePriceRow[], oddsRows: Val
 
 export type MarketGapFlag = "value" | "danger" | null;
 
-/** Turns a golfer's market-gap info (from computeTop20MarketGaps) + their price into the badge/penalty classification - the single source of truth both the UI badges and the team-builder's DANGER_PENALTY read from, so they can never disagree. */
+/** Turns a golfer's market-gap info (from computeMarketGaps) + their price into the badge/penalty classification - the single source of truth both the UI badges and the team-builder's DANGER_PENALTY read from, so they can never disagree. */
 export function classifyMarketGap(price: number, info: MarketGapInfo | null | undefined): MarketGapFlag {
   if (info == null) return null;
   if (info.gap >= VALUE_GAP_THRESHOLD) return "value";

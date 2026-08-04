@@ -57,10 +57,11 @@ export type GolfOptimizerPlayer = {
   ceiling: number;
   makeCutProbability: number | null;
   explanation?: string | null;
-  // Bookies-vs-price-predicted top20 info (see golfValuePicks.ts's
-  // computeTop20MarketGaps) - null/undefined when there's no odds for
-  // them. VALUE/DANGER classification happens via classifyMarketGap(),
-  // not here. marketGap.marketProbability (the raw bookmaker top20%,
+  // Bookies-vs-price-predicted info (see golfValuePicks.ts's
+  // computeMarketGaps, fed whichever market pickBestMarket() picked) -
+  // null/undefined when there's no odds for them. VALUE/DANGER
+  // classification happens via classifyMarketGap(), not here.
+  // marketGap.marketProbability (the raw bookmaker finish-position %,
   // independent of price) is what bookies_trust/course_specialists lean
   // on below.
   marketGap?: MarketGapInfo | null;
@@ -93,7 +94,7 @@ export const GOLF_TEAM_VARIANTS: { key: GolfTeamVariant; label: string; descript
   {
     key: "bookies_trust",
     label: "Bookies' Trust",
-    description: "Leans heavily on bookmaker top20 odds over our own model - a hedge while the algorithm is still learning",
+    description: "Leans heavily on bookmaker finish-position odds over our own model - a hedge while the algorithm is still learning",
   },
   {
     key: "cut_secure_ceiling",
@@ -113,7 +114,7 @@ export const GOLF_TEAM_VARIANTS: { key: GolfTeamVariant; label: string; descript
   {
     key: "course_specialists",
     label: "Course Specialists",
-    description: "Weighs heavily on this course's history plus top20 odds - proven form at this specific track",
+    description: "Weighs heavily on this course's history plus bookmaker odds - proven form at this specific track",
   },
 ];
 

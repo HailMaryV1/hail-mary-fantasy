@@ -2,7 +2,7 @@ import Link from "next/link";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import GolfTeamBuilder from "./GolfTeamBuilder";
 import type { GolfOptimizerPlayer } from "@/lib/golfTeamOptimizer";
-import { computeTop20MarketGaps } from "@/lib/golfValuePicks";
+import { computeMarketGaps, pickBestMarket } from "@/lib/golfValuePicks";
 
 export const dynamic = "force-dynamic";
 
@@ -54,15 +54,15 @@ export default async function GolfTeamPage({
         { game_player_id: number; price: number; lineup: string | null; status: string | null; game_players: { golfers: { id: number; full_name: string } } }[]
       >();
 
-    const { data: oddsRows } = await supabase
+    const { data: allOddsRows } = await supabase
       .from("golf_tournament_odds")
-      .select("golfer_id, implied_probability")
+      .select("golfer_id, market, implied_probability")
       .eq("tournament_id", tournament.id)
-      .eq("market", "top20")
-      .returns<{ golfer_id: number; implied_probability: number | null }[]>();
-    const marketGaps = computeTop20MarketGaps(
+      .returns<{ golfer_id: number; market: string; implied_probability: number | null }[]>();
+    const bestMarket = pickBestMarket((allOddsRows ?? []).map((o) => ({ golferId: o.golfer_id, market: o.market, impliedProbability: o.implied_probability })));
+    const marketGaps = computeMarketGaps(
       (entries ?? []).map((e) => ({ gamePlayerId: e.game_player_id, golferId: e.game_players?.golfers?.id ?? -1, price: Number(e.price) })),
-      (oddsRows ?? []).map((o) => ({ golferId: o.golfer_id, impliedProbability: o.implied_probability }))
+      (allOddsRows ?? []).filter((o) => o.market === bestMarket).map((o) => ({ golferId: o.golfer_id, impliedProbability: o.implied_probability }))
     );
 
     const { data: algo } = await supabase
