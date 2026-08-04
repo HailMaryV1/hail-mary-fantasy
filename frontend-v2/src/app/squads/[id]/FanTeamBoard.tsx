@@ -30,6 +30,8 @@ export type BoardPlayer = {
 
 export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain" | "isStarting" | "benchOrder">;
 
+export type Formation = { code: string; gk_count: number; def_count: number; mid_count: number; fwd_count: number };
+
 type DisplayMode = "next1" | "next2" | "next3" | "pts" | "pred";
 type SortBy = "pts" | "goals" | "assists" | "bonus";
 
@@ -100,6 +102,8 @@ export default function FanTeamBoard({
   formations,
   currentFormationCode,
   isProviderSynced,
+  rawCaptainId,
+  rawViceCaptainId,
   squad,
   pool,
 }: {
@@ -113,7 +117,7 @@ export default function FanTeamBoard({
   wildcard2UsedGameweek: number | null;
   maxPerClub: number;
   seasonStarted: boolean;
-  formations: string[];
+  formations: Formation[];
   // Null when the current starting XI's GK/DEF/MID/FWD counts don't match
   // any of the 7 real formations - can genuinely happen (a squad synced
   // mid-transfer, or one that's never had a formation applied here yet).
@@ -122,6 +126,15 @@ export default function FanTeamBoard({
   // pills) whenever true - a provider-synced squad has them overwritten
   // by the next scheduled FanTeam sync regardless of what's picked here.
   isProviderSynced: boolean;
+  // The squad row's raw captain/vice-captain fields - distinct from
+  // squad[].isCaptain/isViceCaptain, which only reflect a pick that's
+  // still a current squad member. A provider-synced pick can point at a
+  // player no longer in this squad's 15 (roster drift between our mirror
+  // and the real site); the raw fields are what setFanteamCaptain's
+  // server-side guard actually checks, so the "can I edit this?" decision
+  // here has to match that, not the roster-filtered view.
+  rawCaptainId: number | null;
+  rawViceCaptainId: number | null;
   squad: BoardPlayer[];
   pool: PoolPlayer[];
 }) {
@@ -260,13 +273,30 @@ export default function FanTeamBoard({
   // always allowed, just at a real cost (see costPreview below).
   const selectedPlayer = selectedId != null ? squad.find((p) => p.game_player_id === selectedId) : undefined;
 
-  // Same-position, opposite starting/bench status - a real sub, not a
-  // transfer. Formation counts are automatically preserved by a
-  // same-position swap, so nothing else needs checking client-side (the
-  // server re-validates anyway).
+  // A real sub, not a transfer - opposite starting/bench status, and
+  // either the same position (formation counts untouched) or a different
+  // position whose resulting GK/DEF/MID/FWD counts still match one of
+  // this game's real formations (e.g. swapping a MID for a DEF flips
+  // 3-5-2 into 4-4-2). The server re-validates the same way.
+  const startingCounts: Record<"GK" | "DEF" | "MID" | "FWD", number> = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
+  for (const p of squad) if (p.isStarting) startingCounts[p.position] += 1;
+
+  function swapKeepsValidFormation(outgoingPos: "GK" | "DEF" | "MID" | "FWD", incomingPos: "GK" | "DEF" | "MID" | "FWD"): boolean {
+    if (outgoingPos === incomingPos) return true;
+    const counts = { ...startingCounts, [outgoingPos]: startingCounts[outgoingPos] - 1, [incomingPos]: startingCounts[incomingPos] + 1 };
+    return formations.some((f) => f.gk_count === counts.GK && f.def_count === counts.DEF && f.mid_count === counts.MID && f.fwd_count === counts.FWD);
+  }
+
   const legalSwapIds = new Set(
     selectedPlayer
-      ? squad.filter((p) => p.position === selectedPlayer.position && p.isStarting !== selectedPlayer.isStarting).map((p) => p.game_player_id)
+      ? squad
+          .filter((p) => p.isStarting !== selectedPlayer.isStarting)
+          .filter((p) => {
+            const outgoingPos = selectedPlayer.isStarting ? selectedPlayer.position : p.position;
+            const incomingPos = selectedPlayer.isStarting ? p.position : selectedPlayer.position;
+            return swapKeepsValidFormation(outgoingPos, incomingPos);
+          })
+          .map((p) => p.game_player_id)
       : []
   );
 
@@ -366,7 +396,7 @@ export default function FanTeamBoard({
           </div>
         </div>
 
-        {!isProviderSynced && (
+        {(!isProviderSynced || (rawCaptainId === null && rawViceCaptainId === null)) && (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-navy-700 bg-navy-900 p-3">
             <span className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Captain</span>
             <select
@@ -402,7 +432,10 @@ export default function FanTeamBoard({
             </select>
             {captainError && <p className="text-xs text-red-400">{captainError}</p>}
             {!captainError && (pendingCaptainId === null || pendingViceCaptainId === null) && (
-              <p className="text-xs text-navy-500">Pick both to save.</p>
+              <p className="text-xs text-navy-500">
+                Pick both to save.
+                {isProviderSynced && " This squad is synced from FanTeam - your pick may be replaced by the real site's captain at the next sync."}
+              </p>
             )}
           </div>
         )}
@@ -451,9 +484,9 @@ export default function FanTeamBoard({
                   className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
                 >
                   {currentFormationCode === null && <option value="">Formation: custom</option>}
-                  {formations.map((code) => (
-                    <option key={code} value={code}>
-                      Formation: {code}
+                  {formations.map((f) => (
+                    <option key={f.code} value={f.code}>
+                      Formation: {f.code}
                     </option>
                   ))}
                 </select>

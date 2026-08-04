@@ -542,13 +542,17 @@ export async function setFanteamFormation({ squadId, formationCode }: { squadId:
 /**
  * Sets FanTeam's captain/vice-captain (doubles/1.5x points respectively -
  * enforced by compute_projections.py, not here). Both must be different
- * starting-XI players. Blocked entirely for provider-synced squads
- * (sync_provider_squads.py pulls captain/VC straight from the real
- * FanTeam site's scraped C/VC badges and overwrites squads.
- * captain_game_player_id/vice_captain_game_player_id unconditionally on
- * every sync run, every ~90 minutes) - editing here would look saved
- * and then silently revert with no explanation, the exact confusing
- * behavior the old frontend's read-only pill deliberately avoided.
+ * starting-XI players. Blocked for provider-synced squads ONLY when a real
+ * synced pick already exists (sync_provider_squads.py pulls captain/VC
+ * straight from the real FanTeam site's scraped C/VC badges and overwrites
+ * squads.captain_game_player_id/vice_captain_game_player_id unconditionally
+ * on every sync run, every ~90 minutes - editing here would look saved and
+ * then silently revert with no explanation, the exact confusing behavior
+ * the old frontend's read-only pill deliberately avoided). When BOTH are
+ * currently null - e.g. clearInvalidCaptaincy just cleared a stale pick
+ * after a manual swap/formation change - there's nothing to protect, so a
+ * manual pick is allowed as a stopgap; the next real sync overwrites it
+ * with the actual site value regardless, exactly as before.
  */
 export async function setFanteamCaptain({
   squadId,
@@ -565,11 +569,15 @@ export async function setFanteamCaptain({
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in." };
 
-  const { data: squad } = await supabase.from("squads").select("id, user_id, game_id").eq("id", squadId).single();
+  const { data: squad } = await supabase
+    .from("squads")
+    .select("id, user_id, game_id, captain_game_player_id, vice_captain_game_player_id")
+    .eq("id", squadId)
+    .single();
   if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
 
   const { data: link } = await supabase.from("provider_squad_links").select("sync_enabled").eq("squad_id", squadId).maybeSingle();
-  if (link?.sync_enabled) {
+  if (link?.sync_enabled && (squad.captain_game_player_id !== null || squad.vice_captain_game_player_id !== null)) {
     return { error: "This squad is synced from FanTeam - captain/vice-captain follow the real site and can't be edited here." };
   }
 
@@ -602,14 +610,19 @@ export async function setFanteamCaptain({
 }
 
 /**
- * Manually swaps one starting-XI player for one same-position bench
- * player - a real sub, not a transfer (no budget/club-limit check, no
- * change to which 15 players are owned, no cost). A same-position swap
- * always preserves the current formation's GK/DEF/MID/FWD counts
- * automatically, so no formation re-validation is needed either. The
- * two players simply trade is_starting and bench_order wholesale - the
- * promoted player takes on the demoted player's old bench slot (or lack
- * of one, for GK<->GK).
+ * Manually swaps one starting-XI player for one bench player - a real
+ * sub, not a transfer (no budget/club-limit check, no change to which 15
+ * players are owned, no cost). Same-position swaps always preserve the
+ * current formation's GK/DEF/MID/FWD counts automatically. Cross-position
+ * swaps (e.g. a MID for a DEF) are also allowed, but only when the
+ * resulting counts still match one of this game's real formations (e.g.
+ * swapping a MID for a DEF flips 3-5-2 into 4-4-2) - the starting-XI
+ * formation dropdown re-derives itself from these counts on next render
+ * (see squads/[id]/page.tsx's currentFormationCode), so it follows
+ * automatically without any extra bookkeeping here. The two players
+ * simply trade is_starting and bench_order wholesale - the promoted
+ * player takes on the demoted player's old bench slot (or lack of one,
+ * for GK<->GK).
  */
 export async function swapFanteamLineup({ squadId, playerAId, playerBId }: { squadId: number; playerAId: number; playerBId: number }) {
   const supabase = await createAuthServerClient();
@@ -618,24 +631,43 @@ export async function swapFanteamLineup({ squadId, playerAId, playerBId }: { squ
   } = await supabase.auth.getUser();
   if (!user) return { error: "Not signed in." };
 
-  const { data: squad } = await supabase.from("squads").select("id, user_id").eq("id", squadId).single();
+  const { data: squad } = await supabase.from("squads").select("id, user_id, game_id").eq("id", squadId).single();
   if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
 
   const { data: rows } = await supabase
     .from("squad_players")
     .select("id, game_player_id, is_starting, bench_order, game_players(players(position))")
     .eq("squad_id", squadId)
-    .in("game_player_id", [playerAId, playerBId])
-    .returns<{ id: number; game_player_id: number; is_starting: boolean; bench_order: number | null; game_players: { players: { position: string } } }[]>();
-  if (!rows || rows.length !== 2) return { error: "Couldn't find both players." };
+    .returns<{ id: number; game_player_id: number; is_starting: boolean; bench_order: number | null; game_players: { players: { position: "GK" | "DEF" | "MID" | "FWD" } } }[]>();
+  if (!rows) return { error: "Couldn't load squad." };
 
-  const a = rows.find((r) => r.game_player_id === playerAId)!;
-  const b = rows.find((r) => r.game_player_id === playerBId)!;
-  if (a.game_players.players.position !== b.game_players.players.position) {
-    return { error: "Can only swap players in the same position." };
-  }
+  const a = rows.find((r) => r.game_player_id === playerAId);
+  const b = rows.find((r) => r.game_player_id === playerBId);
+  if (!a || !b) return { error: "Couldn't find both players." };
   if (a.is_starting === b.is_starting) {
     return { error: "One player must be starting and the other on the bench." };
+  }
+
+  const posA = a.game_players.players.position;
+  const posB = b.game_players.players.position;
+  if (posA !== posB) {
+    const counts: Record<"GK" | "DEF" | "MID" | "FWD", number> = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
+    for (const r of rows) if (r.is_starting) counts[r.game_players.players.position] += 1;
+    const outgoingPos = a.is_starting ? posA : posB;
+    const incomingPos = a.is_starting ? posB : posA;
+    counts[outgoingPos] -= 1;
+    counts[incomingPos] += 1;
+
+    const { data: formations } = await supabase
+      .from("game_formations")
+      .select("gk_count, def_count, mid_count, fwd_count")
+      .eq("game_id", squad.game_id);
+    const isValidFormation = (formations ?? []).some(
+      (f) => f.gk_count === counts.GK && f.def_count === counts.DEF && f.mid_count === counts.MID && f.fwd_count === counts.FWD
+    );
+    if (!isValidFormation) {
+      return { error: "That swap wouldn't leave a valid formation." };
+    }
   }
 
   const { error: errA } = await supabase.from("squad_players").update({ is_starting: b.is_starting, bench_order: b.bench_order }).eq("id", a.id);

@@ -373,9 +373,11 @@ async function renderFanteamBoard(
       wildcard2UsedGameweek={squad.wildcard_2_used_gameweek}
       maxPerClub={Number(rules.max_per_club ?? 3)}
       seasonStarted={seasonTiming.seasonStarted}
-      formations={formations.map((f) => f.code)}
+      formations={formations}
       currentFormationCode={currentFormationCode}
       isProviderSynced={linkRow?.sync_enabled ?? false}
+      rawCaptainId={squad.captain_game_player_id}
+      rawViceCaptainId={squad.vice_captain_game_player_id}
       squad={boardSquad}
       pool={boardPool}
     />
