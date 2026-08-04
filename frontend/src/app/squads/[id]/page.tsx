@@ -8,6 +8,7 @@ import { computeAutoSubAwareTotal, type AutoSubPlayer } from "@/lib/benchAutoSub
 import { buildFormByGamePlayerId } from "@/lib/hailMaryForm";
 import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
 import type { Strategy } from "@/lib/recommendationScoring";
+import { featuresForGame } from "@/lib/gameFeatures";
 import GameSecondaryNav from "@/app/GameSecondaryNav";
 import LineupBuilder, { type GameweekSnapshot } from "./LineupBuilder";
 import CaptainPicker from "./CaptainPicker";
@@ -464,7 +465,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
   // horizon is no longer user-selectable either - runAskMaryAnalysis
   // always scores next-gameweek-only now.
   const analysis =
-    game.slug === "fanteam"
+    featuresForGame(game.slug).askMary
       ? await runAskMaryAnalysis(
           supabase,
           {
@@ -534,7 +535,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
             </div>
           )}
 
-          {game.slug === "fanteam" && (
+          {featuresForGame(game.slug).askMary && (
             <div className="mt-10">
               <MaryRecommendationsPanel squadId={squad.id} gameSlug={game.slug} analysis={analysis} />
             </div>
@@ -543,7 +544,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
           {hasCalendar && !seasonStarted && <RecentTransfers squadId={squadId} transfers={recentTransfers} />}
         </div>
 
-        {game.slug === "fanteam" && (
+        {featuresForGame(game.slug).askMary && (
           <FixtureSwingPanel
             gameId={squad.game_id}
             gameSlug={game.slug}

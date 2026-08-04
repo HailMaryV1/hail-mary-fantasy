@@ -9,6 +9,7 @@ import { wildcardWindowFor, isWildcardActive, TRANSFER_HIT_COST } from "@/lib/tr
 import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
 import { recordPredictions } from "@/app/ask-mary/actions";
 import type { Strategy } from "@/lib/recommendationScoring";
+import { featuresForGame } from "@/lib/gameFeatures";
 
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
@@ -517,7 +518,7 @@ export async function saveTeamForGameweek(args: SaveLineupArgs) {
     .eq("id", args.squadId)
     .single();
   const game = squadRow?.fantasy_games as unknown as { id: number; slug: string; display_name: string } | undefined;
-  if (squadRow && game?.slug === "fanteam") {
+  if (squadRow && game && featuresForGame(game.slug).askMary) {
     // Strategy is no longer user-selectable - always "balanced". Captain
     // horizon is no longer user-selectable either - runAskMaryAnalysis
     // itself always scores next-gameweek-only now (see askMaryEngine.ts).
