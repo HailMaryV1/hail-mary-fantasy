@@ -10,6 +10,7 @@ import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
 import { recordPredictions } from "@/app/ask-mary/actions";
 import type { Strategy } from "@/lib/recommendationScoring";
 import { featuresForGame } from "@/lib/gameFeatures";
+import { getMatchDaysForSquad } from "@/lib/matchDayCaptains";
 
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
@@ -1077,6 +1078,76 @@ export async function setCaptain({ squadId, captainGamePlayerId, viceCaptainGame
   });
 
   redirect(`/squads/${squadId}`);
+}
+
+type SetMatchDayCaptainArgs = {
+  squadId: number;
+  matchDate: string; // YYYY-MM-DD
+  captainGamePlayerId: number;
+  viceCaptainGamePlayerId: number | null;
+};
+
+/**
+ * Cloud FF's real captain rule - one captain per calendar match-day, not
+ * per gameweek (see migration 0083's docstring). Eligibility is "in the
+ * squad AND has a real fixture kicking off that exact day" - reuses
+ * getMatchDaysForSquad (frontend/src/lib/matchDayCaptains.ts) so this
+ * action and the Captains page it's called from can never disagree about
+ * who's actually eligible on a given day. No games-with-a-bench concept
+ * applies here (Cloud FF has none), so unlike setCaptain there's no
+ * is_starting check - every squad player is already "starting" by
+ * definition for a no-bench game.
+ */
+export async function setMatchDayCaptain({ squadId, matchDate, captainGamePlayerId, viceCaptainGamePlayerId }: SetMatchDayCaptainArgs) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  if (viceCaptainGamePlayerId !== null && captainGamePlayerId === viceCaptainGamePlayerId) {
+    return { error: "Captain and vice-captain must be different players." };
+  }
+
+  const { data: squad } = await supabase.from("squads").select("id, user_id, game_id").eq("id", squadId).single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const currentGameweek = await getCurrentGameweek(supabase, squad.game_id);
+  if (currentGameweek === null) {
+    return { error: "No gameweek calendar published yet - can't validate a match-day captain without it." };
+  }
+  // Wide enough to cover any real match_date a caller could legally pass
+  // (the Captains page only ever renders days within its own planning
+  // window) without needing the caller to also pass a gameweek.
+  const matchDays = await getMatchDaysForSquad(supabase, squad.game_id, squadId, currentGameweek, currentGameweek + 10);
+  const day = matchDays.find((d) => d.matchDate === matchDate);
+  if (!day) {
+    return { error: "No real fixture found for this squad on that day." };
+  }
+
+  const eligibleIds = new Set(day.eligiblePlayers.map((p) => p.gamePlayerId));
+  if (!eligibleIds.has(captainGamePlayerId)) {
+    return { error: "That player doesn't have a fixture on this day." };
+  }
+  if (viceCaptainGamePlayerId !== null && !eligibleIds.has(viceCaptainGamePlayerId)) {
+    return { error: "That vice-captain doesn't have a fixture on this day." };
+  }
+
+  const { error } = await supabase.from("squad_match_day_captains").upsert(
+    {
+      squad_id: squadId,
+      match_date: matchDate,
+      captain_game_player_id: captainGamePlayerId,
+      vice_captain_game_player_id: viceCaptainGamePlayerId,
+      auto_picked: false,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "squad_id,match_date" }
+  );
+  if (error) return { error: error.message };
+
+  revalidatePath(`/squads/${squadId}/captains`);
+  return { success: true as const };
 }
 
 const GITHUB_REPO = "HailMaryV1/hail-mary-fantasy";
