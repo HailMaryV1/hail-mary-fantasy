@@ -26,6 +26,13 @@ type PoolRow = {
   status: string | null;
 };
 
+// Shape of compute_projections.py's decomposed-scoring `inputs` blob -
+// only the fields the "Sort by" dropdown needs, not the full structure.
+type ProjectionInputs = {
+  fixtures?: { stats?: { goal?: { projected?: number }; assist?: { projected?: number } } }[];
+  reconciliation?: { bonus?: number };
+};
+
 export default async function SquadPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const squadId = Number(id);
@@ -83,9 +90,27 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
   // "next actionable gameweek" the same way.
   const { data: scoreRows } = await supabase
     .from("player_projection_summary")
-    .select("game_player_id, hail_mary_score")
-    .eq("game_slug", "dreamteam");
+    .select("game_player_id, hail_mary_score, inputs")
+    .eq("game_slug", "dreamteam")
+    .returns<{ game_player_id: number; hail_mary_score: number | null; inputs: ProjectionInputs | null }[]>();
   const scoreByGamePlayerId = new Map<number, number>((scoreRows ?? []).map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+  // Real projected goals/assists/bonus for the "Sort by" dropdown - pulled
+  // straight from the same decomposed-scoring inputs compute_projections.py
+  // already writes (primary fixture's stat projections + Dream Team's PPM
+  // bonus reconciliation), not a second guess at the same numbers.
+  const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
+    (scoreRows ?? []).map((r) => {
+      const primaryStats = r.inputs?.fixtures?.[0]?.stats;
+      return [
+        r.game_player_id,
+        {
+          goalProjected: Number(primaryStats?.goal?.projected ?? 0),
+          assistProjected: Number(primaryStats?.assist?.projected ?? 0),
+          bonusProjected: Number(r.inputs?.reconciliation?.bonus ?? 0),
+        },
+      ];
+    })
+  );
 
   // Real fixture-difficulty tiles for GW(planning) through GW(planning+5),
   // per team - reuses the existing team_fixture_difficulty table (already
@@ -119,6 +144,8 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
     }
   }
 
+  const emptyStats = { goalProjected: 0, assistProjected: 0, bonusProjected: 0 };
+
   const boardSquad: BoardPlayer[] = squadPlayers.map((p) => ({
     game_player_id: p.game_player_id,
     full_name: p.full_name,
@@ -129,6 +156,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
     isCaptain: p.game_player_id === squad.captain_game_player_id,
     isViceCaptain: p.game_player_id === squad.vice_captain_game_player_id,
     fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${planningGameweek + i}`) ?? null),
+    ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
   }));
 
   const boardPool: PoolPlayer[] = (poolRaw ?? [])
@@ -141,6 +169,7 @@ export default async function SquadPage({ params }: { params: Promise<{ id: stri
       price: Number(p.price),
       score: scoreByGamePlayerId.get(p.game_player_id) ?? Number(p.hail_mary_score ?? 0),
       fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${planningGameweek + i}`) ?? null),
+      ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }))
     .sort((a, b) => b.score - a.score);
 

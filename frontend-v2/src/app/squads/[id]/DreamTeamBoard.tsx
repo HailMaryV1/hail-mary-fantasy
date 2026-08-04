@@ -17,12 +17,43 @@ export type BoardPlayer = {
   isCaptain: boolean;
   isViceCaptain: boolean;
   fixtures: (FixtureTile | null)[];
+  // Real per-gameweek projections from the same decomposed-scoring engine
+  // that produces `score` - drives the pool's "Sort by" dropdown.
+  goalProjected: number;
+  assistProjected: number;
+  bonusProjected: number;
 };
 
 export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain">;
 
 type Booster = "goal_bonus" | "twelfth_man" | "max_captain";
 type DisplayMode = "next1" | "next2" | "next3" | "pts" | "pred";
+type SortBy = "pts" | "goals" | "assists" | "bonus";
+
+// Own %/Top 1k % (ownership) aren't offered here - Dream Team's live game
+// hasn't launched yet, so no real ownership data exists to sort by, and
+// this app never shows a made-up number in place of one.
+const SORT_OPTIONS: [SortBy, string][] = [
+  ["pts", "Pts"],
+  ["goals", "Goals"],
+  ["assists", "Assists"],
+  ["bonus", "Bonus"],
+];
+const VALUE_BANDS = [1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 7, 8.5];
+
+function sortValue(p: PoolPlayer, sortBy: SortBy): number {
+  switch (sortBy) {
+    case "goals":
+      return p.goalProjected;
+    case "assists":
+      return p.assistProjected;
+    case "bonus":
+      return p.bonusProjected;
+    case "pts":
+    default:
+      return p.score ?? -Infinity;
+  }
+}
 
 const BOOSTER_LABELS: Record<Booster, string> = {
   goal_bonus: "Goal Bonus",
@@ -92,6 +123,8 @@ export default function DreamTeamBoard({
   const [transferError, setTransferError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
+  const [maxValue, setMaxValue] = useState<number | null>(null);
+  const [sortBy, setSortBy] = useState<SortBy>("pts");
 
   function statTextFor(p: { score: number | null }): string {
     switch (displayMode) {
@@ -149,9 +182,14 @@ export default function DreamTeamBoard({
     });
   }
 
-  const filteredPool = pool.filter(
-    (p) => (posFilter === "ALL" || p.position === posFilter) && (search === "" || p.full_name.toLowerCase().includes(search.toLowerCase()))
-  );
+  const filteredPool = pool
+    .filter(
+      (p) =>
+        (posFilter === "ALL" || p.position === posFilter) &&
+        (search === "" || p.full_name.toLowerCase().includes(search.toLowerCase())) &&
+        (maxValue === null || p.price <= maxValue)
+    )
+    .sort((a, b) => sortValue(b, sortBy) - sortValue(a, sortBy));
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
@@ -275,6 +313,31 @@ export default function DreamTeamBoard({
                   {pos}
                 </button>
               ))}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <select
+                value={maxValue ?? ""}
+                onChange={(e) => setMaxValue(e.target.value === "" ? null : Number(e.target.value))}
+                className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+              >
+                <option value="">All values</option>
+                {VALUE_BANDS.map((v) => (
+                  <option key={v} value={v}>
+                    £{v}m or less
+                  </option>
+                ))}
+              </select>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as SortBy)}
+                className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+              >
+                {SORT_OPTIONS.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    Sort: {label}
+                  </option>
+                ))}
+              </select>
             </div>
             <input
               value={search}
