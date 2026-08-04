@@ -352,3 +352,82 @@ export async function makeFanteamTransfer({
   revalidatePath(`/squads/${squadId}`);
   return { success: true, costPoints };
 }
+
+/**
+ * Reorders FanTeam's real auto-substitution priority for the 3 outfield
+ * bench spots (bench_order 1/2/3 - the reserve GK has no order, a 15-man
+ * squad only ever has one). A direct one-step swap, same as the old
+ * frontend's LineupBuilder: moving reserve 3 into reserve 1 trades places
+ * with whoever currently holds slot 1, rather than nudging everyone down
+ * one at a time.
+ *
+ * bench_order is nullable and, for at least one real squad, was only
+ * partially populated (one outfield reserve had a real value, two had
+ * none) - self-heals by assigning every outfield reserve a real
+ * sequential value (by game_player_id, a stable tiebreak the client uses
+ * for its own display fallback too, so the two never disagree) before
+ * applying the requested swap, rather than erroring on missing data.
+ */
+export async function reorderFanteamBench({
+  squadId,
+  gamePlayerId,
+  targetOrder,
+}: {
+  squadId: number;
+  gamePlayerId: number;
+  targetOrder: number;
+}) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+
+  const { data: squad } = await supabase.from("squads").select("id, user_id").eq("id", squadId).single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: benchRows } = await supabase
+    .from("squad_players")
+    .select("id, game_player_id, bench_order, game_players(players(position))")
+    .eq("squad_id", squadId)
+    .eq("is_starting", false)
+    .returns<{ id: number; game_player_id: number; bench_order: number | null; game_players: { players: { position: string } } }[]>();
+  if (!benchRows) return { error: "Couldn't load squad." };
+
+  const outfield = benchRows.filter((r) => r.game_players.players.position !== "GK");
+  const orders = outfield.map((r) => r.bench_order);
+  const needsNormalizing = orders.some((o) => o == null) || new Set(orders).size !== orders.length;
+
+  let working = outfield;
+  if (needsNormalizing) {
+    const sorted = outfield
+      .slice()
+      .sort((a, b) => (a.bench_order ?? 99) - (b.bench_order ?? 99) || a.game_player_id - b.game_player_id);
+    working = sorted.map((r, i) => ({ ...r, bench_order: i + 1 }));
+    for (const r of working) {
+      const { error } = await supabase.from("squad_players").update({ bench_order: r.bench_order }).eq("id", r.id);
+      if (error) return { error: error.message };
+    }
+  }
+
+  const moving = working.find((r) => r.game_player_id === gamePlayerId);
+  if (!moving) return { error: "That player isn't an outfield reserve." };
+  if (targetOrder < 1 || targetOrder > working.length) return { error: "Not a valid reserve slot." };
+  if (moving.bench_order === targetOrder) {
+    revalidatePath(`/squads/${squadId}`);
+    return { success: true };
+  }
+
+  const occupant = working.find((r) => r.bench_order === targetOrder);
+
+  const { error: moveError } = await supabase.from("squad_players").update({ bench_order: targetOrder }).eq("id", moving.id);
+  if (moveError) return { error: moveError.message };
+
+  if (occupant) {
+    const { error: swapError } = await supabase.from("squad_players").update({ bench_order: moving.bench_order }).eq("id", occupant.id);
+    if (swapError) return { error: swapError.message };
+  }
+
+  revalidatePath(`/squads/${squadId}`);
+  return { success: true };
+}

@@ -19,6 +19,10 @@ export type PitchPlayer = {
   formStatus?: FormStatus | null;
   isCaptain?: boolean;
   isViceCaptain?: boolean;
+  // Real bench priority (1/2/3 for the 3 outfield reserves, null/undefined
+  // for starters and the single reserve GK). Only meaningful on bench
+  // chips - drives whether a reorder control renders (see onReorderBench).
+  benchOrder?: number | null;
   // Overrides the default "X.X pts" second line - lets a caller swap in
   // fixture info, price-vs-value, etc. (Dream Team's real "Show on
   // players" toggle) without this component needing to know what modes
@@ -44,6 +48,7 @@ export default function PitchView({
   selectedId,
   swappableIds,
   onSelect,
+  onReorderBench,
 }: {
   starting: PitchPlayer[];
   // Optional - games with a real bench (FanTeam) pass their reserves here,
@@ -54,14 +59,22 @@ export default function PitchView({
   selectedId: number | null;
   swappableIds: Set<number> | null;
   onSelect: (player: PitchPlayer) => void;
+  // Optional - only outfield bench chips (benchOrder != null) get a
+  // reorder control when this is provided. targetOrder is the reserve
+  // slot (1/2/3) to move this player into - whoever currently holds that
+  // slot swaps back to this player's old one, a direct one-step swap
+  // rather than nudging one place at a time.
+  onReorderBench?: (gamePlayerId: number, targetOrder: number) => void;
 }) {
   const rows: { pos: PitchPlayer["position"]; players: PitchPlayer[] }[] = (["FWD", "MID", "DEF", "GK"] as const).map(
     (pos) => ({ pos, players: starting.filter((p) => p.position === pos) })
   );
+  const maxBenchOrder = Math.max(0, ...(bench ?? []).map((p) => p.benchOrder ?? 0));
 
-  function chip(player: PitchPlayer) {
+  function chip(player: PitchPlayer, zone: "pitch" | "bench" = "pitch") {
     const isSelected = selectedId === player.game_player_id;
     const isClickable = isSelected || swappableIds === null || swappableIds.has(player.game_player_id);
+    const showReorder = zone === "bench" && onReorderBench && player.benchOrder != null;
     return (
       <div key={player.game_player_id} className="flex flex-col items-center">
         <button
@@ -112,6 +125,24 @@ export default function PitchView({
             player.score != null && <span className="text-[10px] text-sky-400">{player.score.toFixed(1)} pts</span>
           )}
         </button>
+        {zone === "bench" && player.position === "GK" && <span className="mt-0.5 text-[9px] text-white/40">Reserve GK</span>}
+        {showReorder && (
+          <label className="mt-0.5 flex items-center gap-1 text-[9px] text-white/40">
+            Res
+            <select
+              value={player.benchOrder ?? ""}
+              onChange={(e) => onReorderBench!(player.game_player_id, Number(e.target.value))}
+              aria-label={`${player.full_name}'s bench order - swaps places with whoever's currently in the chosen slot`}
+              className="rounded border border-navy-700 bg-navy-950 px-0.5 py-px text-[9px] text-navy-300"
+            >
+              {Array.from({ length: maxBenchOrder }, (_, i) => i + 1).map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
     );
   }
@@ -134,7 +165,7 @@ export default function PitchView({
       {bench !== undefined && bench.length > 0 && (
         <div className="relative border-t border-white/10 bg-black/20 px-1 py-3 sm:px-3">
           <p className="mb-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white/50">Bench</p>
-          <div className="flex justify-evenly gap-0.5 sm:gap-1">{bench.map((p) => chip(p))}</div>
+          <div className="flex justify-evenly gap-0.5 sm:gap-1">{bench.map((p) => chip(p, "bench"))}</div>
         </div>
       )}
     </div>

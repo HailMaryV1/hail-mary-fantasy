@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
-import { makeFanteamTransfer } from "../actions";
+import { makeFanteamTransfer, reorderFanteamBench } from "../actions";
 
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
 
@@ -119,6 +119,8 @@ export default function FanTeamBoard({
   const [useWildcard, setUseWildcard] = useState(false);
   const [isTransferPending, startTransferTransition] = useTransition();
   const [transferError, setTransferError] = useState<string | null>(null);
+  const [isBenchPending, startBenchTransition] = useTransition();
+  const [benchError, setBenchError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
   const [teamFilter, setTeamFilter] = useState<string>("ALL");
@@ -156,18 +158,41 @@ export default function FanTeamBoard({
       score: p.score,
       isCaptain: p.isCaptain,
       isViceCaptain: p.isViceCaptain,
+      benchOrder: p.benchOrder,
       statText: displayMode in fixtureModeCount ? undefined : statTextFor(p),
       statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(p.fixtures, fixtureModeCount[displayMode]) : undefined,
     };
   }
 
   const starters = squad.filter((p) => p.isStarting).map(toPitchPlayer);
-  // Reserve GK first (the one bench player with no benchOrder), then the
-  // 3 outfield reserves in their real priority order.
-  const bench = squad
-    .filter((p) => !p.isStarting)
-    .sort((a, b) => (a.benchOrder ?? -1) - (b.benchOrder ?? -1))
-    .map(toPitchPlayer);
+  // Reserve GK first (never has a benchOrder - a 15-man squad only ever
+  // has one), then the 3 outfield reserves in their real priority order.
+  // benchOrder can be missing/duplicated on real data (see
+  // reorderFanteamBench's docstring) - falls back to game_player_id here
+  // so the display default matches exactly what the server would
+  // normalize it to on first use, and the two never disagree.
+  const benchGK = squad.filter((p) => !p.isStarting && p.position === "GK").map(toPitchPlayer);
+  const benchOutfieldRaw = squad.filter((p) => !p.isStarting && p.position !== "GK");
+  // Matches reorderFanteamBench's own "any null or duplicate triggers a
+  // full renumber" rule exactly - filling only the gaps would risk
+  // colliding with a real value still held by someone else (e.g. two
+  // players missing an order both defaulting to the same slot a third
+  // player already legitimately occupies).
+  const outfieldOrders = benchOutfieldRaw.map((p) => p.benchOrder);
+  const outfieldNeedsNormalizing = outfieldOrders.some((o) => o == null) || new Set(outfieldOrders).size !== outfieldOrders.length;
+  const benchOutfield = benchOutfieldRaw
+    .slice()
+    .sort((a, b) => (a.benchOrder ?? 99) - (b.benchOrder ?? 99) || a.game_player_id - b.game_player_id)
+    .map((p, i) => toPitchPlayer({ ...p, benchOrder: outfieldNeedsNormalizing ? i + 1 : p.benchOrder }));
+  const bench = [...benchGK, ...benchOutfield];
+
+  function handleReorderBench(gamePlayerId: number, targetOrder: number) {
+    setBenchError(null);
+    startBenchTransition(async () => {
+      const result = await reorderFanteamBench({ squadId, gamePlayerId, targetOrder });
+      if (result?.error) setBenchError(result.error);
+    });
+  }
 
   // FanTeam has no hard transfer cap like Dream Team - a transfer is
   // always allowed, just at a real cost (see costPreview below).
@@ -281,6 +306,7 @@ export default function FanTeamBoard({
           </div>
         )}
         {transferError && <p className="mt-2 text-xs text-red-400">{transferError}</p>}
+        {benchError && <p className="mt-2 text-xs text-red-400">{benchError}</p>}
 
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
           <div>
@@ -328,6 +354,7 @@ export default function FanTeamBoard({
               selectedId={selectedId}
               swappableIds={null}
               onSelect={(p) => (isTransferPending ? undefined : setSelectedId(p.game_player_id === selectedId ? null : p.game_player_id))}
+              onReorderBench={isBenchPending ? undefined : handleReorderBench}
             />
           </div>
 
