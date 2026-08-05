@@ -19,7 +19,11 @@ export type SquadSummaryInput = {
   totalProjectedPoints: number;
   teamValue: number;
   budgetRemaining: number;
-  bestCaptain: { full_name: string; score: number } | null;
+  // The captain ACTUALLY set on the squad right now - not necessarily
+  // Mary's optimal pick (the user can captain whoever they like), so the
+  // sentence below only claims "highest-projected" when that's genuinely
+  // true rather than asserting it unconditionally.
+  captain: { fullName: string; score: number } | null;
   topStrength: string | null; // health.strengths[0]
   topWeakness: string | null; // health.weaknesses[0]
   nextStepTransferCount: number | null; // gameweekPlan[0]?.transfers.length, null if no plan
@@ -27,7 +31,7 @@ export type SquadSummaryInput = {
 };
 
 export function buildSquadSummary(input: SquadSummaryInput): string[] {
-  const { players, totalProjectedPoints, teamValue, budgetRemaining, bestCaptain, topStrength, topWeakness, nextStepTransferCount, nextStepGameweek } = input;
+  const { players, totalProjectedPoints, teamValue, budgetRemaining, captain, topStrength, topWeakness, nextStepTransferCount, nextStepGameweek } = input;
 
   const sentences: string[] = [];
 
@@ -45,8 +49,13 @@ export function buildSquadSummary(input: SquadSummaryInput): string[] {
     sentences.push(`The squad leans on ${names} as its biggest projected contributors.`);
   }
 
-  if (bestCaptain) {
-    sentences.push(`${bestCaptain.full_name} carries the armband as the highest-projected starter this gameweek at ${bestCaptain.score.toFixed(1)} pts.`);
+  if (captain) {
+    const isTopScorer = topScorers.length > 0 && topScorers[0].fullName === captain.fullName;
+    sentences.push(
+      isTopScorer
+        ? `${captain.fullName} carries the armband as the highest-projected starter this gameweek at ${captain.score.toFixed(1)} pts.`
+        : `${captain.fullName} is captain this gameweek, projected for ${captain.score.toFixed(1)} pts.`
+    );
   }
 
   // Price allocation - how much of the budget sits in the top-3 most

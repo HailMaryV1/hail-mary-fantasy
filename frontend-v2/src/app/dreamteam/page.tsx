@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
+import { buildSquadSummary } from "@/lib/squadSummary";
 import DreamTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./DreamTeamBoard";
 
 export const dynamic = "force-dynamic";
@@ -195,6 +196,25 @@ export default async function DreamTeamPage() {
     ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
   }));
 
+  const totalProjectedPoints = boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
+  const currentCaptain = boardSquad.find((p) => p.isCaptain);
+  const squadSummary = buildSquadSummary({
+    players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score })),
+    totalProjectedPoints,
+    teamValue,
+    budgetRemaining: bank,
+    captain: currentCaptain ? { fullName: currentCaptain.full_name, score: currentCaptain.score ?? 0 } : null,
+    // Fixture/health-derived reasoning and the forward-looking transfer
+    // plan live only in the full Ask Mary analysis (runAskMaryAnalysis) -
+    // deliberately not run on every squad-board page load, since it's a
+    // real multi-gameweek search plus prediction-recording pass, not a
+    // cheap read. The summary here uses only data this page already has.
+    topStrength: null,
+    topWeakness: null,
+    nextStepTransferCount: null,
+    nextStepGameweek: null,
+  });
+
   const boardPool: PoolPlayer[] = (poolRaw ?? [])
     .filter((p) => !squadIds.has(p.game_player_id))
     .map((p) => ({
@@ -228,6 +248,7 @@ export default async function DreamTeamPage() {
       seasonStarted={seasonTiming.seasonStarted}
       squad={boardSquad}
       pool={boardPool}
+      squadSummary={squadSummary}
     />
   );
 }
