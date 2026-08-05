@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { isSingleTeamGame } from "@/lib/gameConfig";
+import { isSingleTeamGame, isTournamentGame } from "@/lib/gameConfig";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +16,10 @@ export default async function GameEntryPage({ params }: { params: Promise<{ slug
 
   const { data: game } = await supabase.from("fantasy_games").select("id, display_name").eq("slug", slug).single();
   if (!game) notFound();
+
+  // Tournament-scoped games (FanTeam Golf) have their own dedicated
+  // route tree - they don't fit the squad-selector model below at all.
+  if (isTournamentGame(slug)) redirect("/golf");
 
   const { data: squads } = await supabase
     .from("squads")
