@@ -19,6 +19,12 @@ export type SquadSummaryInput = {
   totalProjectedPoints: number;
   teamValue: number;
   budgetRemaining: number;
+  // false for a game with no price/budget system at all (EFL Fantasy -
+  // see gameConfig.ts's hasBudget) - the opening sentence and the
+  // stars-and-scrubs price-spread sentence would otherwise talk about a
+  // meaningless £0.0m every time. Defaults true so every existing
+  // caller's behavior is unchanged.
+  hasBudget?: boolean;
   // The captain ACTUALLY set on the squad right now - not necessarily
   // Mary's optimal pick (the user can captain whoever they like), so the
   // sentence below only claims "highest-projected" when that's genuinely
@@ -32,11 +38,14 @@ export type SquadSummaryInput = {
 
 export function buildSquadSummary(input: SquadSummaryInput): string[] {
   const { players, totalProjectedPoints, teamValue, budgetRemaining, captain, topStrength, topWeakness, nextStepTransferCount, nextStepGameweek } = input;
+  const hasBudget = input.hasBudget ?? true;
 
   const sentences: string[] = [];
 
   sentences.push(
-    `This squad is projected for ${totalProjectedPoints.toFixed(1)} points this gameweek, built on a squad value of £${teamValue.toFixed(1)}m with £${budgetRemaining.toFixed(1)}m still in the bank.`
+    hasBudget
+      ? `This squad is projected for ${totalProjectedPoints.toFixed(1)} points this gameweek, built on a squad value of £${teamValue.toFixed(1)}m with £${budgetRemaining.toFixed(1)}m still in the bank.`
+      : `This squad is projected for ${totalProjectedPoints.toFixed(1)} points this gameweek.`
   );
 
   const topScorers = players

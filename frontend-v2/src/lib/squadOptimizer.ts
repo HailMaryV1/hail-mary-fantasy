@@ -39,3 +39,25 @@ export function suggestBestXI(
   }
   return best;
 }
+
+/**
+ * EFL Fantasy's 2 "pick a whole club" slots (see migration 0087's
+ * docstring) - a simple top-N-by-score pick, same "no search needed"
+ * reasoning as suggestBestXI's per-position quota (every club slot is
+ * interchangeable, so the top 2 scorers is provably optimal), but
+ * additionally respecting the season-long club-cap-of-5 (real site rule -
+ * see migration 0090's docstring): a club already picked 5 times this
+ * season is skipped, same as it being unavailable, rather than
+ * recommending a pick the real site would immediately reject.
+ */
+export function suggestBestClubs(
+  clubs: { game_player_id: number; score: number }[],
+  pickCountByGamePlayerId: Map<number, number>,
+  count = 2
+): number[] {
+  return clubs
+    .filter((c) => (pickCountByGamePlayerId.get(c.game_player_id) ?? 0) < 5)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, count)
+    .map((c) => c.game_player_id);
+}

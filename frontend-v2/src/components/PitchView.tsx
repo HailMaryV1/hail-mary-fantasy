@@ -12,7 +12,10 @@ export type PitchPlayer = {
   position: string;
   team_name: string;
   is_starting: boolean;
-  price: number;
+  // null for a game with no price/budget system at all (EFL Fantasy -
+  // see gameConfig.ts's hasBudget) - distinct from a real £0.0m price,
+  // which no game actually has.
+  price: number | null;
   score: number | null;
   lineup?: string | null;
   status?: string | null;
@@ -51,6 +54,7 @@ type Formation = { gk: number; def: number; mid: number; fwd: number };
 export default function PitchView({
   starting,
   bench,
+  clubs,
   selectedId,
   swappableIds,
   onSelect,
@@ -62,6 +66,12 @@ export default function PitchView({
   // bench_order); games with no bench concept (Dream Team) omit it
   // entirely and nothing extra renders.
   bench?: PitchPlayer[];
+  // Optional - EFL Fantasy's 2 "pick a whole club" slots (see migration
+  // 0087's docstring - synthetic `players` rows, position 'CLUB'), shown
+  // in their own bottom section same as `bench` above. No other game has
+  // a slot type that isn't an individual player, so this stays fully
+  // optional and every other board's PitchView call is unaffected.
+  clubs?: PitchPlayer[];
   selectedId: number | null;
   swappableIds: Set<number> | null;
   onSelect: (player: PitchPlayer) => void;
@@ -193,6 +203,13 @@ export default function PitchView({
         <div className="relative border-t border-white/10 bg-black/20 px-1 py-3 sm:px-3">
           <p className="mb-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white/50">Bench</p>
           <div className="flex justify-evenly gap-0.5 sm:gap-1">{bench.map((p) => chip(p, "bench"))}</div>
+        </div>
+      )}
+
+      {clubs !== undefined && clubs.length > 0 && (
+        <div className="relative border-t border-white/10 bg-black/20 px-1 py-3 sm:px-3">
+          <p className="mb-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white/50">Clubs</p>
+          <div className="flex justify-evenly gap-0.5 sm:gap-1">{clubs.map((p) => chip(p))}</div>
         </div>
       )}
     </div>
