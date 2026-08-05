@@ -238,16 +238,17 @@ def import_players(cur, game_id, players_data, team_id_by_squad_id):
 
         external_id = str(p["id"])
         seen_external_ids.add(external_id)
+        competition = COMPETITION_BY_ID.get(p.get("competitionId"))
         cur.execute(
             """
-            insert into game_players (game_id, player_id, external_id, position_code, price, is_active)
-            values (%s, %s, %s, %s, 0, true)
+            insert into game_players (game_id, player_id, external_id, position_code, price, is_active, competition)
+            values (%s, %s, %s, %s, 0, true, %s)
             on conflict (game_id, external_id) do update
                 set player_id = excluded.player_id, position_code = excluded.position_code,
-                    is_active = true, updated_at = now()
+                    is_active = true, updated_at = now(), competition = excluded.competition
             returning id
             """,
-            (game_id, player_id, external_id, position),
+            (game_id, player_id, external_id, position, competition),
         )
         game_player_id = cur.fetchone()[0]
 
@@ -321,14 +322,15 @@ def import_club_game_players(cur, game_id, squads_data, club_player_id_by_squad_
     for s in squads_data:
         player_id = club_player_id_by_squad_id[s["id"]]
         external_id = f"club-{s['id']}"
+        competition = COMPETITION_BY_ID.get(s.get("competitionId"))
         cur.execute(
             """
-            insert into game_players (game_id, player_id, external_id, position_code, price, is_active)
-            values (%s, %s, %s, 'CLUB', 0, true)
-            on conflict (game_id, external_id) do update set is_active = true, updated_at = now()
+            insert into game_players (game_id, player_id, external_id, position_code, price, is_active, competition)
+            values (%s, %s, %s, 'CLUB', 0, true, %s)
+            on conflict (game_id, external_id) do update set is_active = true, updated_at = now(), competition = excluded.competition
             returning id
             """,
-            (game_id, player_id, external_id),
+            (game_id, player_id, external_id, competition),
         )
         game_player_id = cur.fetchone()[0]
         cur.execute(

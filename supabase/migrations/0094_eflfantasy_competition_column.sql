@@ -1,0 +1,13 @@
+-- EFL Fantasy's single combined player pool spans 3 real competitions
+-- (Championship/League One/League Two - see migration 0088's docstring),
+-- but there's currently no way to filter the squad builder's pool by
+-- league. `game_players` doesn't carry that today - `competition` lives
+-- on `fixtures` (per-fixture, not per-club), and `game_competitions`
+-- only scopes which competition strings a game uses, not which club
+-- belongs to which one.
+--
+-- Nullable and game-scoped by construction (every other game's rows
+-- leave this null - only eflfantasy's import populates it), same pattern
+-- as `game_squad_rules.club_quota` (migration 0089): a genuinely new
+-- need, not retrofitted onto every game.
+alter table game_players add column competition text;

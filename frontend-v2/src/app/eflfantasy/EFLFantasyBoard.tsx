@@ -5,7 +5,10 @@ import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
+import Kit from "@/components/Kit";
 import { makeTransfer, makeClubTransfer } from "./actions";
+
+type NextFixture = { opponent: string; isHome: boolean; gameweek: number };
 
 export type BoardPlayer = {
   game_player_id: number;
@@ -13,13 +16,31 @@ export type BoardPlayer = {
   position: "GK" | "DEF" | "MID" | "FWD";
   team_name: string;
   score: number | null;
+  nextFixture?: NextFixture | null;
+  competition?: string | null;
 };
 export type PoolPlayer = BoardPlayer;
 
 // A CLUB pick is a synthetic "player" (migration 0087) - same shape
 // minus price/position, since neither is meaningful for a club slot.
-export type BoardClub = { game_player_id: number; club_name: string; score: number | null };
+export type BoardClub = {
+  game_player_id: number;
+  club_name: string;
+  score: number | null;
+  nextFixture?: NextFixture | null;
+  lastSeasonAvgPoints?: number | null;
+  competition?: string | null;
+};
 export type PoolClub = BoardClub;
+
+function FixturePill({ fixture }: { fixture: NextFixture | null | undefined }) {
+  if (!fixture) return null;
+  return (
+    <span className="rounded bg-navy-800 px-1 py-0.5 text-[9px] font-medium text-navy-300" title={`GW${fixture.gameweek}`}>
+      {fixture.isHome ? "v" : "@"} {fixture.opponent}
+    </span>
+  );
+}
 
 function optimisticSwap<T extends { game_player_id: number }>(current: T[], outId: number, incoming: T): T[] {
   const stillHere = current.some((p) => p.game_player_id === outId);
@@ -63,6 +84,7 @@ export default function EFLFantasyBoard({
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
   const [teamFilter, setTeamFilter] = useState<string>("ALL");
+  const [leagueFilter, setLeagueFilter] = useState<string>("ALL");
   const [poolTab, setPoolTab] = useState<"players" | "clubs">("players");
 
   const [optimisticSquad, applyOptimisticSquad] = useOptimistic(squad, (_current: BoardPlayer[], next: BoardPlayer[]) => next);
@@ -154,19 +176,20 @@ export default function EFLFantasyBoard({
       (p) =>
         (posFilter === "ALL" || p.position === posFilter) &&
         (teamFilter === "ALL" || p.team_name === teamFilter) &&
+        (leagueFilter === "ALL" || p.competition === leagueFilter) &&
         (search === "" || p.full_name.toLowerCase().includes(search.toLowerCase()))
     )
     .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
 
   const filteredClubPool = clubPool
-    .filter((c) => search === "" || c.club_name.toLowerCase().includes(search.toLowerCase()))
+    .filter((c) => (leagueFilter === "ALL" || c.competition === leagueFilter) && (search === "" || c.club_name.toLowerCase().includes(search.toLowerCase())))
     .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
 
   const POOL_PAGE_SIZE = 15;
   const [poolPage, setPoolPage] = useState(1);
   useEffect(() => {
     setPoolPage(1);
-  }, [posFilter, teamFilter, search, poolTab]);
+  }, [posFilter, teamFilter, leagueFilter, search, poolTab]);
   const activeList = poolTab === "players" ? filteredPool : filteredClubPool;
   const totalPoolPages = Math.max(1, Math.ceil(activeList.length / POOL_PAGE_SIZE));
   const clampedPoolPage = Math.min(poolPage, totalPoolPages);
@@ -268,6 +291,23 @@ export default function EFLFantasyBoard({
                 <p className="mt-2 text-sm leading-relaxed text-navy-200">{squadSummary.join(" ")}</p>
               </div>
             )}
+            {optimisticClubs.length > 0 && (
+              <div className="mt-4 rounded-xl border border-navy-700 bg-navy-900 p-4">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Why These Clubs</h2>
+                <div className="mt-2 flex flex-col gap-2">
+                  {optimisticClubs.map((c) => (
+                    <div key={c.game_player_id} className="flex items-center gap-2 text-sm">
+                      <Kit teamName={c.club_name} size="sm" />
+                      <span className="font-medium text-white">{c.club_name}</span>
+                      <span className="text-navy-400">
+                        {c.lastSeasonAvgPoints != null ? `averaged ${c.lastSeasonAvgPoints.toFixed(1)} pts/GW last season` : "no last-season data"}
+                        {c.nextFixture ? ` · next ${c.nextFixture.isHome ? "vs" : "away to"} ${c.nextFixture.opponent} (GW${c.nextFixture.gameweek})` : ""}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {infoPlayerId != null ? (
@@ -288,6 +328,17 @@ export default function EFLFantasyBoard({
                   Clubs
                 </button>
               </div>
+
+              <select
+                value={leagueFilter}
+                onChange={(e) => setLeagueFilter(e.target.value)}
+                className="mb-2 rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+              >
+                <option value="ALL">All leagues</option>
+                <option value="Championship">Championship</option>
+                <option value="League One">League One</option>
+                <option value="League Two">League Two</option>
+              </select>
 
               {poolTab === "players" ? (
                 <>
@@ -362,9 +413,17 @@ export default function EFLFantasyBoard({
                             }`}
                           >
                             <td className="py-1.5 pr-2">
-                              <div className="font-medium text-white">{p.full_name}</div>
-                              <div className="text-[10px] text-navy-500">
-                                {p.team_name} · {p.position}
+                              <div className="flex items-center gap-1.5">
+                                <Kit teamName={p.team_name} size="sm" />
+                                <div>
+                                  <div className="font-medium text-white">{p.full_name}</div>
+                                  <div className="flex items-center gap-1 text-[10px] text-navy-500">
+                                    <span>
+                                      {p.team_name} · {p.position}
+                                    </span>
+                                    <FixturePill fixture={p.nextFixture} />
+                                  </div>
+                                </div>
                               </div>
                             </td>
                             <td className="py-1.5 pr-2 text-sky-400">{p.score != null ? p.score.toFixed(1) : "-"}</td>
@@ -408,7 +467,16 @@ export default function EFLFantasyBoard({
                             }`}
                           >
                             <td className="py-1.5 pr-2">
-                              <div className="font-medium text-white">{c.club_name}</div>
+                              <div className="flex items-center gap-1.5">
+                                <Kit teamName={c.club_name} size="sm" />
+                                <div>
+                                  <div className="font-medium text-white">{c.club_name}</div>
+                                  <div className="flex items-center gap-1 text-[10px] text-navy-500">
+                                    {c.lastSeasonAvgPoints != null && <span>{c.lastSeasonAvgPoints.toFixed(1)} pts/GW last season</span>}
+                                    <FixturePill fixture={c.nextFixture} />
+                                  </div>
+                                </div>
+                              </div>
                             </td>
                             <td className="py-1.5 pr-2 text-sky-400">{c.score != null ? c.score.toFixed(1) : "-"}</td>
                           </tr>
