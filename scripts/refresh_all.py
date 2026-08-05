@@ -182,6 +182,7 @@ def main():
     results.append(run_step("Import Dream Team players", ["import_dreamteam.py"]))
 
     results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
+    results.append(run_step("Capture squad state at deadline (Mary Performance Lab)", ["scripts/capture_squad_gameweek_state.py"]))
     results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
 
     # FanTeam Golf - a brand-new tournament ID drops every week with no
