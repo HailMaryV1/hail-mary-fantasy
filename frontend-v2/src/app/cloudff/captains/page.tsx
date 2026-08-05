@@ -25,17 +25,23 @@ export default async function CloudFFCaptainsPage() {
 
   const { data: game } = await supabase.from("fantasy_games").select("id, display_name").eq("slug", "cloudff").maybeSingle();
 
-  const { data: squad } = game
-    ? await supabase
-        .from("squads")
-        .select("id, name")
-        .eq("game_id", game.id)
-        .eq("user_id", user.id)
-        .eq("is_archived", false)
-        .order("created_at")
-        .limit(1)
-        .maybeSingle<{ id: number; name: string }>()
-    : { data: null };
+  // Squad lookup and season timing both only need game.id and don't
+  // depend on each other's result - one Promise.all instead of two
+  // sequential round trips, same fix already applied to the board page.
+  const [{ data: squad }, seasonTiming] = game
+    ? await Promise.all([
+        supabase
+          .from("squads")
+          .select("id, name")
+          .eq("game_id", game.id)
+          .eq("user_id", user.id)
+          .eq("is_archived", false)
+          .order("created_at")
+          .limit(1)
+          .maybeSingle<{ id: number; name: string }>(),
+        getSeasonTiming(supabase, game.id),
+      ])
+    : [{ data: null }, { seasonStarted: false, planningGameweek: null }];
 
   const header = (
     <div>
@@ -60,7 +66,7 @@ export default async function CloudFFCaptainsPage() {
     );
   }
 
-  const { planningGameweek } = await getSeasonTiming(supabase, game.id);
+  const { planningGameweek } = seasonTiming;
 
   if (planningGameweek === null) {
     return (

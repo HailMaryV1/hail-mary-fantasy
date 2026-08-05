@@ -44,13 +44,26 @@ export async function getMatchDaysForSquad(
   gameweekFrom: number,
   gameweekTo: number
 ): Promise<MatchDay[]> {
-  const { data: rows } = await supabase
-    .from("squad_players")
-    .select("game_player_id, game_players(players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
-    .eq("squad_id", squadId)
-    .returns<
-      { game_player_id: number; game_players: { players: { full_name: string; position: string; team_id: number; teams: { name: string } } } }[]
-    >();
+  // Squad roster and the leaguewide fixture list are independent reads -
+  // neither depends on the other's result - so they run as one Promise.all
+  // instead of two back-to-back round trips (same fix already applied to
+  // the board pages' own data loading).
+  const [{ data: rows }, { data: fixtureRows }] = await Promise.all([
+    supabase
+      .from("squad_players")
+      .select("game_player_id, game_players(players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
+      .eq("squad_id", squadId)
+      .returns<
+        { game_player_id: number; game_players: { players: { full_name: string; position: string; team_id: number; teams: { name: string } } } }[]
+      >(),
+    supabase
+      .from("game_fixture_gameweeks")
+      .select("gameweek, fixtures(kickoff_at, home_team_id, away_team_id)")
+      .eq("game_id", gameId)
+      .gte("gameweek", gameweekFrom)
+      .lte("gameweek", gameweekTo)
+      .returns<{ gameweek: number; fixtures: { kickoff_at: string; home_team_id: number; away_team_id: number } }[]>(),
+  ]);
   const squadPlayers = (rows ?? []).map((r) => ({
     gamePlayerId: r.game_player_id,
     fullName: r.game_players.players.full_name,
@@ -58,14 +71,6 @@ export async function getMatchDaysForSquad(
     teamName: r.game_players.players.teams.name,
     position: r.game_players.players.position,
   }));
-
-  const { data: fixtureRows } = await supabase
-    .from("game_fixture_gameweeks")
-    .select("gameweek, fixtures(kickoff_at, home_team_id, away_team_id)")
-    .eq("game_id", gameId)
-    .gte("gameweek", gameweekFrom)
-    .lte("gameweek", gameweekTo)
-    .returns<{ gameweek: number; fixtures: { kickoff_at: string; home_team_id: number; away_team_id: number } }[]>();
 
   // Every real match-date in the window (leaguewide, not squad-filtered),
   // plus which teams play that date - a team could in principle have two
