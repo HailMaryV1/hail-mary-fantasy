@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
 import { makeFanteamTransfer, reorderFanteamBench, setFanteamFormation, setFanteamCaptain, swapFanteamLineup } from "../actions";
@@ -88,6 +88,88 @@ function wildcardWindowFor(gameweek: number): "wc1" | "wc2" | null {
   return null;
 }
 
+// Best-effort client-side mirrors of the server's real mutation logic
+// (setFanteamFormation/setFanteamCaptain/reorderFanteamBench/
+// swapFanteamLineup/makeFanteamTransfer in ../actions), used ONLY to
+// paint an instant local guess via useOptimistic while the real
+// server action is in flight - the server stays the single source of
+// truth and always wins on the next revalidate, so a guess that's
+// slightly off (an unusual score tie-break, a race with another
+// change) self-corrects within one round trip rather than staying
+// wrong.
+function optimisticFormation(current: BoardPlayer[], formation: Formation): BoardPlayer[] {
+  const quota: Record<"GK" | "DEF" | "MID" | "FWD", number> = {
+    GK: formation.gk_count,
+    DEF: formation.def_count,
+    MID: formation.mid_count,
+    FWD: formation.fwd_count,
+  };
+  const byPosition: Record<"GK" | "DEF" | "MID" | "FWD", BoardPlayer[]> = { GK: [], DEF: [], MID: [], FWD: [] };
+  for (const p of current) byPosition[p.position].push(p);
+  const next: BoardPlayer[] = [];
+  for (const pos of ["GK", "DEF", "MID", "FWD"] as const) {
+    byPosition[pos]
+      .slice()
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .forEach((p, i) => next.push({ ...p, isStarting: i < quota[pos], benchOrder: null }));
+  }
+  const outfieldBenchOrder = new Map(
+    next
+      .filter((p) => !p.isStarting && p.position !== "GK")
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .map((p, i) => [p.game_player_id, i + 1])
+  );
+  return next.map((p) => (outfieldBenchOrder.has(p.game_player_id) ? { ...p, benchOrder: outfieldBenchOrder.get(p.game_player_id)! } : p));
+}
+
+function optimisticCaptain(current: BoardPlayer[], captainId: number, viceCaptainId: number): BoardPlayer[] {
+  return current.map((p) => ({ ...p, isCaptain: p.game_player_id === captainId, isViceCaptain: p.game_player_id === viceCaptainId }));
+}
+
+function optimisticBenchReorder(current: BoardPlayer[], gamePlayerId: number, targetOrder: number): BoardPlayer[] {
+  const outfield = current.filter((p) => !p.isStarting && p.position !== "GK");
+  const orders = outfield.map((p) => p.benchOrder);
+  const needsNormalizing = orders.some((o) => o == null) || new Set(orders).size !== orders.length;
+  const orderByPlayerId = needsNormalizing
+    ? new Map(
+        outfield
+          .slice()
+          .sort((a, b) => (a.benchOrder ?? 99) - (b.benchOrder ?? 99) || a.game_player_id - b.game_player_id)
+          .map((p, i) => [p.game_player_id, i + 1])
+      )
+    : new Map(outfield.map((p) => [p.game_player_id, p.benchOrder!]));
+  const movingFrom = orderByPlayerId.get(gamePlayerId);
+  if (movingFrom == null) return current;
+  const occupantId = [...orderByPlayerId.entries()].find(([id, order]) => order === targetOrder && id !== gamePlayerId)?.[0];
+  orderByPlayerId.set(gamePlayerId, targetOrder);
+  if (occupantId != null) orderByPlayerId.set(occupantId, movingFrom);
+  return current.map((p) => (orderByPlayerId.has(p.game_player_id) ? { ...p, benchOrder: orderByPlayerId.get(p.game_player_id)! } : p));
+}
+
+function optimisticSwap(current: BoardPlayer[], playerAId: number, playerBId: number): BoardPlayer[] {
+  const a = current.find((p) => p.game_player_id === playerAId);
+  const b = current.find((p) => p.game_player_id === playerBId);
+  if (!a || !b) return current;
+  return current.map((p) => {
+    if (p.game_player_id === playerAId) return { ...p, isStarting: b.isStarting, benchOrder: b.benchOrder };
+    if (p.game_player_id === playerBId) return { ...p, isStarting: a.isStarting, benchOrder: a.benchOrder };
+    return p;
+  });
+}
+
+function optimisticTransfer(current: BoardPlayer[], outGamePlayerId: number, incomingPoolPlayer: PoolPlayer): BoardPlayer[] {
+  const outgoing = current.find((p) => p.game_player_id === outGamePlayerId);
+  if (!outgoing) return current;
+  const incoming: BoardPlayer = {
+    ...incomingPoolPlayer,
+    isCaptain: false,
+    isViceCaptain: false,
+    isStarting: outgoing.isStarting,
+    benchOrder: outgoing.isStarting ? null : outgoing.benchOrder,
+  };
+  return current.filter((p) => p.game_player_id !== outGamePlayerId).concat(incoming);
+}
+
 export default function FanTeamBoard({
   squadId,
   squadName,
@@ -158,6 +240,14 @@ export default function FanTeamBoard({
   const [maxValue, setMaxValue] = useState<number | null>(null);
   const [sortBy, setSortBy] = useState<SortBy>("pts");
 
+  // Instant local guess for every squad-shape change (formation, captain,
+  // bench order, swap, transfer) - painted synchronously inside each
+  // action's transition, before the server round trip resolves. React
+  // automatically drops back to the real `squad` prop once the
+  // transition settles (the revalidated server data becomes the new
+  // prop), so this never needs manual reset/rollback wiring.
+  const [optimisticSquad, applyOptimisticSquad] = useOptimistic(squad, (_current: BoardPlayer[], next: BoardPlayer[]) => next);
+
   const teams = Array.from(new Set(pool.map((p) => p.team_name))).sort();
 
   const wildcardWindow = wildcardWindowFor(planningGameweek);
@@ -195,15 +285,15 @@ export default function FanTeamBoard({
     };
   }
 
-  const starters = squad.filter((p) => p.isStarting).map(toPitchPlayer);
+  const starters = optimisticSquad.filter((p) => p.isStarting).map(toPitchPlayer);
   // Reserve GK first (never has a benchOrder - a 15-man squad only ever
   // has one), then the 3 outfield reserves in their real priority order.
   // benchOrder can be missing/duplicated on real data (see
   // reorderFanteamBench's docstring) - falls back to game_player_id here
   // so the display default matches exactly what the server would
   // normalize it to on first use, and the two never disagree.
-  const benchGK = squad.filter((p) => !p.isStarting && p.position === "GK").map(toPitchPlayer);
-  const benchOutfieldRaw = squad.filter((p) => !p.isStarting && p.position !== "GK");
+  const benchGK = optimisticSquad.filter((p) => !p.isStarting && p.position === "GK").map(toPitchPlayer);
+  const benchOutfieldRaw = optimisticSquad.filter((p) => !p.isStarting && p.position !== "GK");
   // Matches reorderFanteamBench's own "any null or duplicate triggers a
   // full renumber" rule exactly - filling only the gaps would risk
   // colliding with a real value still held by someone else (e.g. two
@@ -220,6 +310,7 @@ export default function FanTeamBoard({
   function handleReorderBench(gamePlayerId: number, targetOrder: number) {
     setBenchError(null);
     startBenchTransition(async () => {
+      applyOptimisticSquad(optimisticBenchReorder(optimisticSquad, gamePlayerId, targetOrder));
       const result = await reorderFanteamBench({ squadId, gamePlayerId, targetOrder });
       if (result?.error) setBenchError(result.error);
     });
@@ -227,15 +318,17 @@ export default function FanTeamBoard({
 
   function handleFormationChange(formationCode: string) {
     setFormationError(null);
+    const formation = formations.find((f) => f.code === formationCode);
     startFormationTransition(async () => {
+      if (formation) applyOptimisticSquad(optimisticFormation(optimisticSquad, formation));
       const result = await setFanteamFormation({ squadId, formationCode });
       if (result?.error) setFormationError(result.error);
     });
   }
 
-  // Server-confirmed captain/VC, from the squad prop.
-  const serverCaptainId = squad.find((p) => p.isCaptain)?.game_player_id ?? null;
-  const serverViceCaptainId = squad.find((p) => p.isViceCaptain)?.game_player_id ?? null;
+  // Server-confirmed (or, mid-transition, optimistically-guessed) captain/VC.
+  const serverCaptainId = optimisticSquad.find((p) => p.isCaptain)?.game_player_id ?? null;
+  const serverViceCaptainId = optimisticSquad.find((p) => p.isViceCaptain)?.game_player_id ?? null;
   // Locally staged - captain and vice-captain are picked in two separate
   // dropdown changes, but the server requires both non-null and
   // different in one call. Without local staging, picking captain then
@@ -249,12 +342,13 @@ export default function FanTeamBoard({
     setPendingViceCaptainId(serverViceCaptainId);
   }, [serverCaptainId, serverViceCaptainId]);
 
-  const starterOptions = squad.filter((p) => p.isStarting);
+  const starterOptions = optimisticSquad.filter((p) => p.isStarting);
 
   function handleSetCaptain(newCaptainId: number | null, newViceCaptainId: number | null) {
     if (newCaptainId === null || newViceCaptainId === null || newCaptainId === newViceCaptainId) return;
     setCaptainError(null);
     startCaptainTransition(async () => {
+      applyOptimisticSquad(optimisticCaptain(optimisticSquad, newCaptainId, newViceCaptainId));
       const result = await setFanteamCaptain({ squadId, captainGamePlayerId: newCaptainId, viceCaptainGamePlayerId: newViceCaptainId });
       if (result?.error) setCaptainError(result.error);
     });
@@ -271,7 +365,7 @@ export default function FanTeamBoard({
 
   // FanTeam has no hard transfer cap like Dream Team - a transfer is
   // always allowed, just at a real cost (see costPreview below).
-  const selectedPlayer = selectedId != null ? squad.find((p) => p.game_player_id === selectedId) : undefined;
+  const selectedPlayer = selectedId != null ? optimisticSquad.find((p) => p.game_player_id === selectedId) : undefined;
 
   // A real sub, not a transfer - opposite starting/bench status, and
   // either the same position (formation counts untouched) or a different
@@ -279,7 +373,7 @@ export default function FanTeamBoard({
   // this game's real formations (e.g. swapping a MID for a DEF flips
   // 3-5-2 into 4-4-2). The server re-validates the same way.
   const startingCounts: Record<"GK" | "DEF" | "MID" | "FWD", number> = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
-  for (const p of squad) if (p.isStarting) startingCounts[p.position] += 1;
+  for (const p of optimisticSquad) if (p.isStarting) startingCounts[p.position] += 1;
 
   function swapKeepsValidFormation(outgoingPos: "GK" | "DEF" | "MID" | "FWD", incomingPos: "GK" | "DEF" | "MID" | "FWD"): boolean {
     if (outgoingPos === incomingPos) return true;
@@ -289,7 +383,7 @@ export default function FanTeamBoard({
 
   const legalSwapIds = new Set(
     selectedPlayer
-      ? squad
+      ? optimisticSquad
           .filter((p) => p.isStarting !== selectedPlayer.isStarting)
           .filter((p) => {
             const outgoingPos = selectedPlayer.isStarting ? selectedPlayer.position : p.position;
@@ -303,6 +397,7 @@ export default function FanTeamBoard({
   function handleSwapLineup(playerAId: number, playerBId: number) {
     setSwapError(null);
     startSwapTransition(async () => {
+      applyOptimisticSquad(optimisticSwap(optimisticSquad, playerAId, playerBId));
       const result = await swapFanteamLineup({ squadId, playerAId, playerBId });
       if (result?.error) setSwapError(result.error);
       else setSelectedId(null);
@@ -315,7 +410,7 @@ export default function FanTeamBoard({
   // rows visibly dim before a doomed click.
   const clubCounts = new Map<number, number>();
   if (selectedPlayer) {
-    for (const p of squad) {
+    for (const p of optimisticSquad) {
       if (p.game_player_id === selectedPlayer.game_player_id) continue;
       clubCounts.set(p.team_id, (clubCounts.get(p.team_id) ?? 0) + 1);
     }
@@ -326,7 +421,7 @@ export default function FanTeamBoard({
           .filter(
             (p) =>
               p.position === selectedPlayer.position &&
-              p.price <= bank + selectedPlayer.price &&
+              p.price <= optimisticBank + selectedPlayer.price &&
               (clubCounts.get(p.team_id) ?? 0) + 1 <= maxPerClub
           )
           .map((p) => p.game_player_id)
@@ -344,7 +439,9 @@ export default function FanTeamBoard({
   function handleTransfer(inGamePlayerId: number) {
     if (!selectedId) return;
     setTransferError(null);
+    const incomingPoolPlayer = pool.find((p) => p.game_player_id === inGamePlayerId);
     startTransferTransition(async () => {
+      if (incomingPoolPlayer) applyOptimisticSquad(optimisticTransfer(optimisticSquad, selectedId, incomingPoolPlayer));
       const result = await makeFanteamTransfer({ squadId, outGamePlayerId: selectedId, inGamePlayerId, useWildcard });
       if (result?.error) setTransferError(result.error);
       else {
@@ -368,7 +465,15 @@ export default function FanTeamBoard({
 
   // Captains score double - a simple sum, not the more elaborate
   // auto-sub-probability-weighted total used elsewhere.
-  const projectedPoints = squad.filter((p) => p.isStarting).reduce((sum, p) => sum + (p.score ?? 0) * (p.isCaptain ? 2 : 1), 0);
+  const projectedPoints = optimisticSquad.filter((p) => p.isStarting).reduce((sum, p) => sum + (p.score ?? 0) * (p.isCaptain ? 2 : 1), 0);
+
+  // Budget is constant (doesn't change with a transfer) - back-derived
+  // once from the server-confirmed bank+teamValue props so a transfer's
+  // optimistic squad can recompute an honest bank/team-value instantly
+  // instead of showing stale figures until the server round trip lands.
+  const budget = bank + teamValue;
+  const optimisticTeamValue = optimisticSquad.reduce((sum, p) => sum + p.price, 0);
+  const optimisticBank = budget - optimisticTeamValue;
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
@@ -379,8 +484,8 @@ export default function FanTeamBoard({
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
           <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
-          <StatBox label="Bank" value={`£${bank.toFixed(1)}m`} />
-          <StatBox label="Team Value" value={`£${teamValue.toFixed(1)}m`} />
+          <StatBox label="Bank" value={`£${optimisticBank.toFixed(1)}m`} />
+          <StatBox label="Team Value" value={`£${optimisticTeamValue.toFixed(1)}m`} />
           <StatBox label="Projected Points" value={projectedPoints.toFixed(1)} />
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
             <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Wildcard</p>

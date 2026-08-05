@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
 import { setBooster, makeTransfer } from "./actions";
@@ -83,6 +83,17 @@ function fixtureTilesFor(tiles: (FixtureTile | null)[], count: number): { label:
     }));
 }
 
+// Best-effort client-side mirror of makeTransfer's real squad-shape
+// change (./actions), used only to paint an instant local guess via
+// useOptimistic while the real server action is in flight - see
+// FanTeamBoard.tsx's identical pattern/rationale.
+function optimisticTransfer(current: BoardPlayer[], outGamePlayerId: number, incomingPoolPlayer: PoolPlayer): BoardPlayer[] {
+  const stillHere = current.some((p) => p.game_player_id === outGamePlayerId);
+  if (!stillHere) return current;
+  const incoming: BoardPlayer = { ...incomingPoolPlayer, isCaptain: false, isViceCaptain: false };
+  return current.filter((p) => p.game_player_id !== outGamePlayerId).concat(incoming);
+}
+
 export default function DreamTeamBoard({
   squadId,
   squadName,
@@ -127,6 +138,12 @@ export default function DreamTeamBoard({
   const [sortBy, setSortBy] = useState<SortBy>("pts");
   const [teamFilter, setTeamFilter] = useState<string>("ALL");
 
+  // Instant local guess for a transfer (squad) or a booster pick - see
+  // FanTeamBoard.tsx's identical pattern. React drops back to the real
+  // prop once each transition settles.
+  const [optimisticSquad, applyOptimisticSquad] = useOptimistic(squad, (_current: BoardPlayer[], next: BoardPlayer[]) => next);
+  const [optimisticBoosters, applyOptimisticBoosters] = useOptimistic(boosters, (_current, next: typeof boosters) => next);
+
   const teams = Array.from(new Set(pool.map((p) => p.team_name))).sort();
 
   function statTextFor(p: { score: number | null }): string {
@@ -141,7 +158,7 @@ export default function DreamTeamBoard({
 
   const fixtureModeCount: Record<string, number> = { next1: 1, next2: 2, next3: 3 };
 
-  const pitchPlayers: PitchPlayer[] = squad.map((p) => ({
+  const pitchPlayers: PitchPlayer[] = optimisticSquad.map((p) => ({
     game_player_id: p.game_player_id,
     full_name: p.full_name,
     position: p.position,
@@ -158,27 +175,38 @@ export default function DreamTeamBoard({
   function handleBooster(booster: Booster | null) {
     setBoosterError(null);
     startBoosterTransition(async () => {
+      applyOptimisticBoosters({ ...boosters, active: booster, activeGameweek: booster ? planningGameweek : null });
       const result = await setBooster({ squadId, booster, gameweek: planningGameweek });
       if (result?.error) setBoosterError(result.error);
     });
   }
 
-  const selectedPlayer = selectedId != null ? squad.find((p) => p.game_player_id === selectedId) : undefined;
+  const selectedPlayer = selectedId != null ? optimisticSquad.find((p) => p.game_player_id === selectedId) : undefined;
   const canTransfer = !seasonStarted || transfers > 0;
+
+  // Budget is constant - back-derived once from the server-confirmed
+  // bank+teamValue props so a transfer's optimistic squad can recompute
+  // an honest bank/team-value instantly (see FanTeamBoard.tsx's identical
+  // pattern).
+  const budget = bank + teamValue;
+  const optimisticTeamValue = optimisticSquad.reduce((sum, p) => sum + p.price, 0);
+  const optimisticBank = budget - optimisticTeamValue;
 
   // Real legality: same position (Dream Team like-for-like), and the
   // swap must not go over budget - freed cash from the outgoing player's
   // price plus what's already in the bank must cover the incoming price.
   const legalPoolIds = new Set(
     selectedPlayer && canTransfer
-      ? pool.filter((p) => p.position === selectedPlayer.position && p.price <= bank + selectedPlayer.price).map((p) => p.game_player_id)
+      ? pool.filter((p) => p.position === selectedPlayer.position && p.price <= optimisticBank + selectedPlayer.price).map((p) => p.game_player_id)
       : []
   );
 
   function handleTransfer(inGamePlayerId: number) {
     if (!selectedId) return;
     setTransferError(null);
+    const incomingPoolPlayer = pool.find((p) => p.game_player_id === inGamePlayerId);
     startTransferTransition(async () => {
+      if (incomingPoolPlayer) applyOptimisticSquad(optimisticTransfer(optimisticSquad, selectedId, incomingPoolPlayer));
       const result = await makeTransfer({ squadId, outGamePlayerId: selectedId, inGamePlayerId });
       if (result?.error) setTransferError(result.error);
       else setSelectedId(null);
@@ -206,14 +234,14 @@ export default function DreamTeamBoard({
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
-          <StatBox label="Bank" value={`£${bank.toFixed(1)}m`} />
-          <StatBox label="Team Value" value={`£${teamValue.toFixed(1)}m`} />
+          <StatBox label="Bank" value={`£${optimisticBank.toFixed(1)}m`} />
+          <StatBox label="Team Value" value={`£${optimisticTeamValue.toFixed(1)}m`} />
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
             <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Boosters/Subs</p>
             <div className="mt-1.5 flex flex-wrap gap-1.5">
               {(["goal_bonus", "twelfth_man", "max_captain"] as const).map((b) => {
                 const used = b === "goal_bonus" ? boosters.goalBonusUsed : b === "twelfth_man" ? boosters.twelfthManUsed : boosters.maxCaptainUsed;
-                const active = boosters.active === b && boosters.activeGameweek === planningGameweek;
+                const active = optimisticBoosters.active === b && optimisticBoosters.activeGameweek === planningGameweek;
                 return (
                   <button
                     key={b}
