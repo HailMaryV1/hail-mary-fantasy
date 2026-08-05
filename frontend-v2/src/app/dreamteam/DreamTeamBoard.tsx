@@ -372,15 +372,22 @@ export default function DreamTeamBoard({
 
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
           <div>
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mb-3 flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-white">{squadName}</h2>
-              <div className="relative">
-                <button
-                  onClick={() => setOptionsOpen((o) => !o)}
+              <div className="flex items-center gap-2">
+                <Link
+                  href="/dreamteam/ask-mary"
                   className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
                 >
-                  ☰ Options
-                </button>
+                  Ask Mary
+                </Link>
+                <div className="relative">
+                  <button
+                    onClick={() => setOptionsOpen((o) => !o)}
+                    className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
+                  >
+                    ☰ Options
+                  </button>
                 {optionsOpen && (
                   <div className="absolute right-0 top-full z-10 mt-1 w-56 rounded-xl border border-navy-700 bg-navy-900 p-2 shadow-xl">
                     <p className="px-2 py-1 text-[10px] font-semibold uppercase text-navy-500">Show on players</p>
@@ -408,6 +415,7 @@ export default function DreamTeamBoard({
                     ))}
                   </div>
                 )}
+                </div>
               </div>
             </div>
             <PitchView
