@@ -1,70 +1,59 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { runAskMaryAnalysis } from "@/lib/dreamteamAskMaryEngine";
+import { runAskMaryAnalysis } from "@/lib/fanteamAskMaryEngine";
 import { recordPredictions } from "@/lib/predictionActions";
 import GameweekPlanRow from "./GameweekPlanRow";
 
 // The recommendation depends on live squad/pool/fixture state that a
 // server action changes elsewhere - same reasoning as every other
-// data-driven page in this app (dreamteam/page.tsx, cloudff/captains).
+// data-driven page in this app.
 export const dynamic = "force-dynamic";
 
 type SquadRow = {
   id: number;
   name: string;
+  user_id: string;
   free_transfers: number;
-  goal_bonus_used_gameweek: number | null;
-  twelfth_man_used_gameweek: number | null;
-  max_captain_used_gameweek: number | null;
+  wildcard_1_used_gameweek: number | null;
+  wildcard_2_used_gameweek: number | null;
+  fantasy_games: { id: number; display_name: string; slug: string } | { id: number; display_name: string; slug: string }[];
 };
 
-export default async function DreamTeamAskMaryPage() {
+export default async function FanTeamAskMaryPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const squadId = Number(id);
+
   const supabase = await createAuthServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: game } = await supabase.from("fantasy_games").select("id, display_name, slug").eq("slug", "dreamteam").maybeSingle();
+  const { data: squad } = await supabase
+    .from("squads")
+    .select("id, name, user_id, free_transfers, wildcard_1_used_gameweek, wildcard_2_used_gameweek, fantasy_games(id, display_name, slug)")
+    .eq("id", squadId)
+    .single<SquadRow>();
+  if (!squad || squad.user_id !== user.id) notFound();
 
-  const { data: squad } = game
-    ? await supabase
-        .from("squads")
-        .select("id, name, free_transfers, goal_bonus_used_gameweek, twelfth_man_used_gameweek, max_captain_used_gameweek")
-        .eq("game_id", game.id)
-        .eq("user_id", user.id)
-        .eq("is_archived", false)
-        .order("created_at")
-        .limit(1)
-        .maybeSingle<SquadRow>()
-    : { data: null };
+  const game = Array.isArray(squad.fantasy_games) ? squad.fantasy_games[0] : squad.fantasy_games;
+  if (!game || game.slug !== "fanteam") notFound();
 
   const header = (
     <div>
       <div className="flex items-center justify-between gap-2">
-        <Link href="/dreamteam" className="text-sm font-medium text-navy-400 hover:text-sky-400">
+        <Link href={`/fanteam/${squadId}`} className="text-sm font-medium text-navy-400 hover:text-sky-400">
           ← Back to squad
         </Link>
-        <Link href="/dreamteam/performance-lab" className="text-xs font-medium text-sky-400 hover:text-sky-300">
+        <Link href={`/fanteam/${squadId}/performance-lab`} className="text-xs font-medium text-sky-400 hover:text-sky-300">
           Performance Lab →
         </Link>
       </div>
       <h1 className="mt-4 text-2xl font-semibold text-white">Ask Mary</h1>
-      <p className="mt-1 text-sm text-navy-300">Your personalised Dream Team adviser</p>
+      <p className="mt-1 text-sm text-navy-300">Your personalised FanTeam adviser</p>
     </div>
   );
-
-  if (!game || !squad) {
-    return (
-      <div className="min-h-screen bg-navy-950 px-6 py-10">
-        <main className="mx-auto max-w-2xl">
-          {header}
-          <p className="mt-8 text-sm text-navy-300">No squad yet.</p>
-        </main>
-      </div>
-    );
-  }
 
   // Strategy is hardcoded to balanced, same as every other game's Ask
   // Mary - not user-selectable. predictions.strategy is NOT NULL with no
@@ -77,32 +66,16 @@ export default async function DreamTeamAskMaryPage() {
         <main className="mx-auto max-w-2xl">
           {header}
           <p className="mt-8 text-sm text-red-400">
-            {squad.name} doesn&apos;t have a full squad yet - Ask Mary needs {"11"} players to analyse.
+            {squad.name} doesn&apos;t have a full 15-player squad yet - Ask Mary needs a complete squad to analyse.
           </p>
         </main>
       </div>
     );
   }
 
-  const { bestCaptain, viceCaptain, boosterAdvice, health, gameweekPlan, hasCalendar, seasonStarted, squadPlayers, rules, budgetRemaining } = analysis;
+  const { bestCaptain, viceCaptain, health, gameweekPlan, hasCalendar, seasonStarted, squadPlayers, rules, budgetRemaining } = analysis;
   const startingCount = squadPlayers.filter((p) => p.is_starting).length;
   const startingXIComplete = startingCount === rules.starting_size;
-
-  // Same source of truth as the squad board's "Projected Points" stat
-  // (player_projection_summary.hail_mary_score, which always resolves to
-  // whichever gameweek is closest to now per player - see
-  // dreamteam/page.tsx's own comment on this view).
-  const { data: scoreRows } = await supabase
-    .from("player_projection_summary")
-    .select("game_player_id, hail_mary_score")
-    .eq("game_slug", "dreamteam")
-    .in(
-      "game_player_id",
-      squadPlayers.map((p) => p.game_player_id)
-    )
-    .returns<{ game_player_id: number; hail_mary_score: number | null }[]>();
-  const scoreByGamePlayerId = new Map((scoreRows ?? []).map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
-  const totalProjectedPoints = squadPlayers.reduce((sum, p) => sum + (scoreByGamePlayerId.get(p.game_player_id) ?? 0), 0);
 
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
@@ -113,16 +86,16 @@ export default async function DreamTeamAskMaryPage() {
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Current Squad</h2>
             <p className="mt-2 text-sm text-navy-200">
-              {squad.name} · <span className="font-semibold text-sky-400">{totalProjectedPoints.toFixed(1)} pts projected</span> · £{budgetRemaining.toFixed(1)}m in the bank ·{" "}
-              {squadPlayers.length}/{rules.squad_size} players · {seasonStarted ? `${squad.free_transfers} free transfer${squad.free_transfers === 1 ? "" : "s"}` : "Unlimited transfers (pre-season)"}
+              {squad.name} · £{budgetRemaining.toFixed(1)}m in the bank · {squadPlayers.length}/{rules.squad_size} players ·{" "}
+              {seasonStarted ? `${squad.free_transfers} free transfer${squad.free_transfers === 1 ? "" : "s"}` : "Unlimited transfers (pre-season)"}
             </p>
-            <Link href="/dreamteam" className="mt-3 inline-block rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
+            <Link href={`/fanteam/${squadId}`} className="mt-3 inline-block rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
               Manage squad
             </Link>
           </div>
 
           {!hasCalendar && (
-            <p className="text-xs text-amber-400">No gameweek calendar published for Dream Team yet - showing the latest single projection instead of a horizon-specific one.</p>
+            <p className="text-xs text-amber-400">No gameweek calendar published for FanTeam yet - showing the latest single projection instead of a horizon-specific one.</p>
           )}
 
           <div>
@@ -130,7 +103,7 @@ export default async function DreamTeamAskMaryPage() {
             <div className="mt-2 rounded-xl border border-navy-700 bg-navy-900 p-4">
               <div className="flex items-center gap-3">
                 <span className="text-3xl font-bold text-sky-400">{health.rating}</span>
-                <span className="text-sm text-navy-400">/ 100 Squad Strength</span>
+                <span className="text-sm text-navy-400">/ 100 Starting XI Strength</span>
               </div>
               {health.strengths.length > 0 && (
                 <div className="mt-3">
@@ -174,7 +147,7 @@ export default async function DreamTeamAskMaryPage() {
               {gameweekPlan.length === 0 ? (
                 <p className="text-sm text-navy-400">No gameweek calendar published yet to build a plan from.</p>
               ) : (
-                gameweekPlan.map((step) => <GameweekPlanRow key={step.offset} step={step} squadId={squad.id} />)
+                gameweekPlan.map((step) => <GameweekPlanRow key={step.offset} step={step} squadId={squadId} />)
               )}
 
               <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
@@ -185,7 +158,7 @@ export default async function DreamTeamAskMaryPage() {
                   <>
                     {!startingXIComplete && (
                       <p className="mt-2 text-xs text-amber-400">
-                        Squad isn&apos;t fully set ({startingCount}/{rules.starting_size}) - this pick may change once it is.
+                        Starting XI isn&apos;t fully set ({startingCount}/{rules.starting_size}) - this pick may change once it is.
                       </p>
                     )}
                     <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -195,27 +168,6 @@ export default async function DreamTeamAskMaryPage() {
                   </>
                 )}
               </div>
-
-              {boosterAdvice.length > 0 && (
-                <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-                  <h3 className="text-sm font-semibold text-white">Should you play a Booster?</h3>
-                  <p className="mt-1 text-xs text-navy-500">Each of your 3 season Boosters can only be used once - ranked by projected value for this gameweek.</p>
-                  <div className="mt-3 flex flex-col gap-2">
-                    {boosterAdvice.map((b) => (
-                      <div key={b.booster} className="rounded-lg border border-navy-800 bg-navy-950 p-2 text-sm">
-                        <div className="flex items-center justify-between">
-                          <span className={b.alreadyUsed ? "text-navy-500 line-through" : "text-white"}>{b.label}</span>
-                          {!b.alreadyUsed && <span className="text-sky-400">+{b.expectedGain.toFixed(1)} pts</span>}
-                        </div>
-                        <p className="mt-0.5 text-[11px] text-navy-400">{b.alreadyUsed ? "Already used this season." : b.reasoning}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <Link href="/dreamteam" className="mt-3 inline-block text-xs font-medium text-sky-400 hover:text-sky-300">
-                    Set your Booster on the squad board →
-                  </Link>
-                </div>
-              )}
             </div>
           </div>
         </div>

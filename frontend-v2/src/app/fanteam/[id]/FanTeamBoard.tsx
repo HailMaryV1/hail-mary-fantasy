@@ -654,6 +654,12 @@ export default function FanTeamBoard({
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-white">{squadName}</h2>
               <div className="flex items-center gap-2">
+                <Link
+                  href={`/fanteam/${squadId}/ask-mary`}
+                  className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
+                >
+                  Ask Mary
+                </Link>
                 <select
                   value={currentFormationCode ?? ""}
                   disabled={isFormationPending}

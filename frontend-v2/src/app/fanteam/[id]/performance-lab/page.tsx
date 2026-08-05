@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { computeLifetimeSummary, breakdownBy, type PredictionEvalRow } from "@/lib/performanceAnalytics";
 
@@ -7,6 +7,8 @@ import { computeLifetimeSummary, breakdownBy, type PredictionEvalRow } from "@/l
 // same "never serve a stale cached response" reasoning as every other
 // data-driven page in this app.
 export const dynamic = "force-dynamic";
+
+type SquadRow = { id: number; name: string; user_id: string; fantasy_games: { slug: string } | { slug: string }[] };
 
 type PredictionRow = {
   id: number;
@@ -56,39 +58,30 @@ function formatPts(v: number | null) {
   return v == null ? "-" : `${v >= 0 ? "+" : ""}${v.toFixed(1)}`;
 }
 
-export default async function DreamTeamPerformanceLabPage() {
+export default async function FanTeamPerformanceLabPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const squadId = Number(id);
+
   const supabase = await createAuthServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: game } = await supabase.from("fantasy_games").select("id, display_name").eq("slug", "dreamteam").maybeSingle();
-
-  const { data: squad } = game
-    ? await supabase.from("squads").select("id, name").eq("game_id", game.id).eq("user_id", user.id).eq("is_archived", false).order("created_at").limit(1).maybeSingle<{ id: number; name: string }>()
-    : { data: null };
+  const { data: squad } = await supabase.from("squads").select("id, name, user_id, fantasy_games(slug)").eq("id", squadId).single<SquadRow>();
+  if (!squad || squad.user_id !== user.id) notFound();
+  const game = Array.isArray(squad.fantasy_games) ? squad.fantasy_games[0] : squad.fantasy_games;
+  if (!game || game.slug !== "fanteam") notFound();
 
   const header = (
     <div>
-      <Link href="/dreamteam" className="text-sm font-medium text-navy-400 hover:text-sky-400">
+      <Link href={`/fanteam/${squadId}`} className="text-sm font-medium text-navy-400 hover:text-sky-400">
         ← Back to squad
       </Link>
       <h1 className="mt-4 text-2xl font-semibold text-white">Mary Performance Lab</h1>
-      <p className="mt-1 text-sm text-navy-300">Every recommendation Ask Mary has made for {squad?.name ?? "Dream Team"}, measured against what actually happened.</p>
+      <p className="mt-1 text-sm text-navy-300">Every recommendation Ask Mary has made for {squad.name}, measured against what actually happened.</p>
     </div>
   );
-
-  if (!game || !squad) {
-    return (
-      <div className="min-h-screen bg-navy-950 px-6 py-10">
-        <main className="mx-auto max-w-2xl">
-          {header}
-          <p className="mt-8 text-sm text-navy-300">No squad yet.</p>
-        </main>
-      </div>
-    );
-  }
 
   const { data: predictionsRaw } = await supabase
     .from("predictions")
@@ -96,7 +89,7 @@ export default async function DreamTeamPerformanceLabPage() {
       "id, squad_id, gameweek, algorithm_version_id, strategy, planning_horizon, kind, recommendation_type, rank, mary_move_score, confidence, risk, expected_gain, created_at, out_game_player_id, in_game_player_id, captain_game_player_id, vice_captain_game_player_id"
     )
     .eq("user_id", user.id)
-    .eq("squad_id", squad.id)
+    .eq("squad_id", squadId)
     .order("created_at", { ascending: false })
     .returns<PredictionRow[]>();
 
@@ -110,7 +103,7 @@ export default async function DreamTeamPerformanceLabPage() {
           <div className="mt-8 rounded-xl border border-navy-700 bg-navy-900 p-6">
             <p className="text-sm text-navy-300">
               No predictions yet -{" "}
-              <Link href="/dreamteam/ask-mary" className="text-sky-400 hover:text-sky-300">
+              <Link href={`/fanteam/${squadId}/ask-mary`} className="text-sky-400 hover:text-sky-300">
                 visit Ask Mary
               </Link>{" "}
               to get a recommendation, which archives automatically.
@@ -199,12 +192,9 @@ export default async function DreamTeamPerformanceLabPage() {
   }
 
   // A gameweek-plan step can bundle more than one simultaneous transfer
-  // (see lib/dreamteamAskMaryEngine.ts) - each leg is its own predictions row
-  // sharing (gameweek, planningHorizon, kind, recommendationType,
-  // createdAt), grouped back into one history entry here. See the old
-  // frontend's performance-lab/page.tsx for why createdAt is part of the
-  // grouping key (keeps two genuinely distinct historical batches from
-  // ever merging into one card).
+  // (see lib/fanteamAskMaryEngine.ts) - each leg is its own predictions
+  // row sharing (gameweek, planningHorizon, kind, recommendationType,
+  // createdAt), grouped back into one history entry here.
   const historyGroups = (() => {
     const byKey = new Map<string, PredictionEvalRow[]>();
     for (const r of rows) {

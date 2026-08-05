@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
+import { TRANSFER_HIT_COST as FANTEAM_TRANSFER_HIT_COST, wildcardWindowFor as fanteamWildcardWindow } from "@/lib/transferEconomy";
 
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
@@ -23,19 +24,6 @@ async function clearInvalidCaptaincy(supabase: Supabase, squadId: number, benche
   if (Object.keys(patch).length > 0) {
     await supabase.from("squads").update(patch).eq("id", squadId);
   }
-}
-
-// FanTeam's real transfer economy: 1 free transfer per gameweek, -4
-// points per transfer beyond that, waived entirely for a gameweek where
-// a wildcard is active. Distinct from Dream Team's hard-cap-no-hit model
-// (dreamteam/actions.ts's makeTransfer) - a different game, a different
-// real rule.
-const FANTEAM_TRANSFER_HIT_COST = -4;
-
-function fanteamWildcardWindow(gameweek: number): "wc1" | "wc2" | null {
-  if (gameweek >= 2 && gameweek <= 19) return "wc1";
-  if (gameweek >= 20 && gameweek <= 38) return "wc2";
-  return null;
 }
 
 type FanteamSquadPlayerRow = {

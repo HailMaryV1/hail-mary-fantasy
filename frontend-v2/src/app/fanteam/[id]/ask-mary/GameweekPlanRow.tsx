@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { applyRecommendation } from "./actions";
 import FormPill from "@/components/FormPill";
-import type { GameweekPlanStep, BundleTransfer } from "@/lib/dreamteamAskMaryEngine";
+import type { GameweekPlanStep, BundleTransfer } from "@/lib/fanteamAskMaryEngine";
 
 const RISK_TONE: Record<BundleTransfer["risk"], string> = {
   low: "bg-emerald-950 text-emerald-400",
@@ -13,9 +13,8 @@ const RISK_TONE: Record<BundleTransfer["risk"], string> = {
 
 /**
  * One step of Mary's sequential gameweek plan - collapsed by default, a
- * full plan is 3 of these stacked. Port of the old frontend's
- * GameweekPlanRow, trimmed of the Compare Players/Engine Validation
- * links (pages that don't exist in frontend-v2 yet).
+ * full plan is 3 of these stacked. Own copy (not shared with Dream
+ * Team's) per this app's per-game independent identity rule.
  */
 export default function GameweekPlanRow({ step, squadId }: { step: GameweekPlanStep; squadId: number }) {
   const [expanded, setExpanded] = useState(false);
