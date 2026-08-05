@@ -3,6 +3,8 @@
 import { useEffect, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
+import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
+import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import { makeFanteamTransfer, reorderFanteamBench, setFanteamFormation, setFanteamCaptain, swapFanteamLineup } from "../actions";
 
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
@@ -234,6 +236,17 @@ export default function FanTeamBoard({
   const [captainError, setCaptainError] = useState<string | null>(null);
   const [isSwapPending, startSwapTransition] = useTransition();
   const [swapError, setSwapError] = useState<string | null>(null);
+  // Action-menu state (Make Captain / Make Vice-Captain / Swap/Transfer
+  // Out / Player Info) - opens on a plain click of any squad or pool
+  // player, same reconciliation pattern as DreamTeamBoard.tsx: a click
+  // only opens the menu when nothing is already selected for a swap/
+  // transfer; once selected, clicking continues the existing select-
+  // then-click-to-complete flow untouched.
+  const [menuPlayerId, setMenuPlayerId] = useState<number | null>(null);
+  const [menuIsSquadMember, setMenuIsSquadMember] = useState(false);
+  // Player Info replaces the pool browser panel in place, rather than
+  // navigating away - matches the real Dream Team Tonic app's pattern.
+  const [infoPlayerId, setInfoPlayerId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
   const [teamFilter, setTeamFilter] = useState<string>("ALL");
@@ -362,6 +375,53 @@ export default function FanTeamBoard({
     setPendingViceCaptainId(newViceCaptainId);
     handleSetCaptain(pendingCaptainId, newViceCaptainId);
   }
+
+  // The menu (unlike the two always-visible dropdowns above) can be the
+  // very first captain/VC action taken on a squad, where the OTHER role
+  // isn't set yet - handleCaptainDropdownChange/handleViceCaptainDropdownChange
+  // would silently no-op in that case (handleSetCaptain requires both
+  // non-null). Falls back to the highest-scoring other starter so the
+  // click always does something, same pattern as Dream Team's menu.
+  function handleMenuMakeCaptain(playerId: number) {
+    const viceCaptainId =
+      pendingViceCaptainId !== null && pendingViceCaptainId !== playerId
+        ? pendingViceCaptainId
+        : starterOptions.filter((p) => p.game_player_id !== playerId).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]?.game_player_id;
+    if (viceCaptainId == null) return;
+    setPendingCaptainId(playerId);
+    setPendingViceCaptainId(viceCaptainId);
+    handleSetCaptain(playerId, viceCaptainId);
+  }
+  function handleMenuMakeViceCaptain(playerId: number) {
+    const captainId =
+      pendingCaptainId !== null && pendingCaptainId !== playerId
+        ? pendingCaptainId
+        : starterOptions.filter((p) => p.game_player_id !== playerId).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]?.game_player_id;
+    if (captainId == null) return;
+    setPendingViceCaptainId(playerId);
+    setPendingCaptainId(captainId);
+    handleSetCaptain(captainId, playerId);
+  }
+
+  const menuPlayer = menuPlayerId != null ? (menuIsSquadMember ? optimisticSquad : pool).find((p) => p.game_player_id === menuPlayerId) : undefined;
+  const menuActions: PlayerAction[] = !menuPlayer
+    ? []
+    : menuIsSquadMember
+      ? [
+          {
+            label: (menuPlayer as BoardPlayer).isCaptain ? "Captain ✓" : "Make Captain",
+            onClick: () => handleMenuMakeCaptain(menuPlayer.game_player_id),
+            disabled: (menuPlayer as BoardPlayer).isCaptain || !(menuPlayer as BoardPlayer).isStarting,
+          },
+          {
+            label: (menuPlayer as BoardPlayer).isViceCaptain ? "Vice-Captain ✓" : "Make Vice-Captain",
+            onClick: () => handleMenuMakeViceCaptain(menuPlayer.game_player_id),
+            disabled: (menuPlayer as BoardPlayer).isViceCaptain || !(menuPlayer as BoardPlayer).isStarting,
+          },
+          { label: (menuPlayer as BoardPlayer).isStarting ? "Swap / Bench" : "Swap In / Transfer Out", onClick: () => setSelectedId(menuPlayer.game_player_id) },
+          { label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) },
+        ]
+      : [{ label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) }];
 
   // FanTeam has no hard transfer cap like Dream Team - a transfer is
   // always allowed, just at a real cost (see costPreview below).
@@ -651,7 +711,7 @@ export default function FanTeamBoard({
               selectedId={selectedId}
               swappableIds={selectedPlayer ? legalSwapIds : null}
               onSelect={(p) => {
-                if (isTransferPending || isSwapPending) return;
+                if (isTransferPending || isSwapPending || isCaptainPending) return;
                 if (p.game_player_id === selectedId) {
                   setSelectedId(null);
                   return;
@@ -660,12 +720,20 @@ export default function FanTeamBoard({
                   handleSwapLineup(selectedPlayer.game_player_id, p.game_player_id);
                   return;
                 }
-                setSelectedId(p.game_player_id);
+                if (selectedPlayer) {
+                  setSelectedId(p.game_player_id);
+                  return;
+                }
+                setMenuPlayerId(p.game_player_id);
+                setMenuIsSquadMember(true);
               }}
               onReorderBench={isBenchPending ? undefined : handleReorderBench}
             />
           </div>
 
+          {infoPlayerId != null ? (
+            <PlayerInfoPanel gameSlug="fanteam" gamePlayerId={infoPlayerId} onBack={() => setInfoPlayerId(null)} />
+          ) : (
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
             <h2 className="text-sm font-semibold text-white">Browse all available players</h2>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -745,9 +813,18 @@ export default function FanTeamBoard({
                     return (
                       <tr
                         key={p.game_player_id}
-                        onClick={() => rowClickable && handleTransfer(p.game_player_id)}
+                        onClick={() => {
+                          if (rowClickable) {
+                            handleTransfer(p.game_player_id);
+                            return;
+                          }
+                          if (!selectedPlayer) {
+                            setMenuPlayerId(p.game_player_id);
+                            setMenuIsSquadMember(false);
+                          }
+                        }}
                         className={`border-t border-navy-800 ${
-                          selectedPlayer ? (isLegal ? "cursor-pointer bg-emerald-950/20 hover:bg-emerald-900/30" : "opacity-30") : ""
+                          selectedPlayer ? (isLegal ? "cursor-pointer bg-emerald-950/20 hover:bg-emerald-900/30" : "opacity-30") : "cursor-pointer hover:bg-navy-800/60"
                         }`}
                       >
                         <td className="py-1.5 pr-2">
@@ -798,8 +875,26 @@ export default function FanTeamBoard({
               )}
             </div>
           </div>
+          )}
         </div>
       </div>
+
+      <PlayerActionMenu
+        open={menuPlayerId != null}
+        onClose={() => setMenuPlayerId(null)}
+        title={menuPlayer?.full_name ?? ""}
+        subtitle={menuPlayer ? `${menuPlayer.position} · ${menuPlayer.team_name} · £${menuPlayer.price.toFixed(1)}m` : undefined}
+        actions={menuActions}
+      />
+
+      {/* The inline captainError message above only mounts when the
+          dropdown block does (line ~577) - not true once a synced squad
+          already has both roles set. The menu's Make Captain/Make
+          Vice-Captain actions can fire (and fail, e.g. "squad is synced")
+          from any state, so they need an always-mounted fallback. */}
+      {captainError && (
+        <p className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-red-950 px-3 py-2 text-xs text-red-300 shadow-lg">{captainError}</p>
+      )}
     </div>
   );
 }

@@ -3,7 +3,9 @@
 import { useEffect, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
-import { setBooster, makeTransfer } from "./actions";
+import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
+import PlayerInfoPanel from "@/components/PlayerInfoPanel";
+import { setBooster, makeTransfer, setCaptain } from "./actions";
 
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
 
@@ -94,6 +96,10 @@ function optimisticTransfer(current: BoardPlayer[], outGamePlayerId: number, inc
   return current.filter((p) => p.game_player_id !== outGamePlayerId).concat(incoming);
 }
 
+function optimisticCaptain(current: BoardPlayer[], captainId: number, viceCaptainId: number): BoardPlayer[] {
+  return current.map((p) => ({ ...p, isCaptain: p.game_player_id === captainId, isViceCaptain: p.game_player_id === viceCaptainId }));
+}
+
 export default function DreamTeamBoard({
   squadId,
   squadName,
@@ -130,8 +136,21 @@ export default function DreamTeamBoard({
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [isBoosterPending, startBoosterTransition] = useTransition();
   const [isTransferPending, startTransferTransition] = useTransition();
+  const [isCaptainPending, startCaptainTransition] = useTransition();
   const [boosterError, setBoosterError] = useState<string | null>(null);
   const [transferError, setTransferError] = useState<string | null>(null);
+  const [captainError, setCaptainError] = useState<string | null>(null);
+  // Action-menu state (Make Captain / Make Vice-Captain / Transfer Out /
+  // Player Info) - opens on a plain click of any squad or pool player, same
+  // reconciliation pattern as FanTeamBoard.tsx: a click only opens the menu
+  // when nothing is already selected for transfer; once selected, clicking
+  // continues the existing select-then-click-to-transfer flow untouched.
+  const [menuPlayerId, setMenuPlayerId] = useState<number | null>(null);
+  const [menuIsSquadMember, setMenuIsSquadMember] = useState(false);
+  // Player Info replaces the pool browser panel in place, rather than
+  // navigating away - matches the real Dream Team Tonic app's pattern the
+  // user asked to match.
+  const [infoPlayerId, setInfoPlayerId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
   const [maxValue, setMaxValue] = useState<number | null>(null);
@@ -180,6 +199,59 @@ export default function DreamTeamBoard({
       if (result?.error) setBoosterError(result.error);
     });
   }
+
+  function submitCaptain(captainId: number, viceCaptainId: number) {
+    setCaptainError(null);
+    startCaptainTransition(async () => {
+      applyOptimisticSquad(optimisticCaptain(optimisticSquad, captainId, viceCaptainId));
+      const result = await setCaptain({ squadId, captainGamePlayerId: captainId, viceCaptainGamePlayerId: viceCaptainId });
+      if (result?.error) setCaptainError(result.error);
+    });
+  }
+
+  // Reuses whichever squad member already holds the OTHER role if it's
+  // still valid; otherwise falls back to the highest-scoring other squad
+  // member as a sensible default the user can immediately override with
+  // one more menu click (Make Captain/Make Vice-Captain are always
+  // available from any player's menu, so nothing is ever a dead end).
+  function handleMakeCaptain(playerId: number) {
+    const currentViceCaptainId = optimisticSquad.find((p) => p.isViceCaptain)?.game_player_id ?? null;
+    const viceCaptainId =
+      currentViceCaptainId !== null && currentViceCaptainId !== playerId
+        ? currentViceCaptainId
+        : optimisticSquad.filter((p) => p.game_player_id !== playerId).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]?.game_player_id;
+    if (viceCaptainId == null) return;
+    submitCaptain(playerId, viceCaptainId);
+  }
+  function handleMakeViceCaptain(playerId: number) {
+    const currentCaptainId = optimisticSquad.find((p) => p.isCaptain)?.game_player_id ?? null;
+    const captainId =
+      currentCaptainId !== null && currentCaptainId !== playerId
+        ? currentCaptainId
+        : optimisticSquad.filter((p) => p.game_player_id !== playerId).sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0]?.game_player_id;
+    if (captainId == null) return;
+    submitCaptain(captainId, playerId);
+  }
+
+  const menuPlayer = menuPlayerId != null ? (menuIsSquadMember ? optimisticSquad : pool).find((p) => p.game_player_id === menuPlayerId) : undefined;
+  const menuActions: PlayerAction[] = !menuPlayer
+    ? []
+    : menuIsSquadMember
+      ? [
+          {
+            label: (menuPlayer as BoardPlayer).isCaptain ? "Captain ✓" : "Make Captain",
+            onClick: () => handleMakeCaptain(menuPlayer.game_player_id),
+            disabled: (menuPlayer as BoardPlayer).isCaptain,
+          },
+          {
+            label: (menuPlayer as BoardPlayer).isViceCaptain ? "Vice-Captain ✓" : "Make Vice-Captain",
+            onClick: () => handleMakeViceCaptain(menuPlayer.game_player_id),
+            disabled: (menuPlayer as BoardPlayer).isViceCaptain,
+          },
+          { label: "Transfer Out", onClick: () => setSelectedId(menuPlayer.game_player_id) },
+          { label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) },
+        ]
+      : [{ label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) }];
 
   const selectedPlayer = selectedId != null ? optimisticSquad.find((p) => p.game_player_id === selectedId) : undefined;
   const canTransfer = !seasonStarted || transfers > 0;
@@ -342,10 +414,21 @@ export default function DreamTeamBoard({
               starting={pitchPlayers}
               selectedId={selectedId}
               swappableIds={null}
-              onSelect={(p) => (isTransferPending ? undefined : setSelectedId(p.game_player_id === selectedId ? null : p.game_player_id))}
+              onSelect={(p) => {
+                if (isTransferPending || isCaptainPending) return;
+                if (selectedId != null) {
+                  setSelectedId(p.game_player_id === selectedId ? null : p.game_player_id);
+                  return;
+                }
+                setMenuPlayerId(p.game_player_id);
+                setMenuIsSquadMember(true);
+              }}
             />
           </div>
 
+          {infoPlayerId != null ? (
+            <PlayerInfoPanel gameSlug="dreamteam" gamePlayerId={infoPlayerId} onBack={() => setInfoPlayerId(null)} />
+          ) : (
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
             <h2 className="text-sm font-semibold text-white">Browse all available players</h2>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -425,9 +508,18 @@ export default function DreamTeamBoard({
                     return (
                       <tr
                         key={p.game_player_id}
-                        onClick={() => rowClickable && handleTransfer(p.game_player_id)}
+                        onClick={() => {
+                          if (rowClickable) {
+                            handleTransfer(p.game_player_id);
+                            return;
+                          }
+                          if (!selectedPlayer) {
+                            setMenuPlayerId(p.game_player_id);
+                            setMenuIsSquadMember(false);
+                          }
+                        }}
                         className={`border-t border-navy-800 ${
-                          selectedPlayer ? (isLegal ? "cursor-pointer bg-emerald-950/20 hover:bg-emerald-900/30" : "opacity-30") : ""
+                          selectedPlayer ? (isLegal ? "cursor-pointer bg-emerald-950/20 hover:bg-emerald-900/30" : "opacity-30") : "cursor-pointer hover:bg-navy-800/60"
                         }`}
                       >
                         <td className="py-1.5 pr-2">
@@ -478,8 +570,18 @@ export default function DreamTeamBoard({
               )}
             </div>
           </div>
+          )}
         </div>
       </div>
+
+      <PlayerActionMenu
+        open={menuPlayerId != null}
+        onClose={() => setMenuPlayerId(null)}
+        title={menuPlayer?.full_name ?? ""}
+        subtitle={menuPlayer ? `${menuPlayer.position} · ${menuPlayer.team_name} · £${menuPlayer.price.toFixed(1)}m` : undefined}
+        actions={menuActions}
+      />
+      {captainError && <p className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-red-950 px-3 py-2 text-xs text-red-300 shadow-lg">{captainError}</p>}
     </div>
   );
 }

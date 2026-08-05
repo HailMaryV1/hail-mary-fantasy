@@ -7,6 +7,61 @@ import { getSeasonTiming } from "@/lib/gameweek";
 type Booster = "goal_bonus" | "twelfth_man" | "max_captain";
 
 /**
+ * Dream Team's captain/vice-captain (doubles points, see
+ * compute_projections.py's captain multiplier) - both must be different
+ * squad members. Unlike FanTeam there's no provider-sync guard here (Dream
+ * Team has no live sync path yet) and no starting-XI concept to check
+ * against (an 11-man squad with no bench - every squad member always
+ * counts). Logs to squad_captain_history for Performance Lab grading, same
+ * pattern as FanTeam's setFanteamCaptain.
+ */
+export async function setCaptain({
+  squadId,
+  captainGamePlayerId,
+  viceCaptainGamePlayerId,
+}: {
+  squadId: number;
+  captainGamePlayerId: number;
+  viceCaptainGamePlayerId: number;
+}) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+
+  if (captainGamePlayerId === viceCaptainGamePlayerId) {
+    return { error: "Captain and vice-captain must be different players." };
+  }
+
+  const { data: squad } = await supabase.from("squads").select("id, user_id, game_id").eq("id", squadId).single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: squadPlayers } = await supabase.from("squad_players").select("game_player_id").eq("squad_id", squadId);
+  const squadIds = new Set((squadPlayers ?? []).map((s) => s.game_player_id));
+  if (!squadIds.has(captainGamePlayerId) || !squadIds.has(viceCaptainGamePlayerId)) {
+    return { error: "Captain and vice-captain must both be in your squad." };
+  }
+
+  const { error } = await supabase
+    .from("squads")
+    .update({ captain_game_player_id: captainGamePlayerId, vice_captain_game_player_id: viceCaptainGamePlayerId })
+    .eq("id", squadId);
+  if (error) return { error: error.message };
+
+  const { planningGameweek } = await getSeasonTiming(supabase, squad.game_id);
+  await supabase.from("squad_captain_history").insert({
+    squad_id: squadId,
+    gameweek: planningGameweek ?? 1,
+    captain_game_player_id: captainGamePlayerId,
+    vice_captain_game_player_id: viceCaptainGamePlayerId,
+  });
+
+  revalidatePath("/dreamteam");
+  return { success: true };
+}
+
+/**
  * A real like-for-like transfer (out one squad player, in one pool
  * player of the same position). Dream Team's real rules (confirmed with
  * the user directly, not inferred): pre-season is free and unlimited
