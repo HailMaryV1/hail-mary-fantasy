@@ -259,6 +259,12 @@ export default function CloudFFBoard({
               <h2 className="text-sm font-semibold text-white">{squadName}</h2>
               <div className="flex items-center gap-2">
                 <Link
+                  href="/cloudff/ask-mary"
+                  className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
+                >
+                  Ask Mary
+                </Link>
+                <Link
                   href="/cloudff/captains"
                   className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
                 >
