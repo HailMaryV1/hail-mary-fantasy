@@ -277,6 +277,14 @@ export default function DreamTeamBoard({
   const budget = bank + teamValue;
   const optimisticTeamValue = optimisticSquad.reduce((sum, p) => sum + p.price, 0);
   const optimisticBank = budget - optimisticTeamValue;
+  // What the Bank stat box shows: real bank plus every pending sale's own
+  // price, since that's genuinely what lands once each empty slot gets
+  // filled at-or-under its own outgoing price. This is a display figure
+  // only - legalOutgoingFor below still gates any single incoming pick to
+  // real optimisticBank + that ONE slot's price, matching exactly what
+  // makeTransfer itself will validate (a second pending sale's cash isn't
+  // real until that swap actually lands).
+  const displayBank = optimisticBank + pendingOutPlayers.reduce((sum, p) => sum + p.price, 0);
   // No bench - every squad member always starts and always counts, so
   // this is a flat sum (same "no formation search needed" reasoning as
   // askMaryEngine.ts's optimalXITotal).
@@ -351,7 +359,7 @@ export default function DreamTeamBoard({
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
           <StatBox label="Projected Points" value={optimisticTotalPoints.toFixed(1)} />
           <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
-          <StatBox label="Bank" value={`£${optimisticBank.toFixed(1)}m`} />
+          <StatBox label="Bank" value={`£${displayBank.toFixed(1)}m`} />
           <StatBox label="Team Value" value={`£${optimisticTeamValue.toFixed(1)}m`} />
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
             <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Boosters/Subs</p>
