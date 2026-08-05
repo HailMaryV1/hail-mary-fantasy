@@ -22,6 +22,10 @@ cloudff_players_raw.json
 cloudff_fixtures_raw.json
 cloudff_player_stats_raw.json
 dreamteam_players_raw.json
+eflfantasy_competitions_raw.json
+eflfantasy_squads_raw.json
+eflfantasy_players_raw.json
+eflfantasy_rounds_raw.json
 
 # Local tool config, not project source
 .claude/

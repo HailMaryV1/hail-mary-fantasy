@@ -167,6 +167,16 @@ def main():
                 run_step(f"Recompute Cloud FF GW{gw}", ["scripts/compute_projections.py", "cloudff", "--gameweek", str(gw)])
             )
 
+    # EFL Fantasy - players/clubs/fixtures only, deliberately no recompute
+    # step yet: compute_projections.py doesn't have an "eflfantasy"
+    # RAW_STAT_ALIASES entry or real (non-placeholder) game_scoring_rules
+    # wired up yet (see migration 0090's docstring) - that's Stage 3 of
+    # this build, not done here. Both endpoints are real, public,
+    # unauthenticated JSON (see scraper_eflfantasy.py) - no login dance
+    # needed at all, unlike FanTeam.
+    results.append(run_step("EFL Fantasy players + clubs + fixtures (no login needed)", ["scraper_eflfantasy.py"]))
+    results.append(run_step("Import EFL Fantasy players + clubs + fixtures", ["import_eflfantasy.py"]))
+
     # Dream Team - players/prices only, deliberately no recompute step
     # yet: unlike FanTeam/Cloud FF, Dream Team has zero
     # game_fixture_gameweeks rows (confirmed live, 2026-08-03) - no
