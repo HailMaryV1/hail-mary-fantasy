@@ -227,6 +227,15 @@ export default function FanTeamBoard({
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  // Multiple squad members can be marked for real Transfer Out at once,
+  // independent of the swap/bench selectedId above - each becomes an
+  // empty placeholder on the pitch, so a player unaffordable on any
+  // single sale can become affordable once a cheaper swap elsewhere has
+  // actually landed and grown the real bank - see DreamTeamBoard.tsx's
+  // identical pattern/rationale (no fictional shared pot, legality always
+  // reflects what the next real makeFanteamTransfer call can actually
+  // validate).
+  const [pendingOutIds, setPendingOutIds] = useState<Set<number>>(new Set());
   const [useWildcard, setUseWildcard] = useState(false);
   const [isTransferPending, startTransferTransition] = useTransition();
   const [transferError, setTransferError] = useState<string | null>(null);
@@ -263,6 +272,16 @@ export default function FanTeamBoard({
   // prop), so this never needs manual reset/rollback wiring.
   const [optimisticSquad, applyOptimisticSquad] = useOptimistic(squad, (_current: BoardPlayer[], next: BoardPlayer[]) => next);
 
+  // Budget is constant (doesn't change with a transfer) - back-derived
+  // once from the server-confirmed bank+teamValue props so a transfer's
+  // optimistic squad can recompute an honest bank/team-value instantly
+  // instead of showing stale figures until the server round trip lands.
+  // Declared early (not just before the JSX return) since the transfer-
+  // legality logic below also needs it.
+  const budget = bank + teamValue;
+  const optimisticTeamValue = optimisticSquad.reduce((sum, p) => sum + p.price, 0);
+  const optimisticBank = budget - optimisticTeamValue;
+
   const teams = Array.from(new Set(pool.map((p) => p.team_name))).sort();
 
   const wildcardWindow = wildcardWindowFor(planningGameweek);
@@ -297,6 +316,8 @@ export default function FanTeamBoard({
       benchOrder: p.benchOrder,
       statText: displayMode in fixtureModeCount ? undefined : statTextFor(p),
       statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(p.fixtures, fixtureModeCount[displayMode]) : undefined,
+      isEmpty: pendingOutIds.has(p.game_player_id),
+      emptyLabel: `Sold ${p.full_name}`,
     };
   }
 
@@ -420,7 +441,12 @@ export default function FanTeamBoard({
             onClick: () => handleMenuMakeViceCaptain(menuPlayer.game_player_id),
             disabled: (menuPlayer as BoardPlayer).isViceCaptain || !(menuPlayer as BoardPlayer).isStarting,
           },
-          { label: (menuPlayer as BoardPlayer).isStarting ? "Swap / Bench" : "Swap In / Transfer Out", onClick: () => setSelectedId(menuPlayer.game_player_id) },
+          { label: (menuPlayer as BoardPlayer).isStarting ? "Swap / Bench" : "Swap In", onClick: () => setSelectedId(menuPlayer.game_player_id) },
+          {
+            label: "Transfer Out",
+            onClick: () => setPendingOutIds((prev) => new Set(prev).add(menuPlayer.game_player_id)),
+            disabled: pendingOutIds.has(menuPlayer.game_player_id),
+          },
           { label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) },
         ]
       : [{ label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) }];
@@ -466,29 +492,36 @@ export default function FanTeamBoard({
     });
   }
 
-  // Real legality preview: same position, budget, and FanTeam's real
-  // max-3-per-club limit. The server (makeFanteamTransfer) is the source
-  // of truth and re-checks all of this - this is just so illegal pool
-  // rows visibly dim before a doomed click.
-  const clubCounts = new Map<number, number>();
-  if (selectedPlayer) {
+  // Multiple squad members can be marked for real Transfer Out at once -
+  // independent of the swap-only selectedId/legalSwapIds above. Each
+  // becomes an empty pitch placeholder; legality for a given pool player
+  // matches exactly what a single makeFanteamTransfer call will itself
+  // validate server-side: same position, FanTeam's real max-3-per-club
+  // limit (computed excluding ONLY the specific outgoing player being
+  // replaced - any OTHER still-pending sale hasn't actually left the
+  // squad yet, so it still counts toward the real limit), and budget -
+  // each empty slot only has its OWN sale's price to spend, plus what's
+  // already really in the bank, since a second pending sale's cash isn't
+  // real until that swap actually lands (see DreamTeamBoard.tsx's
+  // identical reasoning).
+  const pendingOutPlayers = optimisticSquad.filter((p) => pendingOutIds.has(p.game_player_id));
+  function clubCountExcluding(excludeGamePlayerId: number): Map<number, number> {
+    const counts = new Map<number, number>();
     for (const p of optimisticSquad) {
-      if (p.game_player_id === selectedPlayer.game_player_id) continue;
-      clubCounts.set(p.team_id, (clubCounts.get(p.team_id) ?? 0) + 1);
+      if (p.game_player_id === excludeGamePlayerId) continue;
+      counts.set(p.team_id, (counts.get(p.team_id) ?? 0) + 1);
     }
+    return counts;
   }
-  const legalPoolIds = new Set(
-    selectedPlayer
-      ? pool
-          .filter(
-            (p) =>
-              p.position === selectedPlayer.position &&
-              p.price <= optimisticBank + selectedPlayer.price &&
-              (clubCounts.get(p.team_id) ?? 0) + 1 <= maxPerClub
-          )
-          .map((p) => p.game_player_id)
-      : []
-  );
+  function legalOutgoingFor(p: PoolPlayer): BoardPlayer[] {
+    return pendingOutPlayers.filter((o) => {
+      if (o.position !== p.position) return false;
+      if (optimisticBank + o.price < p.price) return false;
+      const clubCounts = clubCountExcluding(o.game_player_id);
+      return (clubCounts.get(p.team_id) ?? 0) + 1 <= maxPerClub;
+    });
+  }
+  const legalPoolIds = new Set(pool.filter((p) => legalOutgoingFor(p).length > 0).map((p) => p.game_player_id));
 
   const costPreview = !seasonStarted
     ? "Free (pre-season)"
@@ -499,15 +532,25 @@ export default function FanTeamBoard({
         : "-4 pts (no free transfers left)";
 
   function handleTransfer(inGamePlayerId: number) {
-    if (!selectedId) return;
-    setTransferError(null);
     const incomingPoolPlayer = pool.find((p) => p.game_player_id === inGamePlayerId);
+    if (!incomingPoolPlayer) return;
+    // Of the empty slots this player can actually afford (and whose club
+    // count still has room), fill the cheapest-outgoing one first - that
+    // leaves the more valuable pending sale(s) still available to help
+    // fund a pricier pick later.
+    const outgoing = legalOutgoingFor(incomingPoolPlayer).sort((a, b) => a.price - b.price)[0];
+    if (!outgoing) return;
+    setTransferError(null);
     startTransferTransition(async () => {
-      if (incomingPoolPlayer) applyOptimisticSquad(optimisticTransfer(optimisticSquad, selectedId, incomingPoolPlayer));
-      const result = await makeFanteamTransfer({ squadId, outGamePlayerId: selectedId, inGamePlayerId, useWildcard });
+      applyOptimisticSquad(optimisticTransfer(optimisticSquad, outgoing.game_player_id, incomingPoolPlayer));
+      const result = await makeFanteamTransfer({ squadId, outGamePlayerId: outgoing.game_player_id, inGamePlayerId, useWildcard });
       if (result?.error) setTransferError(result.error);
       else {
-        setSelectedId(null);
+        setPendingOutIds((prev) => {
+          const next = new Set(prev);
+          next.delete(outgoing.game_player_id);
+          return next;
+        });
         setUseWildcard(false);
       }
     });
@@ -541,14 +584,7 @@ export default function FanTeamBoard({
   // Captains score double - a simple sum, not the more elaborate
   // auto-sub-probability-weighted total used elsewhere.
   const projectedPoints = optimisticSquad.filter((p) => p.isStarting).reduce((sum, p) => sum + (p.score ?? 0) * (p.isCaptain ? 2 : 1), 0);
-
-  // Budget is constant (doesn't change with a transfer) - back-derived
-  // once from the server-confirmed bank+teamValue props so a transfer's
-  // optimistic squad can recompute an honest bank/team-value instantly
-  // instead of showing stale figures until the server round trip lands.
-  const budget = bank + teamValue;
-  const optimisticTeamValue = optimisticSquad.reduce((sum, p) => sum + p.price, 0);
-  const optimisticBank = budget - optimisticTeamValue;
+  const displayBank = optimisticBank + pendingOutPlayers.reduce((sum, p) => sum + p.price, 0);
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
@@ -559,7 +595,7 @@ export default function FanTeamBoard({
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
           <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
-          <StatBox label="Bank" value={`£${optimisticBank.toFixed(1)}m`} />
+          <StatBox label="Bank" value={`£${displayBank.toFixed(1)}m`} />
           <StatBox label="Team Value" value={`£${optimisticTeamValue.toFixed(1)}m`} />
           <StatBox label="Projected Points" value={projectedPoints.toFixed(1)} />
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
@@ -623,9 +659,22 @@ export default function FanTeamBoard({
         {selectedPlayer && (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-700 bg-sky-950/40 px-4 py-2.5">
             <p className="text-sm text-sky-200">
-              <span className="font-semibold text-white">{selectedPlayer.full_name}</span> selected - pick a same-position
-              replacement below to transfer, or click a highlighted {selectedPlayer.isStarting ? "bench" : "starting"} player on
-              the pitch to sub instead. Next transfer: <span className="font-semibold text-white">{costPreview}</span>
+              <span className="font-semibold text-white">{selectedPlayer.full_name}</span> selected - click a highlighted{" "}
+              {selectedPlayer.isStarting ? "bench" : "starting"} player on the pitch to sub.
+            </p>
+            <button onClick={() => setSelectedId(null)} className="text-xs font-medium text-sky-400 hover:text-sky-300">
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {pendingOutPlayers.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-700 bg-sky-950/40 px-4 py-2.5">
+            <p className="text-sm text-sky-200">
+              Selling <span className="font-semibold text-white">{pendingOutPlayers.map((p) => p.full_name).join(", ")}</span>. Fill each empty
+              slot with a same-position replacement - picking a cheaper one for one slot frees real budget for a pricier pick in another, so a
+              player you couldn&apos;t afford alone can become affordable once you&apos;ve banked a saving elsewhere. Tap an empty slot on the pitch
+              to cancel that sale. Next transfer: <span className="font-semibold text-white">{costPreview}</span>
             </p>
             <div className="flex items-center gap-3">
               {wildcardOfferable && (
@@ -636,12 +685,12 @@ export default function FanTeamBoard({
               )}
               <button
                 onClick={() => {
-                  setSelectedId(null);
+                  setPendingOutIds(new Set());
                   setUseWildcard(false);
                 }}
                 className="text-xs font-medium text-sky-400 hover:text-sky-300"
               >
-                Cancel
+                Cancel all
               </button>
             </div>
           </div>
@@ -720,6 +769,14 @@ export default function FanTeamBoard({
               swappableIds={selectedPlayer ? legalSwapIds : null}
               onSelect={(p) => {
                 if (isTransferPending || isSwapPending || isCaptainPending) return;
+                if (pendingOutIds.has(p.game_player_id)) {
+                  setPendingOutIds((prev) => {
+                    const next = new Set(prev);
+                    next.delete(p.game_player_id);
+                    return next;
+                  });
+                  return;
+                }
                 if (p.game_player_id === selectedId) {
                   setSelectedId(null);
                   return;
@@ -823,7 +880,7 @@ export default function FanTeamBoard({
                 <tbody>
                   {pagedPool.map((p) => {
                     const isLegal = legalPoolIds.has(p.game_player_id);
-                    const rowClickable = selectedPlayer && isLegal && !isTransferPending;
+                    const rowClickable = pendingOutPlayers.length > 0 && isLegal && !isTransferPending;
                     return (
                       <tr
                         key={p.game_player_id}
@@ -832,13 +889,17 @@ export default function FanTeamBoard({
                             handleTransfer(p.game_player_id);
                             return;
                           }
-                          if (!selectedPlayer) {
+                          if (pendingOutPlayers.length === 0) {
                             setMenuPlayerId(p.game_player_id);
                             setMenuIsSquadMember(false);
                           }
                         }}
                         className={`border-t border-navy-800 ${
-                          selectedPlayer ? (isLegal ? "cursor-pointer bg-emerald-950/20 hover:bg-emerald-900/30" : "opacity-30") : "cursor-pointer hover:bg-navy-800/60"
+                          pendingOutPlayers.length > 0
+                            ? isLegal
+                              ? "cursor-pointer bg-emerald-950/20 hover:bg-emerald-900/30"
+                              : "opacity-30"
+                            : "cursor-pointer hover:bg-navy-800/60"
                         }`}
                       >
                         <td className="py-1.5 pr-2">
