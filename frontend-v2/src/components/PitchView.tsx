@@ -34,6 +34,12 @@ export type PitchPlayer = {
   // modes so pitch chips match the player pool's difficulty coloring.
   // Takes priority over statText when present.
   statTiles?: { label: string; colorClass: string }[];
+  // Renders a dashed placeholder instead of the real player chip - a slot
+  // whose occupant has been sold but not yet replaced, still holding its
+  // position in the formation. emptyLabel shows who was sold, so the
+  // placeholder stays identifiable while it's waiting to be filled.
+  isEmpty?: boolean;
+  emptyLabel?: string;
 };
 
 type Formation = { gk: number; def: number; mid: number; fwd: number };
@@ -75,6 +81,27 @@ export default function PitchView({
     const isSelected = selectedId === player.game_player_id;
     const isClickable = isSelected || swappableIds === null || swappableIds.has(player.game_player_id);
     const showReorder = zone === "bench" && onReorderBench && player.benchOrder != null;
+
+    if (player.isEmpty) {
+      return (
+        <div key={player.game_player_id} className="flex flex-col items-center">
+          <button
+            onClick={() => onSelect(player)}
+            className="flex w-14 flex-col items-center justify-center gap-0.5 rounded-lg border-2 border-dashed border-navy-600 px-1 py-1.5 text-center text-navy-500 transition-colors hover:border-sky-500 hover:text-sky-400 sm:w-20 md:w-24"
+            style={{ minHeight: "5.5rem" }}
+          >
+            <span className="text-lg leading-none">+</span>
+            <span className="text-[9px] font-medium uppercase tracking-wide">{player.position}</span>
+            {player.emptyLabel && (
+              <span className="w-full min-w-0 truncate text-[9px]" title={player.emptyLabel}>
+                {player.emptyLabel}
+              </span>
+            )}
+          </button>
+        </div>
+      );
+    }
+
     return (
       <div key={player.game_player_id} className="flex flex-col items-center">
         <button

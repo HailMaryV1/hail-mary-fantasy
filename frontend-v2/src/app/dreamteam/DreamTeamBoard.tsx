@@ -135,7 +135,13 @@ export default function DreamTeamBoard({
 }) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  // Multiple squad members can be marked for sale at once - each becomes
+  // an empty placeholder on the pitch and its price joins a shared pot, so
+  // a player unaffordable on any single sale (e.g. Haaland) can become
+  // affordable once two or three sales are combined. Each slot still gets
+  // filled one at a time via the same real makeTransfer pair-call as
+  // before - this only changes when that call fires, not what it does.
+  const [pendingOutIds, setPendingOutIds] = useState<Set<number>>(new Set());
   const [isBoosterPending, startBoosterTransition] = useTransition();
   const [isTransferPending, startTransferTransition] = useTransition();
   const [isCaptainPending, startCaptainTransition] = useTransition();
@@ -191,6 +197,8 @@ export default function DreamTeamBoard({
     isViceCaptain: p.isViceCaptain,
     statText: displayMode in fixtureModeCount ? undefined : statTextFor(p),
     statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(p.fixtures, fixtureModeCount[displayMode]) : undefined,
+    isEmpty: pendingOutIds.has(p.game_player_id),
+    emptyLabel: `Sold ${p.full_name}`,
   }));
 
   function handleBooster(booster: Booster | null) {
@@ -250,12 +258,16 @@ export default function DreamTeamBoard({
             onClick: () => handleMakeViceCaptain(menuPlayer.game_player_id),
             disabled: (menuPlayer as BoardPlayer).isViceCaptain,
           },
-          { label: "Transfer Out", onClick: () => setSelectedId(menuPlayer.game_player_id) },
+          {
+            label: "Transfer Out",
+            onClick: () => setPendingOutIds((prev) => new Set(prev).add(menuPlayer.game_player_id)),
+            disabled: pendingOutIds.has(menuPlayer.game_player_id) || (seasonStarted && pendingOutIds.size >= transfers),
+          },
           { label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) },
         ]
       : [{ label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) }];
 
-  const selectedPlayer = selectedId != null ? optimisticSquad.find((p) => p.game_player_id === selectedId) : undefined;
+  const pendingOutPlayers = optimisticSquad.filter((p) => pendingOutIds.has(p.game_player_id));
   const canTransfer = !seasonStarted || transfers > 0;
 
   // Budget is constant - back-derived once from the server-confirmed
@@ -270,24 +282,37 @@ export default function DreamTeamBoard({
   // askMaryEngine.ts's optimalXITotal).
   const optimisticTotalPoints = optimisticSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
 
-  // Real legality: same position (Dream Team like-for-like), and the
-  // swap must not go over budget - freed cash from the outgoing player's
-  // price plus what's already in the bank must cover the incoming price.
+  // Real legality, matching exactly what a single makeTransfer call will
+  // itself validate server-side: each empty slot only has its OWN sale's
+  // price to spend, plus whatever's already really in the bank - a second
+  // pending sale's cash isn't real until that swap actually lands, since
+  // makeTransfer is an atomic 1-for-1 swap with no concept of a shared
+  // pot. Selling a slot cheap (rather than like-for-like) genuinely grows
+  // optimisticBank once that swap completes, which is what unlocks a
+  // pricier pick for the remaining slot(s) - not a fictional pooled
+  // total. Helper used both to render legality and to pick which slot a
+  // click actually fills.
+  function legalOutgoingFor(p: PoolPlayer): BoardPlayer[] {
+    return pendingOutPlayers.filter((o) => o.position === p.position && optimisticBank + o.price >= p.price);
+  }
   const legalPoolIds = new Set(
-    selectedPlayer && canTransfer
-      ? pool.filter((p) => p.position === selectedPlayer.position && p.price <= optimisticBank + selectedPlayer.price).map((p) => p.game_player_id)
-      : []
+    canTransfer ? pool.filter((p) => legalOutgoingFor(p).length > 0).map((p) => p.game_player_id) : []
   );
 
   function handleTransfer(inGamePlayerId: number) {
-    if (!selectedId) return;
-    setTransferError(null);
     const incomingPoolPlayer = pool.find((p) => p.game_player_id === inGamePlayerId);
+    if (!incomingPoolPlayer) return;
+    // Of the empty slots this player can actually afford, fill the
+    // cheapest-outgoing one first - that leaves the more valuable pending
+    // sale(s) still available to help fund a pricier pick later.
+    const outgoing = legalOutgoingFor(incomingPoolPlayer).sort((a, b) => a.price - b.price)[0];
+    if (!outgoing) return;
+    setTransferError(null);
     startTransferTransition(async () => {
-      if (incomingPoolPlayer) applyOptimisticSquad(optimisticTransfer(optimisticSquad, selectedId, incomingPoolPlayer));
-      const result = await makeTransfer({ squadId, outGamePlayerId: selectedId, inGamePlayerId });
+      applyOptimisticSquad(optimisticTransfer(optimisticSquad, outgoing.game_player_id, incomingPoolPlayer));
+      const result = await makeTransfer({ squadId, outGamePlayerId: outgoing.game_player_id, inGamePlayerId });
       if (result?.error) setTransferError(result.error);
-      else setSelectedId(null);
+      else setPendingOutIds((prev) => { const next = new Set(prev); next.delete(outgoing.game_player_id); return next; });
     });
   }
 
@@ -358,20 +383,22 @@ export default function DreamTeamBoard({
         </div>
         {boosterError && <p className="mt-2 text-xs text-red-400">{boosterError}</p>}
 
-        {selectedPlayer && (
+        {pendingOutPlayers.length > 0 && (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-700 bg-sky-950/40 px-4 py-2.5">
             <p className="text-sm text-sky-200">
               {canTransfer ? (
                 <>
-                  Transferring out <span className="font-semibold text-white">{selectedPlayer.full_name}</span> - pick a same-position replacement
-                  in the pool.
+                  Selling <span className="font-semibold text-white">{pendingOutPlayers.map((p) => p.full_name).join(", ")}</span>. Fill each empty
+                  slot with a same-position replacement - picking a cheaper one for one slot frees real budget for a pricier pick in another, so a
+                  player you couldn&apos;t afford alone can become affordable once you&apos;ve banked a saving elsewhere. Tap an empty slot on the
+                  pitch to cancel that sale.
                 </>
               ) : (
                 <>No transfers left this gameweek - Dream Team has a hard cap, no points-hit option.</>
               )}
             </p>
-            <button onClick={() => setSelectedId(null)} className="text-xs font-medium text-sky-400 hover:text-sky-300">
-              Cancel
+            <button onClick={() => setPendingOutIds(new Set())} className="text-xs font-medium text-sky-400 hover:text-sky-300">
+              Cancel all
             </button>
           </div>
         )}
@@ -427,12 +454,16 @@ export default function DreamTeamBoard({
             </div>
             <PitchView
               starting={pitchPlayers}
-              selectedId={selectedId}
+              selectedId={null}
               swappableIds={null}
               onSelect={(p) => {
                 if (isTransferPending || isCaptainPending) return;
-                if (selectedId != null) {
-                  setSelectedId(p.game_player_id === selectedId ? null : p.game_player_id);
+                if (pendingOutIds.has(p.game_player_id)) {
+                  setPendingOutIds((prev) => {
+                    const next = new Set(prev);
+                    next.delete(p.game_player_id);
+                    return next;
+                  });
                   return;
                 }
                 setMenuPlayerId(p.game_player_id);
@@ -525,7 +556,7 @@ export default function DreamTeamBoard({
                 <tbody>
                   {pagedPool.map((p) => {
                     const isLegal = legalPoolIds.has(p.game_player_id);
-                    const rowClickable = selectedPlayer && canTransfer && isLegal && !isTransferPending;
+                    const rowClickable = pendingOutPlayers.length > 0 && canTransfer && isLegal && !isTransferPending;
                     return (
                       <tr
                         key={p.game_player_id}
@@ -534,13 +565,13 @@ export default function DreamTeamBoard({
                             handleTransfer(p.game_player_id);
                             return;
                           }
-                          if (!selectedPlayer) {
+                          if (pendingOutPlayers.length === 0) {
                             setMenuPlayerId(p.game_player_id);
                             setMenuIsSquadMember(false);
                           }
                         }}
                         className={`border-t border-navy-800 ${
-                          selectedPlayer ? (isLegal ? "cursor-pointer bg-emerald-950/20 hover:bg-emerald-900/30" : "opacity-30") : "cursor-pointer hover:bg-navy-800/60"
+                          pendingOutPlayers.length > 0 ? (isLegal ? "cursor-pointer bg-emerald-950/20 hover:bg-emerald-900/30" : "opacity-30") : "cursor-pointer hover:bg-navy-800/60"
                         }`}
                       >
                         <td className="py-1.5 pr-2">
