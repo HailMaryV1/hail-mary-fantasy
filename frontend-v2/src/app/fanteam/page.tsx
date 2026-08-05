@@ -54,6 +54,9 @@ export default async function FanTeamHubPage() {
         <Link href="/squads/new?game=fanteam" className="mt-4 inline-block text-sm font-medium text-sky-400 hover:text-sky-300">
           + New squad
         </Link>
+        <Link href="/fanteam/sync-setup" className="mt-2 block text-sm font-medium text-navy-400 hover:text-sky-400">
+          Keep FanTeam syncing →
+        </Link>
       </div>
     </div>
   );
