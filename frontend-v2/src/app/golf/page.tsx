@@ -41,13 +41,20 @@ export default async function GolfHubPage() {
           A weekly tournament import, decomposed through Hail Mary Golf&apos;s own scoring model, into rankings and picks.
         </p>
 
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Link
             href="/golf/import"
             className="rounded-xl border border-navy-700 bg-navy-900 p-4 transition-colors hover:border-sky-500 hover:bg-navy-800"
           >
             <p className="text-sm font-semibold text-white">Tournament Builder</p>
             <p className="mt-1 text-xs text-navy-400">Import this week&apos;s field, add odds, compute picks - 3 steps</p>
+          </Link>
+          <Link
+            href="/golf/team"
+            className="rounded-xl border border-navy-700 bg-navy-900 p-4 transition-colors hover:border-sky-500 hover:bg-navy-800"
+          >
+            <p className="text-sm font-semibold text-white">Team Builder</p>
+            <p className="mt-1 text-xs text-navy-400">Pick your 6 golfers under budget - captain, underdog, live swaps</p>
           </Link>
           <Link
             href="/golf/rankings"
