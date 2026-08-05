@@ -155,6 +155,22 @@ STAT_COLUMNS = {
     "tackle_pts": "tackle_pts",
     "pass_pts": "pass_pts",
     "sot_pts": "sot_pts",
+    # EFL Fantasy-only stats (migration 0090) - raw-only, same pattern as
+    # the Dream Team/Cloud FF additions above. Harmless no-ops for every
+    # other game: no matching game_scoring_rules row means these always
+    # contribute 0 there. goal/assist/clean_sheet_60min/yellow_card/
+    # red_card/own_goal/penalty_save/penalty_miss/goals_conceded_per_2
+    # reuse the existing shared entries above unchanged - EFL Fantasy's
+    # migration used the exact same stat names on purpose.
+    "key_pass": "key_pass",
+    "tackles_per_2": "tackles_per_2",
+    "blocks_per_2": "blocks_per_2",
+    "clearances_per_4": "clearances_per_4",
+    "interception": "interception",
+    # Reuses the real typed `saves` column (unlike FanTeam's flat "save"
+    # stat, this needs its own name since the rate scale differs - see
+    # STAT_RATE_SCALE below).
+    "saves_per_3": "saves",
 }
 # How each stat's per-90 rate gets fixture-adjusted.
 #   "attack": scaled by attack_score / neutral_attack
@@ -188,13 +204,33 @@ STAT_FIXTURE_MODE = {
     "tackle_pts": "pressure",  # same bucket as tackle - more defensive workload against stronger attacks
     "pass_pts": "attack",  # same driver as goal/assist/shot_on_target
     "sot_pts": "attack",  # same driver as goal/assist/shot_on_target
+    # EFL Fantasy-only stats - key_pass follows shot_on_target's own
+    # "attack" bucket (same MID/FWD attacking-output driver per EFL's own
+    # "MIDFIELDERS & FORWARDS" scoring group). tackles/blocks/clearances/
+    # interceptions are defensive workload, same "pressure" bucket as
+    # save/tackle above (more work against a stronger attack).
+    "key_pass": "attack",
+    "tackles_per_2": "pressure",
+    "blocks_per_2": "pressure",
+    "clearances_per_4": "pressure",
+    "interception": "pressure",
+    "saves_per_3": "pressure",  # same bucket as FanTeam's "save"
 }
 # goals_conceded_per_2's point value in the matrix is "per 2 conceded" -
 # our projected rate is per single goal, so halve it before pricing.
 # tackle/save don't need this: Dream Team's own "1 point per 2" rule for
 # those is entered directly as the per-unit-equivalent point value (0.5)
 # in migration 0053, matching FanTeam's own existing 'save' convention.
-STAT_RATE_SCALE = {"goals_conceded_per_2": 0.5}
+STAT_RATE_SCALE = {
+    "goals_conceded_per_2": 0.5,
+    # EFL Fantasy's "every N" rules (migration 0090) - same pre-divide
+    # trick as goals_conceded_per_2 above: the matrix's point value is
+    # "per N occurrences", the projected rate is per single occurrence.
+    "tackles_per_2": 0.5,
+    "blocks_per_2": 0.5,
+    "clearances_per_4": 0.25,
+    "saves_per_3": 1 / 3,
+}
 
 # Dream Team's CSV uses different raw_stats key names than FanTeam's for
 # some of the same stats (shotsOnTarget vs SOT), plus a whole set of stats
@@ -245,6 +281,17 @@ RAW_STAT_ALIASES = {
         "tackle_pts": "tacklePts",
         "pass_pts": "passPts",
         "sot_pts": "sotPts",
+    },
+    # EFL Fantasy's real raw_stats keys, written verbatim from
+    # fantasy.efl.com's own players.json field names by
+    # import_eflfantasy.py - see that script's `raw` dict.
+    "eflfantasy": {
+        "shots_on_target": "shotsOnTarget",
+        "key_pass": "keyPasses",
+        "tackles_per_2": "tackles",
+        "blocks_per_2": "blocks",
+        "clearances_per_4": "clearances",
+        "interception": "interceptions",
     },
 }
 
@@ -545,7 +592,14 @@ def resolve_neutral_attack(cur, game_id, weights):
     if weights["neutral_attack"] != "auto":
         return float(weights["neutral_attack"])
     cur.execute("select avg(attack_score) from team_fixture_difficulty where game_id = %s", (game_id,))
-    return float(cur.fetchone()[0])
+    row = cur.fetchone()[0]
+    if row is None:
+        # No team_fixture_difficulty rows for this game yet (e.g. a new
+        # game's competitions aren't wired to a real odds/strength source
+        # yet) - the same ~0.380 real EPL long-run average this constant
+        # used to be hardcoded to, rather than crashing float(None).
+        return 0.380
+    return float(row)
 
 
 def fixture_factor(position, attack_score, clean_sheet_score, weights):
@@ -2002,6 +2056,63 @@ def upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, peri
         )
 
 
+def compute_club_scores(cur, game_id, algo_id, fixtures_by_player, neutral_attack, gameweek, period_start, period_end):
+    """EFL Fantasy's 2 CLUB picks (migration 0087) - deliberately NOT run
+    through the per-player v2-decomposed pipeline above (POSITIONS/
+    position_avg/weights["position_weights"] have no 'CLUB' entry, and a
+    club's win/draw/clean-sheet/goals event stats aren't derivable yet
+    this pre-season anyway - every rounds.json fixture still has null
+    scores). Uses the same v1-style formula this whole engine started
+    from (points_per_90 * fixture_factor), with each club's own real
+    last-season averagePoints (import_eflfantasy.py's
+    import_club_game_players) standing in for points_per_90, and
+    attack_score/neutral_attack (from team_fixture_difficulty - which
+    IS real here, via team_season_strength's real-averagePoints-derived
+    ratings, see import_eflfantasy.py's seed_team_strength) as the
+    fixture adjustment. A deliberately simple methodology for a
+    deliberately simple, real, already-available signal - not a promise
+    that this covers win/draw/clean-sheet/goals as separate priced
+    events, which is what a real, tuned matrix would require once
+    scores actually exist."""
+    cur.execute(
+        """
+        select gp.id as game_player_id, gp.player_id, coalesce(gps.total_points, 0) as avg_points
+        from game_players gp
+        join game_player_stats gps
+            on gps.game_player_id = gp.id and gps.season = %s and gps.gameweek = 0
+        where gp.game_id = %s and gp.is_active = true and gp.position_code = 'CLUB'
+        """,
+        (HISTORICAL_SEASON, game_id),
+    )
+    written = 0
+    for game_player_id, player_id, avg_points in cur.fetchall():
+        club_fixtures = fixtures_by_player.get(player_id, [])
+        if not club_fixtures:
+            continue
+        score = 0.0
+        fixture_breakdown = []
+        for cf in club_fixtures:
+            factor = float(cf["attack_score"]) / neutral_attack if neutral_attack else 1.0
+            contribution = float(avg_points) * factor
+            score += contribution
+            fixture_breakdown.append({
+                "fixture_id": cf["fixture_id"], "kickoff_at": cf["kickoff_at"],
+                "attack_score": round(float(cf["attack_score"]), 4), "contribution": round(contribution, 3),
+            })
+        inputs = {
+            "methodology": "v1-style: real last-season averagePoints x attack_score/neutral_attack "
+                            "- see compute_club_scores() docstring for why this isn't the full "
+                            "win/draw/clean-sheet/goals decomposition the matrix defines",
+            "avg_points_per_gw": round(float(avg_points), 3),
+            "neutral_attack_used": round(neutral_attack, 4),
+            "fixtures": fixture_breakdown,
+            "explanation": f"Projects {avg_points:.1f} pts/gameweek (last season's real average) per match.",
+        }
+        upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
+        written += 1
+    print(f"Wrote {written} club projections (v1-style averagePoints x fixture, see compute_club_scores() docstring).")
+
+
 def main():
     args = sys.argv[1:]
     if len(args) == 3 and args[1] == "--gameweek":
@@ -2075,7 +2186,14 @@ def main():
             join players p on p.id = gp.player_id
             left join game_player_stats gps
                 on gps.game_player_id = gp.id and gps.season = %s and gps.gameweek = 0
-            where gp.game_id = %s and gp.is_active = true
+            -- EFL Fantasy's CLUB picks (migration 0087) excluded here -
+            -- POSITIONS/position_avg/weights["position_weights"] are all
+            -- fixed to the 4 soccer positions, so a CLUB row would KeyError
+            -- the moment the main loop below looks it up. Club scoring
+            -- needs real match results this pre-season doesn't have yet
+            -- (see compute_club_scores() below) - deliberately not run
+            -- through this per-player per-90-rate pipeline at all.
+            where gp.game_id = %s and gp.is_active = true and p.position != 'CLUB'
             """,
             (HISTORICAL_SEASON, game_id),
         )
@@ -2128,6 +2246,13 @@ def main():
                 "tackle_pts": aliased.get("tackle_pts", 0.0),
                 "pass_pts": aliased.get("pass_pts", 0.0),
                 "sot_pts": aliased.get("sot_pts", 0.0),
+                # EFL Fantasy-only stats (migration 0090) - 0.0 for any
+                # game without a matching alias.
+                "key_pass": aliased.get("key_pass", 0.0),
+                "tackles_per_2": aliased.get("tackles_per_2", 0.0),
+                "blocks_per_2": aliased.get("blocks_per_2", 0.0),
+                "clearances_per_4": aliased.get("clearances_per_4", 0.0),
+                "interception": aliased.get("interception", 0.0),
                 # Bonus Points PPM components (Section 3.2.4.4) - see
                 # compute_bonus_points(). 0.0 for any game without a
                 # matching alias.
@@ -2579,6 +2704,12 @@ def main():
 
             upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
             written += 1
+
+        if game_slug == "eflfantasy" and use_v2:
+            compute_club_scores(
+                cur, game_id, algo_id, fixtures_by_player, runtime_weights["neutral_attack"],
+                gameweek, period_start, period_end,
+            )
 
         conn.commit()
         label = f"gameweek {gameweek}" if gameweek is not None else f"{period_start} to {period_end}"

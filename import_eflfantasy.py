@@ -51,7 +51,18 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from activity_log import log_event  # noqa: E402
 from name_matching import compact  # noqa: E402
 
-SEASON = "2026/27"
+FIXTURE_SEASON = "2026/27"
+
+# compute_projections.py's historical-baseline query reads game_player_stats
+# where season = HISTORICAL_SEASON and gameweek = 0 (NOT null, despite the
+# table's own column comment - confirmed by reading the actual query, and
+# matches seed_cloudff_historical_stats.py's exact same convention). EFL
+# Fantasy's players.json totalPoints/averagePoints are real last-season
+# cumulative fantasy points (confirmed: Championship totals divide out to
+# ~46 games at averagePoints - a full league season, not this pre-season's
+# empty totals) - the same "last season is next season's baseline" role
+# every other game's historical row plays.
+STATS_SEASON = "2025/26"
 
 COMPETITION_BY_ID = {10: "efl_championship", 11: "efl_league_one", 12: "efl_league_two"}
 
@@ -136,7 +147,7 @@ def import_fixtures(cur, game_id, rounds_data, team_id_by_squad_id):
                     on conflict (external_id) do update set home_team_id = excluded.home_team_id
                     returning id
                     """,
-                    (f"eflfantasy:{g['id']}", competition, SEASON, home_id, away_id, kickoff),
+                    (f"eflfantasy:{g['id']}", competition, FIXTURE_SEASON, home_id, away_id, kickoff),
                 )
                 fixture_id = cur.fetchone()[0]
                 created += 1
@@ -155,11 +166,17 @@ def import_fixtures(cur, game_id, rounds_data, team_id_by_squad_id):
 
 
 def upsert_stats(cur, game_player_id, season_total: dict, typed: dict):
+    # gameweek = 0 (not null) - compute_projections.py's historical-baseline
+    # query filters on gameweek = 0 specifically (confirmed by reading it),
+    # and NULL wouldn't satisfy the (game_player_id, season, gameweek)
+    # unique constraint's ON CONFLICT matching anyway (two NULLs are never
+    # equal in Postgres), so a null gameweek here would insert a fresh
+    # duplicate row on every re-run instead of updating in place.
     cur.execute(
         """
         insert into game_player_stats (game_player_id, season, gameweek, minutes_played, goals, assists,
             clean_sheets, saves, goals_conceded, yellow_cards, red_cards, total_points, raw_stats)
-        values (%(gpid)s, %(season)s, null, %(minutes)s, %(goals)s, %(assists)s, %(clean_sheets)s,
+        values (%(gpid)s, %(season)s, 0, %(minutes)s, %(goals)s, %(assists)s, %(clean_sheets)s,
             %(saves)s, %(goals_conceded)s, %(yellow_cards)s, %(red_cards)s, %(total_points)s, %(raw_stats)s)
         on conflict (game_player_id, season, gameweek) do update set
             minutes_played = excluded.minutes_played, goals = excluded.goals, assists = excluded.assists,
@@ -169,7 +186,7 @@ def upsert_stats(cur, game_player_id, season_total: dict, typed: dict):
         """,
         {
             "gpid": game_player_id,
-            "season": SEASON,
+            "season": STATS_SEASON,
             "minutes": typed.get("minutes_played", 0),
             "goals": typed.get("goals", 0),
             "assists": typed.get("assists", 0),
@@ -234,15 +251,31 @@ def import_players(cur, game_id, players_data, team_id_by_squad_id):
         )
         game_player_id = cur.fetchone()[0]
 
+        appearances = p.get("appearances", 0)
         typed = {
             "goals": p.get("goalsScored", 0),
             "assists": p.get("assists", 0),
             "clean_sheets": p.get("cleanSheets", 0),
             "saves": p.get("saves", 0),
             "total_points": p.get("totalPoints", 0),
+            # No real per-appearance minutes total in this feed - every
+            # appearance counted as a full 90 is a reasonable proxy (the
+            # same class of approximation compute_involvement_rates()
+            # already documents for PT60/PT90 below, not a new one).
+            "minutes_played": appearances * 90,
         }
         raw = {
-            "appearances": p.get("appearances", 0),
+            # Literal "PT1" (not "appearances") on purpose -
+            # compute_projections.py's historical-baseline SQL query reads
+            # raw_stats->>'PT1' as a hardcoded key for every game, not
+            # aliased per-game like everything else here (confirmed by
+            # reading it) - every game's importer is expected to write
+            # this literal key. No PT60/PT90 equivalent exists in this
+            # feed (no 60+/90-minute split) - left absent, which
+            # compute_involvement_rates() already has a real fallback for
+            # (task: "appearance-rate fallback for missing PT1/60/90").
+            "PT1": appearances,
+            "appearances": appearances,
             "keyPasses": p.get("keyPasses", 0),
             "shotsOnTarget": p.get("shotsOnTarget", 0),
             "clearances": p.get("clearances", 0),
@@ -275,11 +308,15 @@ def import_players(cur, game_id, players_data, team_id_by_squad_id):
 
 def import_club_game_players(cur, game_id, squads_data, club_player_id_by_squad_id):
     """CLUB game_players rows - one per real EFL club, price 0 (no
-    budget system - see migration 0089's docstring). Match-result stats
-    (win/draw/clean-sheet/goals) aren't computed here from the season
-    totals endpoint (squads.json is a snapshot, not per-fixture results)
-    - left for Stage 3's compute_projections.py wiring to derive directly
-    from rounds.json's real fixture results instead."""
+    budget system - see migration 0089's docstring). Real win/draw/clean-
+    sheet/goals event stats aren't available yet (this pre-season, every
+    fixture in rounds.json has null scores), but squads.json's own
+    totalPoints/averagePoints ARE real last-season Fantasy EFL club
+    scoring - stored as the club's "historical" baseline the exact same
+    way a player's season-total row works (season=STATS_SEASON,
+    gameweek=0), so compute_projections.py's club-scoring pass (see
+    compute_club_scores() in compute_projections.py) has a real number to
+    fixture-adjust rather than nothing at all."""
     written = 0
     for s in squads_data:
         player_id = club_player_id_by_squad_id[s["id"]]
@@ -289,11 +326,94 @@ def import_club_game_players(cur, game_id, squads_data, club_player_id_by_squad_
             insert into game_players (game_id, player_id, external_id, position_code, price, is_active)
             values (%s, %s, %s, 'CLUB', 0, true)
             on conflict (game_id, external_id) do update set is_active = true, updated_at = now()
+            returning id
             """,
             (game_id, player_id, external_id),
         )
+        game_player_id = cur.fetchone()[0]
+        cur.execute(
+            """
+            insert into game_player_stats (game_player_id, season, gameweek, total_points, raw_stats)
+            values (%s, %s, 0, %s, %s)
+            on conflict (game_player_id, season, gameweek) do update set
+                total_points = excluded.total_points, raw_stats = excluded.raw_stats
+            """,
+            (
+                game_player_id, STATS_SEASON, s.get("averagePoints", 0),
+                json.dumps({
+                    "totalPoints": s.get("totalPoints", 0),
+                    "averagePoints": s.get("averagePoints", 0),
+                    "leaguePosition": s.get("leaguePosition"),
+                    "fdrHome": s.get("fdrHome"),
+                    "fdrAway": s.get("fdrAway"),
+                }),
+            ),
+        )
         written += 1
-    print(f"Club picks: {written} CLUB game_players rows written.")
+    print(f"Club picks: {written} CLUB game_players rows written (with real last-season averagePoints as baseline).")
+
+
+def seed_team_strength(cur, squads_data, team_id_by_squad_id):
+    """Real fixture data has no bookmaker odds for these 3 divisions yet
+    (SportMonks/Odds API coverage unconfirmed for L1/L2 - see migration
+    0088's docstring), so team_fixture_difficulty (the view every game's
+    projection pipeline reads fixture strength from) would have zero rows
+    for EFL Fantasy without this - compute_projections.py's
+    resolve_neutral_attack would crash on a real NULL avg(attack_score)
+    (the same failure mode Cloud FF hit once, see migration 0074).
+
+    team_season_strength already has a real, working, game-agnostic
+    fallback path for exactly this (migration 0017 + compute_fixture_
+    strength_probabilities.py) - normally seeded from real bookmaker
+    top5/relegation odds (compute_team_strength.py), which don't exist
+    for these divisions. Real last-season averagePoints (squads.json) is
+    used instead: z-scored within each competition (Championship/L1/L2
+    ranked separately - cross-division comparison doesn't matter, EFL
+    Fantasy fixtures are always within-division) and clipped to roughly
+    the same -0.9..0.9 range the real Premier League ratings already
+    occupy (confirmed live: -0.70..0.85), so the Bradley-Terry formula's
+    STEEPNESS constant behaves sensibly against them.
+
+    top5_prob/relegation_prob are NOT NULL columns but aren't actually
+    read by compute_fixture_strength_probabilities.py (confirmed by
+    reading it - only `strength` is) - a simple top-5/bottom-3-by-
+    averagePoints step function fills them, honestly labelled as a proxy
+    (not real odds) via the `source` column, rather than left as
+    unexplained numbers."""
+    import statistics
+
+    by_competition: dict[int, list] = {}
+    for s in squads_data:
+        by_competition.setdefault(s["competitionId"], []).append(s)
+
+    written = 0
+    for comp_id, clubs in by_competition.items():
+        avgs = [float(c.get("averagePoints", 0)) for c in clubs]
+        mean = statistics.mean(avgs)
+        stdev = statistics.pstdev(avgs) or 1.0
+        ranked = sorted(clubs, key=lambda c: float(c.get("averagePoints", 0)), reverse=True)
+        top5_ids = {c["id"] for c in ranked[:5]}
+        bottom3_ids = {c["id"] for c in ranked[-3:]}
+
+        for c in clubs:
+            team_id = team_id_by_squad_id[c["id"]]
+            z = (float(c.get("averagePoints", 0)) - mean) / stdev
+            strength = max(-0.9, min(0.9, z * 0.3))
+            top5_prob = 1.0 if c["id"] in top5_ids else 0.0
+            relegation_prob = 1.0 if c["id"] in bottom3_ids else 0.0
+            cur.execute(
+                """
+                insert into team_season_strength (team_id, season, top5_prob, relegation_prob, strength, source)
+                values (%s, %s, %s, %s, %s, %s)
+                on conflict (team_id, season) do update set
+                    top5_prob = excluded.top5_prob, relegation_prob = excluded.relegation_prob,
+                    strength = excluded.strength, source = excluded.source
+                """,
+                (team_id, FIXTURE_SEASON, top5_prob, relegation_prob, round(strength, 4),
+                 "eflfantasy_avgpoints_proxy_2026-08-05"),
+            )
+            written += 1
+    print(f"Team strength: {written} EFL club ratings seeded from real last-season averagePoints (proxy, not real odds).")
 
 
 def main():
@@ -320,6 +440,7 @@ def main():
         import_club_game_players(cur, game_id, squads_data, club_player_id_by_squad_id)
         import_fixtures(cur, game_id, rounds_data, team_id_by_squad_id)
         import_players(cur, game_id, players_data, team_id_by_squad_id)
+        seed_team_strength(cur, squads_data, team_id_by_squad_id)
 
         conn.commit()
         print("\nDone.")
