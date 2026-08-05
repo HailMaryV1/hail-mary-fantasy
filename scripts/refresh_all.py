@@ -168,15 +168,37 @@ def main():
                 run_step(f"Recompute Cloud FF GW{gw}", ["scripts/compute_projections.py", "cloudff", "--gameweek", str(gw)])
             )
 
-    # EFL Fantasy - players/clubs/fixtures only, deliberately no recompute
-    # step yet: compute_projections.py doesn't have an "eflfantasy"
-    # RAW_STAT_ALIASES entry or real (non-placeholder) game_scoring_rules
-    # wired up yet (see migration 0090's docstring) - that's Stage 3 of
-    # this build, not done here. Both endpoints are real, public,
+    # EFL Fantasy - players/clubs/fixtures, both endpoints real, public,
     # unauthenticated JSON (see scraper_eflfantasy.py) - no login dance
     # needed at all, unlike FanTeam.
     results.append(run_step("EFL Fantasy players + clubs + fixtures (no login needed)", ["scraper_eflfantasy.py"]))
     results.append(run_step("Import EFL Fantasy players + clubs + fixtures", ["import_eflfantasy.py"]))
+
+    # Real bookmaker match-winner odds for Championship/League One/League
+    # Two (SportMonks, confirmed live 2026-08-06 - see that script's own
+    # docstring for why this needed its own importer instead of reusing
+    # import_fixtures_odds.py, which only covers Odds-API sport_keys).
+    # Writes into the same fixture_odds table every other competition
+    # uses, so needs its own compute_fixture_probabilities.py pass here -
+    # the one at the top of this pipeline already ran before these
+    # fixtures/odds existed on a cold run.
+    results.append(run_step("EFL Fantasy real match odds (SportMonks)", ["scripts/import_sportmonks_match_odds.py"]))
+    results.append(run_step("Fixture probabilities (post-EFL-odds)", ["scripts/compute_fixture_probabilities.py"]))
+
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    try:
+        eflfantasy_gameweeks = upcoming_gameweeks(conn, "eflfantasy")
+    finally:
+        conn.close()
+
+    if not eflfantasy_gameweeks:
+        print("\nNo upcoming EFL Fantasy gameweeks found in game_fixture_gameweeks - skipping score recompute.")
+    else:
+        print(f"\nRecomputing Hail Mary Score for EFL Fantasy gameweeks: {eflfantasy_gameweeks}")
+        for gw in eflfantasy_gameweeks:
+            results.append(
+                run_step(f"Recompute EFL Fantasy GW{gw}", ["scripts/compute_projections.py", "eflfantasy", "--gameweek", str(gw)])
+            )
 
     # Dream Team - players/prices only, deliberately no recompute step
     # yet: unlike FanTeam/Cloud FF, Dream Team has zero

@@ -73,13 +73,17 @@ import psycopg2
 ROOT = Path(__file__).resolve().parent.parent
 SPORTMONKS_BASE = "https://api.sportmonks.com/v3/football"
 
-# The 4 leagues this SportMonks subscription is entitled to that overlap
+# The leagues this SportMonks subscription is entitled to that overlap
 # competitions Hail Mary actually tracks (confirmed via
 # /v3/football/leagues - also includes Friendly International, which we
 # don't score and skip). Champions League/Europa/Conference are NOT
 # included in this plan - The Odds API remains the only source for
 # those, unchanged.
-ENTITLED_LEAGUE_IDS = [8, 9, 24, 27]  # Premier League, Championship, FA Cup, Carabao Cup
+#
+# League One (12) and League Two (14) re-confirmed entitled 2026-08-06
+# (see import_sportmonks_match_odds.py's docstring) - this list was
+# stale, missing them even though the subscription already covered both.
+ENTITLED_LEAGUE_IDS = [8, 9, 12, 14, 24, 27]  # Premier League, Championship, League One, League Two, FA Cup, Carabao Cup
 
 # Odds only actually populate this close to kickoff (confirmed
 # empirically against a real imminent fixture - a Premier League match
