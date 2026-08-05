@@ -29,6 +29,7 @@ export default async function GameEntryPage({ params }: { params: Promise<{ slug
   // the precedent this follows).
   if (slug === "dreamteam") redirect("/dreamteam");
   if (slug === "fanteam") redirect("/fanteam");
+  if (slug === "cloudff") redirect("/cloudff");
 
   const { data: squads } = await supabase
     .from("squads")

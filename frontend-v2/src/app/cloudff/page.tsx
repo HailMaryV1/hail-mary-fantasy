@@ -1,0 +1,211 @@
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { createAuthServerClient } from "@/lib/supabaseServerClient";
+import { getSeasonTiming } from "@/lib/gameweek";
+import CloudFFBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./CloudFFBoard";
+
+export const dynamic = "force-dynamic";
+
+type SquadRow = { id: number; name: string };
+
+type SquadPlayerRow = {
+  game_player_id: number;
+  game_players: {
+    price: number;
+    players: { full_name: string; position: "GK" | "DEF" | "MID" | "FWD"; team_id: number; teams: { name: string } };
+  };
+};
+
+type PoolRow = {
+  game_player_id: number;
+  full_name: string;
+  position: "GK" | "DEF" | "MID" | "FWD";
+  team_id: number;
+  team_name: string;
+  price: number;
+  hail_mary_score: number | null;
+};
+
+type FormationRow = { code: string; gk_count: number; def_count: number; mid_count: number; fwd_count: number };
+
+// Shape of compute_projections.py's decomposed-scoring `inputs` blob -
+// only the fields the "Sort by" dropdown needs, not the full structure.
+type ProjectionInputs = {
+  fixtures?: { stats?: { goal?: { projected?: number }; assist?: { projected?: number } } }[];
+  reconciliation?: { bonus?: number };
+};
+
+export default async function CloudFFPage() {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const { data: game } = await supabase.from("fantasy_games").select("id, display_name").eq("slug", "cloudff").maybeSingle();
+
+  const { data: squad } = game
+    ? await supabase
+        .from("squads")
+        .select("id, name")
+        .eq("game_id", game.id)
+        .eq("user_id", user.id)
+        .eq("is_archived", false)
+        .order("created_at")
+        .limit(1)
+        .maybeSingle<SquadRow>()
+    : { data: null };
+
+  if (!game || !squad) {
+    return (
+      <div className="min-h-screen bg-navy-950 px-6 py-10">
+        <main className="mx-auto max-w-lg">
+          <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
+            ← Back to main menu
+          </Link>
+          <h1 className="mt-6 text-xl font-semibold text-white">Cloud FF</h1>
+          <p className="mt-2 text-sm text-navy-300">No squad yet.</p>
+        </main>
+      </div>
+    );
+  }
+
+  const squadId = squad.id;
+
+  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, { data: formationsRaw }] = await Promise.all([
+    supabase.from("game_squad_rules").select("budget").eq("game_id", game.id).single(),
+    supabase
+      .from("squad_players")
+      .select("game_player_id, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
+      .eq("squad_id", squadId)
+      .returns<SquadPlayerRow[]>(),
+    supabase.from("game_player_pool").select("*").eq("game_slug", "cloudff").returns<PoolRow[]>(),
+    getSeasonTiming(supabase, game.id),
+    // Cloud FF uses named formations despite having no bench (every squad
+    // player counts as "starting") - formation is derived from the squad's
+    // live position counts below, never user-picked.
+    supabase.from("game_formations").select("code, gk_count, def_count, mid_count, fwd_count").eq("game_id", game.id).returns<FormationRow[]>(),
+  ]);
+
+  const rules = rulesRow ?? { budget: 100 };
+  const planningGameweek = seasonTiming.planningGameweek ?? 1;
+
+  const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
+    game_player_id: sp.game_player_id,
+    price: sp.game_players.price,
+    full_name: sp.game_players.players.full_name,
+    position: sp.game_players.players.position,
+    team_id: sp.game_players.players.team_id,
+    team_name: sp.game_players.players.teams.name,
+  }));
+  const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
+  const teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
+  const bank = Number(rules.budget) - teamValue;
+
+  const formationCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 } as Record<string, number>;
+  for (const p of squadPlayers) formationCounts[p.position] = (formationCounts[p.position] ?? 0) + 1;
+  const formationCode =
+    (formationsRaw ?? []).find(
+      (f) => f.gk_count === formationCounts.GK && f.def_count === formationCounts.DEF && f.mid_count === formationCounts.MID && f.fwd_count === formationCounts.FWD
+    )?.code ?? null;
+
+  // Same perf-fix pattern already used on /dreamteam: these three reads
+  // are independent of each other's results - only combined afterward in
+  // JS - so they run as one Promise.all instead of three back-to-back
+  // network round trips.
+  const [{ data: scoreRows }, { data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
+    supabase
+      .from("player_projection_summary")
+      .select("game_player_id, hail_mary_score, inputs")
+      .eq("game_slug", "cloudff")
+      .returns<{ game_player_id: number; hail_mary_score: number | null; inputs: ProjectionInputs | null }[]>(),
+    supabase
+      .from("game_fixture_gameweeks")
+      .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
+      .eq("game_id", game.id)
+      .gte("gameweek", planningGameweek)
+      .lte("gameweek", planningGameweek + 5),
+    supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id),
+  ]);
+  const scoreByGamePlayerId = new Map<number, number>((scoreRows ?? []).map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+  const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
+    (scoreRows ?? []).map((r) => {
+      const primaryStats = r.inputs?.fixtures?.[0]?.stats;
+      return [
+        r.game_player_id,
+        {
+          goalProjected: Number(primaryStats?.goal?.projected ?? 0),
+          assistProjected: Number(primaryStats?.assist?.projected ?? 0),
+          bonusProjected: Number(r.inputs?.reconciliation?.bonus ?? 0),
+        },
+      ];
+    })
+  );
+
+  const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
+
+  type GwFixtureRow = {
+    gameweek: number;
+    fixtures: { id: number; home_team_id: number; away_team_id: number; teams_home: { name: string }; teams_away: { name: string } };
+  };
+  const tilesByTeamGw = new Map<string, FixtureTile>();
+  for (const row of (gwFixtureRows ?? []) as unknown as GwFixtureRow[]) {
+    const f = row.fixtures;
+    for (const [teamId, oppName, isHome] of [
+      [f.home_team_id, f.teams_away.name, true],
+      [f.away_team_id, f.teams_home.name, false],
+    ] as [number, string, boolean][]) {
+      const key = `${teamId}:${row.gameweek}`;
+      const difficulty = difficultyByFixtureTeam.get(`${f.id}:${teamId}`) ?? 0.5;
+      tilesByTeamGw.set(key, { opponentAbbr: abbreviate(oppName), isHome, difficulty });
+    }
+  }
+
+  const emptyStats = { goalProjected: 0, assistProjected: 0, bonusProjected: 0 };
+
+  const boardSquad: BoardPlayer[] = squadPlayers.map((p) => ({
+    game_player_id: p.game_player_id,
+    full_name: p.full_name,
+    position: p.position,
+    team_name: p.team_name,
+    price: Number(p.price),
+    score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
+    fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${planningGameweek + i}`) ?? null),
+    ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
+  }));
+
+  const boardPool: PoolPlayer[] = (poolRaw ?? [])
+    .filter((p) => !squadIds.has(p.game_player_id))
+    .map((p) => ({
+      game_player_id: p.game_player_id,
+      full_name: p.full_name,
+      position: p.position,
+      team_name: p.team_name,
+      price: Number(p.price),
+      score: scoreByGamePlayerId.get(p.game_player_id) ?? Number(p.hail_mary_score ?? 0),
+      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${planningGameweek + i}`) ?? null),
+      ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  return (
+    <CloudFFBoard
+      squadId={squadId}
+      squadName={squad.name}
+      bank={bank}
+      teamValue={teamValue}
+      planningGameweek={planningGameweek}
+      formationCode={formationCode}
+      squad={boardSquad}
+      pool={boardPool}
+    />
+  );
+}
+
+function abbreviate(teamName: string): string {
+  return teamName
+    .replace(/^(AFC|FC)\s+/, "")
+    .replace(/\s+(FC|United|Town|City|Hotspur|Wanderers|Albion)$/, "")
+    .slice(0, 3)
+    .toUpperCase();
+}
