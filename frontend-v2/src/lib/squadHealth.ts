@@ -43,7 +43,13 @@ export function assessSquadHealth(
   positionAverages: Record<string, number>,
   maxPerClub: number | null,
   fixtureRatingsByTeam: Map<string, TeamFixtureRating>,
-  horizonGameweeks: number
+  horizonGameweeks: number,
+  // false for a game with no price system at all (EFL Fantasy - every
+  // player.price is a placeholder 0) - the "expensive underperformer"
+  // check below is meaningless there (every price ties, so it would flag
+  // any below-average scorer as "expensive"). Defaults true so every
+  // existing caller's behavior is unchanged.
+  hasPrice = true
 ): SquadHealthReport {
   const starters = players.filter((p) => p.isStarting);
   const bench = players.filter((p) => !p.isStarting);
@@ -125,11 +131,13 @@ export function assessSquadHealth(
 
   // Expensive underperformers - top quartile price among the squad but
   // below-average output for their position.
-  const sortedByPrice = players.slice().sort((a, b) => b.price - a.price);
-  const priceThreshold = sortedByPrice[Math.max(0, Math.floor(players.length / 4) - 1)]?.price ?? Infinity;
-  for (const p of players) {
-    if (p.price >= priceThreshold && qualityRatio(p.score, positionAverages[p.position] ?? 0) < 0.9) {
-      weaknesses.push(`${p.fullName} is expensive relative to projected output right now.`);
+  if (hasPrice) {
+    const sortedByPrice = players.slice().sort((a, b) => b.price - a.price);
+    const priceThreshold = sortedByPrice[Math.max(0, Math.floor(players.length / 4) - 1)]?.price ?? Infinity;
+    for (const p of players) {
+      if (p.price >= priceThreshold && qualityRatio(p.score, positionAverages[p.position] ?? 0) < 0.9) {
+        weaknesses.push(`${p.fullName} is expensive relative to projected output right now.`);
+      }
     }
   }
 
