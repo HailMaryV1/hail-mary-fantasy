@@ -107,11 +107,24 @@ export default async function FanTeamSquadPage({ params }: { params: Promise<{ i
   const teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
   const bank = Number(rules.budget) - teamValue;
 
-  const { data: scoreRows } = await supabase
-    .from("player_projection_summary")
-    .select("game_player_id, hail_mary_score, inputs")
-    .eq("game_slug", "fanteam")
-    .returns<{ game_player_id: number; hail_mary_score: number | null; inputs: ProjectionInputs | null }[]>();
+  // These three reads (scores, fixture-gameweeks, fixture-difficulty) are
+  // independent of each other's results - only combined afterward in JS -
+  // so they run as one Promise.all instead of three back-to-back network
+  // round trips (see dreamteam/page.tsx's identical fix).
+  const [{ data: scoreRows }, { data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
+    supabase
+      .from("player_projection_summary")
+      .select("game_player_id, hail_mary_score, inputs")
+      .eq("game_slug", "fanteam")
+      .returns<{ game_player_id: number; hail_mary_score: number | null; inputs: ProjectionInputs | null }[]>(),
+    supabase
+      .from("game_fixture_gameweeks")
+      .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
+      .eq("game_id", squad.game_id)
+      .gte("gameweek", planningGameweek)
+      .lte("gameweek", planningGameweek + 5),
+    supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", squad.game_id),
+  ]);
   const scoreByGamePlayerId = new Map<number, number>((scoreRows ?? []).map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
   const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
     (scoreRows ?? []).map((r) => {
@@ -126,17 +139,6 @@ export default async function FanTeamSquadPage({ params }: { params: Promise<{ i
       ];
     })
   );
-
-  const { data: gwFixtureRows } = await supabase
-    .from("game_fixture_gameweeks")
-    .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
-    .eq("game_id", squad.game_id)
-    .gte("gameweek", planningGameweek)
-    .lte("gameweek", planningGameweek + 5);
-  const { data: difficultyRows } = await supabase
-    .from("team_fixture_difficulty")
-    .select("fixture_id, team_id, attack_score")
-    .eq("game_id", squad.game_id);
   const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
 
   type GwFixtureRow = {

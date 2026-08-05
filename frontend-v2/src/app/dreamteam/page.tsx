@@ -119,11 +119,29 @@ export default async function DreamTeamPage() {
   // gameweek closest to "now" per player (see its view definition), which
   // is guaranteed to line up with planningGameweek since both resolve
   // "next actionable gameweek" the same way.
-  const { data: scoreRows } = await supabase
-    .from("player_projection_summary")
-    .select("game_player_id, hail_mary_score, inputs")
-    .eq("game_slug", "dreamteam")
-    .returns<{ game_player_id: number; hail_mary_score: number | null; inputs: ProjectionInputs | null }[]>();
+  //
+  // These three reads (scores, fixture-gameweeks, fixture-difficulty) are
+  // independent of each other's results - only combined afterward in JS -
+  // so they run as one Promise.all instead of three back-to-back network
+  // round trips (each one was adding its own full latency hop before the
+  // page could render at all).
+  const [{ data: scoreRows }, { data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
+    supabase
+      .from("player_projection_summary")
+      .select("game_player_id, hail_mary_score, inputs")
+      .eq("game_slug", "dreamteam")
+      .returns<{ game_player_id: number; hail_mary_score: number | null; inputs: ProjectionInputs | null }[]>(),
+    // Real fixture-difficulty tiles for GW(planning) through GW(planning+5),
+    // per team - reuses the existing team_fixture_difficulty table (already
+    // built for the Fixtures page) rather than inventing a new source.
+    supabase
+      .from("game_fixture_gameweeks")
+      .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
+      .eq("game_id", game.id)
+      .gte("gameweek", planningGameweek)
+      .lte("gameweek", planningGameweek + 5),
+    supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id),
+  ]);
   const scoreByGamePlayerId = new Map<number, number>((scoreRows ?? []).map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
   // Real projected goals/assists/bonus for the "Sort by" dropdown - pulled
   // straight from the same decomposed-scoring inputs compute_projections.py
@@ -143,19 +161,6 @@ export default async function DreamTeamPage() {
     })
   );
 
-  // Real fixture-difficulty tiles for GW(planning) through GW(planning+5),
-  // per team - reuses the existing team_fixture_difficulty table (already
-  // built for the Fixtures page) rather than inventing a new source.
-  const { data: gwFixtureRows } = await supabase
-    .from("game_fixture_gameweeks")
-    .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
-    .eq("game_id", game.id)
-    .gte("gameweek", planningGameweek)
-    .lte("gameweek", planningGameweek + 5);
-  const { data: difficultyRows } = await supabase
-    .from("team_fixture_difficulty")
-    .select("fixture_id, team_id, attack_score")
-    .eq("game_id", game.id);
   const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
 
   type GwFixtureRow = {

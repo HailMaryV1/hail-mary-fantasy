@@ -1,6 +1,6 @@
 "use client";
 
-import { useOptimistic, useState, useTransition } from "react";
+import { useEffect, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
 import { setBooster, makeTransfer } from "./actions";
@@ -225,6 +225,19 @@ export default function DreamTeamBoard({
 
   const sortColumnLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "Pts";
 
+  // 15 rows/page rather than rendering the whole (position/team/value/
+  // search-filtered) pool at once - fewer DOM nodes to paint per
+  // keystroke/filter change. Resets to page 1 whenever the filtered set
+  // changes shape, so a stale page number never lands on an empty page.
+  const POOL_PAGE_SIZE = 15;
+  const [poolPage, setPoolPage] = useState(1);
+  useEffect(() => {
+    setPoolPage(1);
+  }, [posFilter, teamFilter, maxValue, sortBy, search]);
+  const totalPoolPages = Math.max(1, Math.ceil(filteredPool.length / POOL_PAGE_SIZE));
+  const clampedPoolPage = Math.min(poolPage, totalPoolPages);
+  const pagedPool = filteredPool.slice((clampedPoolPage - 1) * POOL_PAGE_SIZE, clampedPoolPage * POOL_PAGE_SIZE);
+
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
       <div className="mx-auto max-w-7xl">
@@ -406,7 +419,7 @@ export default function DreamTeamBoard({
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredPool.slice(0, 50).map((p) => {
+                  {pagedPool.map((p) => {
                     const isLegal = legalPoolIds.has(p.game_player_id);
                     const rowClickable = selectedPlayer && canTransfer && isLegal && !isTransferPending;
                     return (
@@ -442,8 +455,26 @@ export default function DreamTeamBoard({
                   })}
                 </tbody>
               </table>
-              {filteredPool.length > 50 && (
-                <p className="mt-2 text-center text-[10px] text-navy-500">Showing top 50 of {filteredPool.length} - narrow your search to see more.</p>
+              {filteredPool.length > 0 && (
+                <div className="mt-2 flex items-center justify-between text-[10px] text-navy-500">
+                  <button
+                    onClick={() => setPoolPage((p) => Math.max(1, p - 1))}
+                    disabled={clampedPoolPage <= 1}
+                    className="rounded px-2 py-1 font-medium text-navy-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-navy-300"
+                  >
+                    ← Prev
+                  </button>
+                  <span>
+                    {(clampedPoolPage - 1) * POOL_PAGE_SIZE + 1}-{Math.min(clampedPoolPage * POOL_PAGE_SIZE, filteredPool.length)} of {filteredPool.length}
+                  </span>
+                  <button
+                    onClick={() => setPoolPage((p) => Math.min(totalPoolPages, p + 1))}
+                    disabled={clampedPoolPage >= totalPoolPages}
+                    className="rounded px-2 py-1 font-medium text-navy-300 hover:text-white disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-navy-300"
+                  >
+                    Next →
+                  </button>
+                </div>
               )}
             </div>
           </div>
