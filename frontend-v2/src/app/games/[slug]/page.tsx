@@ -21,6 +21,15 @@ export default async function GameEntryPage({ params }: { params: Promise<{ slug
   // route tree - they don't fit the squad-selector model below at all.
   if (isTournamentGame(slug)) redirect("/golf");
 
+  // FanTeam football and Dream Team each get their own dedicated route
+  // tree too (/fanteam, /dreamteam) rather than the generic squad-
+  // selector below - every game keeps its own identity, projections, and
+  // history separate, never a shared list mixing multiple games'
+  // entities together (see gameConfig.ts's isTournamentGame comment for
+  // the precedent this follows).
+  if (slug === "dreamteam") redirect("/dreamteam");
+  if (slug === "fanteam") redirect("/fanteam");
+
   const { data: squads } = await supabase
     .from("squads")
     .select("id, name")
