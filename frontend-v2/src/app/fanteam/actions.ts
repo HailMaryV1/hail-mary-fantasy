@@ -41,11 +41,11 @@ type FanteamSquadPlayerRow = {
  * kicks off) is free and unlimited, same convention as Dream Team's
  * makeTransfer.
  *
- * NOTE: "+1 free transfer per gameweek" accrual is NOT implemented here
- * - a known, real gap (see the old frontend's migration 0022 docstring
- * and this project's GW1 launch checklist) - free_transfers only ever
- * goes down via this action, never up, until a live "a new gameweek has
- * started" trigger exists to build that against.
+ * "+1 free transfer per gameweek" accrual happens OUTSIDE this action -
+ * scripts/accrue_free_transfers.py, run every refresh_all.py cycle,
+ * credits it once a real gameweek actually completes (migration 0022's
+ * "needs a live 'a new gameweek has started' trigger" gap, closed
+ * 2026-08-06). This action only ever counts a transfer DOWN.
  */
 export async function makeFanteamTransfer({
   squadId,

@@ -126,6 +126,7 @@ def main():
     results.append(run_step("Import FanTeam players", ["import_fanteam_live.py", "--skip-fixtures"]))
     results.append(run_step("Capture gameweek actuals", ["scripts/capture_gameweek_actuals.py"]))
     results.append(run_step("Attach gameweek results to frozen predictions", ["scripts/attach_gameweek_results.py"]))
+    results.append(run_step("Accrue FanTeam free transfers", ["scripts/accrue_free_transfers.py"]))
 
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:

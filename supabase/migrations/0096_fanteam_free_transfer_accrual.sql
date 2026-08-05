@@ -1,0 +1,15 @@
+-- Tracks the last real gameweek each squad has already been credited
+-- its +1 free transfer for (see migration 0022's docstring - "+1 per
+-- gameweek, capped at 37" was never automated, since there was no live
+-- "a new gameweek has started" trigger while pre-season). This column
+-- is what makes scripts/accrue_free_transfers.py idempotent: it can run
+-- on every twice-daily refresh_all.py cycle without double-crediting a
+-- gameweek it already processed.
+--
+-- Default 1 matches free_transfers' own default (migration 0022) - a
+-- fresh squad's first gameweek allotment is already accounted for, so
+-- accrual only ever needs to start from gameweek 2 onward. Shared
+-- column on `squads` like free_transfers/wildcard_*_used_gameweek -
+-- unused by every other game's rows, same accepted pattern those
+-- columns already use.
+alter table squads add column free_transfers_accrued_through_gameweek int not null default 1;
