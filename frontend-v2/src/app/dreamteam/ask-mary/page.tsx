@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { runAskMaryAnalysis } from "@/lib/askMaryEngine";
 import { recordPredictions } from "@/lib/predictionActions";
+import { buildSquadSummary } from "@/lib/squadSummary";
 import GameweekPlanRow from "./GameweekPlanRow";
 
 // The recommendation depends on live squad/pool/fixture state that a
@@ -88,6 +89,36 @@ export default async function DreamTeamAskMaryPage() {
   const startingCount = squadPlayers.filter((p) => p.is_starting).length;
   const startingXIComplete = startingCount === rules.starting_size;
 
+  // Same source of truth as the squad board's "Projected Points" stat
+  // (player_projection_summary.hail_mary_score, which always resolves to
+  // whichever gameweek is closest to now per player - see
+  // dreamteam/page.tsx's own comment on this view).
+  const { data: scoreRows } = await supabase
+    .from("player_projection_summary")
+    .select("game_player_id, hail_mary_score")
+    .eq("game_slug", "dreamteam")
+    .in(
+      "game_player_id",
+      squadPlayers.map((p) => p.game_player_id)
+    )
+    .returns<{ game_player_id: number; hail_mary_score: number | null }[]>();
+  const scoreByGamePlayerId = new Map((scoreRows ?? []).map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+  const teamValue = squadPlayers.reduce((sum, p) => sum + p.price, 0);
+  const totalProjectedPoints = squadPlayers.reduce((sum, p) => sum + (scoreByGamePlayerId.get(p.game_player_id) ?? 0), 0);
+
+  const nextStep = gameweekPlan[0];
+  const squadSummary = buildSquadSummary({
+    players: squadPlayers.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: scoreByGamePlayerId.get(p.game_player_id) ?? null })),
+    totalProjectedPoints,
+    teamValue,
+    budgetRemaining,
+    bestCaptain: bestCaptain ? { full_name: bestCaptain.full_name, score: bestCaptain.score } : null,
+    topStrength: health.strengths[0] ?? null,
+    topWeakness: health.weaknesses[0] ?? null,
+    nextStepTransferCount: nextStep ? nextStep.transfers.length : null,
+    nextStepGameweek: nextStep ? nextStep.gameweek : null,
+  });
+
   return (
     <div className="min-h-screen bg-navy-950 px-6 py-10">
       <main className="mx-auto max-w-3xl">
@@ -97,12 +128,19 @@ export default async function DreamTeamAskMaryPage() {
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Current Squad</h2>
             <p className="mt-2 text-sm text-navy-200">
-              {squad.name} · £{budgetRemaining.toFixed(1)}m in the bank · {squadPlayers.length}/{rules.squad_size} players ·{" "}
-              {seasonStarted ? `${squad.free_transfers} free transfer${squad.free_transfers === 1 ? "" : "s"}` : "Unlimited transfers (pre-season)"}
+              {squad.name} · <span className="font-semibold text-sky-400">{totalProjectedPoints.toFixed(1)} pts projected</span> · £{budgetRemaining.toFixed(1)}m in the bank ·{" "}
+              {squadPlayers.length}/{rules.squad_size} players · {seasonStarted ? `${squad.free_transfers} free transfer${squad.free_transfers === 1 ? "" : "s"}` : "Unlimited transfers (pre-season)"}
             </p>
             <Link href="/dreamteam" className="mt-3 inline-block rounded-lg border border-navy-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-800">
               Manage squad
             </Link>
+          </div>
+
+          <div>
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Squad Summary</h2>
+            <div className="mt-2 rounded-xl border border-navy-700 bg-navy-900 p-4">
+              <p className="text-sm leading-relaxed text-navy-200">{squadSummary.join(" ")}</p>
+            </div>
           </div>
 
           {!hasCalendar && (

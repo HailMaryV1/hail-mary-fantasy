@@ -263,6 +263,10 @@ export default function DreamTeamBoard({
   const budget = bank + teamValue;
   const optimisticTeamValue = optimisticSquad.reduce((sum, p) => sum + p.price, 0);
   const optimisticBank = budget - optimisticTeamValue;
+  // No bench - every squad member always starts and always counts, so
+  // this is a flat sum (same "no formation search needed" reasoning as
+  // askMaryEngine.ts's optimalXITotal).
+  const optimisticTotalPoints = optimisticSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
 
   // Real legality: same position (Dream Team like-for-like), and the
   // swap must not go over budget - freed cash from the outgoing player's
@@ -317,7 +321,8 @@ export default function DreamTeamBoard({
           ← Back to main menu
         </Link>
 
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
+          <StatBox label="Projected Points" value={optimisticTotalPoints.toFixed(1)} />
           <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
           <StatBox label="Bank" value={`£${optimisticBank.toFixed(1)}m`} />
           <StatBox label="Team Value" value={`£${optimisticTeamValue.toFixed(1)}m`} />
