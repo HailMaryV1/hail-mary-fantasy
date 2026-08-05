@@ -94,6 +94,7 @@ export default function CloudFFBoard({
   formationCode,
   squad,
   pool,
+  squadSummary,
 }: {
   squadId: number;
   squadName: string;
@@ -103,6 +104,7 @@ export default function CloudFFBoard({
   formationCode: string | null;
   squad: BoardPlayer[];
   pool: PoolPlayer[];
+  squadSummary: string[];
 }) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -321,6 +323,12 @@ export default function CloudFFBoard({
                 setMenuIsSquadMember(true);
               }}
             />
+            {squadSummary.length > 0 && (
+              <div className="mt-4 rounded-xl border border-navy-700 bg-navy-900 p-4">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Squad Summary</h2>
+                <p className="mt-2 text-sm leading-relaxed text-navy-200">{squadSummary.join(" ")}</p>
+              </div>
+            )}
           </div>
 
           {infoPlayerId != null ? (

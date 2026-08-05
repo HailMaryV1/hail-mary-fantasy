@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
+import { buildSquadSummary } from "@/lib/squadSummary";
 import FanTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./FanTeamBoard";
 
 export const dynamic = "force-dynamic";
@@ -191,6 +192,29 @@ export default async function FanTeamSquadPage({ params }: { params: Promise<{ i
     }))
     .sort((a, b) => b.score - a.score);
 
+  // Starting XI only (captain doubled), matching FanTeamBoard.tsx's own
+  // client-side projectedPoints formula exactly - a bench player's score
+  // isn't part of what this squad is actually projected to return.
+  const totalProjectedPoints = boardSquad
+    .filter((p) => p.isStarting)
+    .reduce((sum, p) => sum + (p.score ?? 0) * (p.isCaptain ? 2 : 1), 0);
+  const currentCaptain = boardSquad.find((p) => p.isCaptain);
+  const squadSummary = buildSquadSummary({
+    players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score })),
+    totalProjectedPoints,
+    teamValue,
+    budgetRemaining: bank,
+    captain: currentCaptain ? { fullName: currentCaptain.full_name, score: currentCaptain.score ?? 0 } : null,
+    // Fixture/health-derived reasoning and the forward-looking transfer
+    // plan live only in the full Ask Mary analysis (runAskMaryAnalysis) -
+    // deliberately not run on every squad-board page load, same reasoning
+    // as dreamteam/page.tsx.
+    topStrength: null,
+    topWeakness: null,
+    nextStepTransferCount: null,
+    nextStepGameweek: null,
+  });
+
   const startingCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
   for (const p of squadPlayers) if (p.is_starting) startingCounts[p.position] += 1;
   const currentFormationCode =
@@ -217,6 +241,7 @@ export default async function FanTeamSquadPage({ params }: { params: Promise<{ i
       rawViceCaptainId={squad.vice_captain_game_player_id}
       squad={boardSquad}
       pool={boardPool}
+      squadSummary={squadSummary}
     />
   );
 }

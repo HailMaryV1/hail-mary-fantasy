@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
+import { buildSquadSummary } from "@/lib/squadSummary";
 import CloudFFBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./CloudFFBoard";
 
 export const dynamic = "force-dynamic";
@@ -188,6 +189,26 @@ export default async function CloudFFPage() {
     }))
     .sort((a, b) => b.score - a.score);
 
+  // No bench and no squad-level captain (Cloud FF's captain is picked per
+  // real match-day, not once for the whole squad - see matchDayCaptains.ts)
+  // - flat sum, no captain sentence.
+  const totalProjectedPoints = boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
+  const squadSummary = buildSquadSummary({
+    players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score })),
+    totalProjectedPoints,
+    teamValue,
+    budgetRemaining: bank,
+    captain: null,
+    // Fixture/health-derived reasoning and the forward-looking transfer
+    // plan live only in the full Ask Mary analysis (runAskMaryAnalysis) -
+    // deliberately not run on every squad-board page load, same reasoning
+    // as dreamteam/page.tsx.
+    topStrength: null,
+    topWeakness: null,
+    nextStepTransferCount: null,
+    nextStepGameweek: null,
+  });
+
   return (
     <CloudFFBoard
       squadId={squadId}
@@ -198,6 +219,7 @@ export default async function CloudFFPage() {
       formationCode={formationCode}
       squad={boardSquad}
       pool={boardPool}
+      squadSummary={squadSummary}
     />
   );
 }
