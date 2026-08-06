@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming, getGameweekRange, getProjectionsForGameweek } from "@/lib/gameweek";
+import { getGameweekInfo, getProjectionsForGameweek, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import DreamTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./DreamTeamBoard";
@@ -89,7 +89,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
 
   const squadId = squad.id;
 
-  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, gwRange, { count: substitutesUsed }] = await Promise.all([
+  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, gwInfo, { count: substitutesUsed }] = await Promise.all([
     supabase.from("game_squad_rules").select("budget").eq("game_id", game.id).single(),
     supabase
       .from("squad_players")
@@ -97,26 +97,27 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
     supabase.from("game_player_pool").select("*").eq("game_slug", "dreamteam").returns<PoolRow[]>(),
-    getSeasonTiming(supabase, game.id),
-    getGameweekRange(supabase, game.id),
+    getGameweekInfo(supabase, game.id),
     supabase.from("squad_substitutions").select("id", { count: "exact", head: true }).eq("squad_id", squadId),
   ]);
 
   const rules = rulesRow ?? { budget: 50 };
-  const planningGameweek = seasonTiming.planningGameweek ?? 1;
+  const planningGameweek = gwInfo.planningGameweek ?? 1;
   const requestedGameweek = Number(gameweekParam);
   const viewedGameweek = Number.isInteger(requestedGameweek)
-    ? Math.min(Math.max(requestedGameweek, gwRange.minGameweek), gwRange.maxGameweek)
+    ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
     : planningGameweek;
   const isPlanningView = viewedGameweek === planningGameweek;
   const isPastView = viewedGameweek < planningGameweek;
 
   // Fixture-difficulty tiles for GW(viewed) through GW(viewed+5), per team -
   // reuses the existing team_fixture_difficulty table (already built for
-  // the Fixtures page) rather than inventing a new source. Independent of
-  // the past/future branch below, always anchored on whatever gameweek is
-  // actually being viewed.
-  const [{ data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
+  // the Fixtures page) rather than inventing a new source. Bundled with
+  // this specific gameweek's real projections (skipped for a past view,
+  // which doesn't need them) in one parallel batch, rather than a separate
+  // awaited call after - that was adding a whole extra network round trip
+  // to every page load.
+  const [{ data: gwFixtureRows }, { data: difficultyRows }, scoreRows] = await Promise.all([
     supabase
       .from("game_fixture_gameweeks")
       .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
@@ -124,6 +125,9 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       .gte("gameweek", viewedGameweek)
       .lte("gameweek", viewedGameweek + 5),
     supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id),
+    isPastView
+      ? Promise.resolve<GameweekProjectionRow<ProjectionInputs>[]>([])
+      : getProjectionsForGameweek<ProjectionInputs>(supabase, game.id, viewedGameweek),
   ]);
   const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
   type GwFixtureRow = {
@@ -223,7 +227,6 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
     teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
     bank = Number(rules.budget) - teamValue;
 
-    const scoreRows = await getProjectionsForGameweek<ProjectionInputs>(supabase, game.id, viewedGameweek);
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
     // Real projected goals/assists/bonus for the "Sort by" dropdown - pulled
     // straight from the same decomposed-scoring inputs compute_projections.py
@@ -304,8 +307,8 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       isPlanningView={isPlanningView}
       isPastView={isPastView}
       pastViewState={pastViewState}
-      minGameweek={gwRange.minGameweek}
-      maxGameweek={gwRange.maxGameweek}
+      minGameweek={gwInfo.minGameweek}
+      maxGameweek={gwInfo.maxGameweek}
       boosters={{
         active: squad.active_booster,
         activeGameweek: squad.active_booster_gameweek,
@@ -314,7 +317,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
         maxCaptainUsed: squad.max_captain_used_gameweek != null,
       }}
       substitutesUsed={substitutesUsed ?? 0}
-      seasonStarted={seasonTiming.seasonStarted}
+      seasonStarted={gwInfo.seasonStarted}
       squad={boardSquad}
       pool={boardPool}
       squadSummary={squadSummary}

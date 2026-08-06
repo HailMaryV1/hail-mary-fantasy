@@ -365,18 +365,9 @@ export default function DreamTeamBoard({
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
       <div className="mx-auto max-w-7xl">
-        <div className="flex items-center justify-between gap-2">
-          <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
-            ← Back to main menu
-          </Link>
-          <GameweekSwitcher
-            basePath="/dreamteam"
-            currentGameweek={viewedGameweek}
-            minGameweek={minGameweek}
-            maxGameweek={maxGameweek}
-            planningGameweek={planningGameweek}
-          />
-        </div>
+        <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
+          ← Back to main menu
+        </Link>
 
         {!isPlanningView && (
           <p className="mt-3 rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
@@ -448,9 +439,18 @@ export default function DreamTeamBoard({
 
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
           <div>
-            <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="mb-3 grid grid-cols-3 items-center gap-2">
               <h2 className="text-sm font-semibold text-white">{squadName}</h2>
-              <div className="flex items-center gap-2">
+              <div className="flex justify-center">
+                <GameweekSwitcher
+                  basePath="/dreamteam"
+                  currentGameweek={viewedGameweek}
+                  minGameweek={minGameweek}
+                  maxGameweek={maxGameweek}
+                  planningGameweek={planningGameweek}
+                />
+              </div>
+              <div className="flex items-center justify-end gap-2">
                 <Link
                   href="/dreamteam/ask-mary"
                   className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"

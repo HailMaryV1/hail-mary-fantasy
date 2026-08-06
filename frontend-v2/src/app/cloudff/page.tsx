@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming, getGameweekRange, getProjectionsForGameweek } from "@/lib/gameweek";
+import { getGameweekInfo, getProjectionsForGameweek, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import CloudFFBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./CloudFFBoard";
@@ -75,7 +75,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
 
   const squadId = squad.id;
 
-  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, gwRange, { data: formationsRaw }] = await Promise.all([
+  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, gwInfo, { data: formationsRaw }] = await Promise.all([
     supabase.from("game_squad_rules").select("budget").eq("game_id", game.id).single(),
     supabase
       .from("squad_players")
@@ -83,8 +83,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
     supabase.from("game_player_pool").select("*").eq("game_slug", "cloudff").returns<PoolRow[]>(),
-    getSeasonTiming(supabase, game.id),
-    getGameweekRange(supabase, game.id),
+    getGameweekInfo(supabase, game.id),
     // Cloud FF uses named formations despite having no bench (every squad
     // player counts as "starting") - formation is derived from the squad's
     // live position counts below, never user-picked.
@@ -92,16 +91,16 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
   ]);
 
   const rules = rulesRow ?? { budget: 100 };
-  const planningGameweek = seasonTiming.planningGameweek ?? 1;
+  const planningGameweek = gwInfo.planningGameweek ?? 1;
   const formations = formationsRaw ?? [];
   const requestedGameweek = Number(gameweekParam);
   const viewedGameweek = Number.isInteger(requestedGameweek)
-    ? Math.min(Math.max(requestedGameweek, gwRange.minGameweek), gwRange.maxGameweek)
+    ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
     : planningGameweek;
   const isPlanningView = viewedGameweek === planningGameweek;
   const isPastView = viewedGameweek < planningGameweek;
 
-  const [{ data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
+  const [{ data: gwFixtureRows }, { data: difficultyRows }, scoreRows] = await Promise.all([
     supabase
       .from("game_fixture_gameweeks")
       .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
@@ -109,6 +108,9 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       .gte("gameweek", viewedGameweek)
       .lte("gameweek", viewedGameweek + 5),
     supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id),
+    isPastView
+      ? Promise.resolve<GameweekProjectionRow<ProjectionInputs>[]>([])
+      : getProjectionsForGameweek<ProjectionInputs>(supabase, game.id, viewedGameweek),
   ]);
   const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
   type GwFixtureRow = {
@@ -213,7 +215,6 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
         (f) => f.gk_count === formationCounts.GK && f.def_count === formationCounts.DEF && f.mid_count === formationCounts.MID && f.fwd_count === formationCounts.FWD
       )?.code ?? null;
 
-    const scoreRows = await getProjectionsForGameweek<ProjectionInputs>(supabase, game.id, viewedGameweek);
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
     const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
       scoreRows.map((r) => {
@@ -288,8 +289,8 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       isPlanningView={isPlanningView}
       isPastView={isPastView}
       pastViewState={pastViewState}
-      minGameweek={gwRange.minGameweek}
-      maxGameweek={gwRange.maxGameweek}
+      minGameweek={gwInfo.minGameweek}
+      maxGameweek={gwInfo.maxGameweek}
       formationCode={formationCode}
       squad={boardSquad}
       pool={boardPool}

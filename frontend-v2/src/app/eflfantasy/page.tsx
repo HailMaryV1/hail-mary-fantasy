@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming, getGameweekRange, getProjectionsForGameweek } from "@/lib/gameweek";
+import { getGameweekInfo, getProjectionsForGameweek, fetchAllPaginated, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import EFLFantasyBoard, { type BoardPlayer, type PoolPlayer, type BoardClub, type PoolClub } from "./EFLFantasyBoard";
@@ -60,20 +60,15 @@ type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 // from an earlier player_gameweek_predictions incident) - paginating in
 // 1000-row pages is the only fix that actually gets every row.
 async function fetchAllPoolRows(supabase: Supabase, gameSlug: string): Promise<PoolRow[]> {
-  const PAGE_SIZE = 1000;
-  const rows: PoolRow[] = [];
-  for (let from = 0; ; from += PAGE_SIZE) {
+  return fetchAllPaginated<PoolRow>(async (from, to) => {
     const { data } = await supabase
       .from("game_player_pool")
       .select("game_player_id, full_name, position, team_id, team_name, hail_mary_score, competition")
       .eq("game_slug", gameSlug)
-      .range(from, from + PAGE_SIZE - 1)
+      .range(from, to)
       .returns<PoolRow[]>();
-    if (!data || data.length === 0) break;
-    rows.push(...data);
-    if (data.length < PAGE_SIZE) break;
-  }
-  return rows;
+    return data;
+  });
 }
 
 export default async function EFLFantasyPage({ searchParams }: { searchParams: Promise<{ gameweek?: string }> }) {
@@ -114,15 +109,14 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
 
   const squadId = squad.id;
 
-  const [{ data: squadPlayersRaw }, poolRaw, seasonTiming, gwRange, { data: clubHistoryRaw }] = await Promise.all([
+  const [{ data: squadPlayersRaw }, poolRaw, gwInfo, { data: clubHistoryRaw }] = await Promise.all([
     supabase
       .from("squad_players")
       .select("game_player_id, game_players(players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
     fetchAllPoolRows(supabase, "eflfantasy"),
-    getSeasonTiming(supabase, game.id),
-    getGameweekRange(supabase, game.id),
+    getGameweekInfo(supabase, game.id),
     supabase
       .from("game_player_stats")
       .select("game_player_id, total_points, game_players!inner(game_id, position_code)")
@@ -133,10 +127,10 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       .returns<ClubHistoryRow[]>(),
   ]);
 
-  const planningGameweek = seasonTiming.planningGameweek ?? 1;
+  const planningGameweek = gwInfo.planningGameweek ?? 1;
   const requestedGameweek = Number(gameweekParam);
   const viewedGameweek = Number.isInteger(requestedGameweek)
-    ? Math.min(Math.max(requestedGameweek, gwRange.minGameweek), gwRange.maxGameweek)
+    ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
     : planningGameweek;
   const isPlanningView = viewedGameweek === planningGameweek;
   const isPastView = viewedGameweek < planningGameweek;
@@ -144,12 +138,20 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   // The fixture (if any) each team plays in the gameweek being viewed -
   // not "soonest future fixture from today" (that only ever matched the
   // planning gameweek), so this stays correct when browsing any week.
-  const { data: fixturesRaw } = await supabase
-    .from("game_fixture_gameweeks")
-    .select("gameweek, fixtures(home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))")
-    .eq("game_id", game.id)
-    .eq("gameweek", viewedGameweek)
-    .returns<FixtureRow[]>();
+  // Bundled with this gameweek's real projections (skipped for a past
+  // view) in one parallel batch, rather than two separate awaited calls -
+  // that was adding two whole extra network round trips to every load.
+  const [{ data: fixturesRaw }, scoreRows] = await Promise.all([
+    supabase
+      .from("game_fixture_gameweeks")
+      .select("gameweek, fixtures(home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))")
+      .eq("game_id", game.id)
+      .eq("gameweek", viewedGameweek)
+      .returns<FixtureRow[]>(),
+    isPastView
+      ? Promise.resolve<GameweekProjectionRow<unknown>[]>([])
+      : getProjectionsForGameweek(supabase, game.id, viewedGameweek),
+  ]);
 
   const nextFixtureByTeamId = new Map<number, { opponent: string; isHome: boolean; gameweek: number }>();
   for (const row of fixturesRaw ?? []) {
@@ -257,7 +259,6 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
     // Real per-gameweek scores for whichever week is being viewed - covers
     // both players and clubs in one query (club picks go through the same
     // projections table, see compute_club_scores()).
-    const scoreRows = await getProjectionsForGameweek(supabase, game.id, viewedGameweek);
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
 
     boardSquad = squadPlayers
@@ -339,8 +340,8 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       isPlanningView={isPlanningView}
       isPastView={isPastView}
       pastViewState={pastViewState}
-      minGameweek={gwRange.minGameweek}
-      maxGameweek={gwRange.maxGameweek}
+      minGameweek={gwInfo.minGameweek}
+      maxGameweek={gwInfo.maxGameweek}
       squad={boardSquad}
       pool={boardPool}
       clubs={boardClubs}

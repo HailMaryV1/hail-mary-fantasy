@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming, getGameweekRange, getProjectionsForGameweek } from "@/lib/gameweek";
+import { getGameweekInfo, getProjectionsForGameweek, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import FanTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./FanTeamBoard";
@@ -78,7 +78,7 @@ export default async function FanTeamSquadPage({
   const game = Array.isArray(squad.fantasy_games) ? squad.fantasy_games[0] : squad.fantasy_games;
   if (!game || game.slug !== "fanteam") notFound();
 
-  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, gwRange, { data: formationsRaw }, { data: linkRow }] =
+  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, gwInfo, { data: formationsRaw }, { data: linkRow }] =
     await Promise.all([
       supabase.from("game_squad_rules").select("budget, max_per_club").eq("game_id", squad.game_id).single(),
       supabase
@@ -89,8 +89,7 @@ export default async function FanTeamSquadPage({
         .eq("squad_id", squadId)
         .returns<FanteamSquadPlayerRow[]>(),
       supabase.from("game_player_pool").select("*").eq("game_slug", "fanteam").returns<PoolRow[]>(),
-      getSeasonTiming(supabase, squad.game_id),
-      getGameweekRange(supabase, squad.game_id),
+      getGameweekInfo(supabase, squad.game_id),
       supabase
         .from("game_formations")
         .select("code, gk_count, def_count, mid_count, fwd_count")
@@ -100,16 +99,16 @@ export default async function FanTeamSquadPage({
     ]);
 
   const rules = rulesRow ?? { budget: 100, max_per_club: 3 };
-  const planningGameweek = seasonTiming.planningGameweek ?? 1;
+  const planningGameweek = gwInfo.planningGameweek ?? 1;
   const formations = formationsRaw ?? [];
   const requestedGameweek = Number(gameweekParam);
   const viewedGameweek = Number.isInteger(requestedGameweek)
-    ? Math.min(Math.max(requestedGameweek, gwRange.minGameweek), gwRange.maxGameweek)
+    ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
     : planningGameweek;
   const isPlanningView = viewedGameweek === planningGameweek;
   const isPastView = viewedGameweek < planningGameweek;
 
-  const [{ data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
+  const [{ data: gwFixtureRows }, { data: difficultyRows }, scoreRows] = await Promise.all([
     supabase
       .from("game_fixture_gameweeks")
       .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
@@ -117,6 +116,9 @@ export default async function FanTeamSquadPage({
       .gte("gameweek", viewedGameweek)
       .lte("gameweek", viewedGameweek + 5),
     supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", squad.game_id),
+    isPastView
+      ? Promise.resolve<GameweekProjectionRow<ProjectionInputs>[]>([])
+      : getProjectionsForGameweek<ProjectionInputs>(supabase, squad.game_id, viewedGameweek),
   ]);
   const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
   type GwFixtureRow = {
@@ -217,7 +219,6 @@ export default async function FanTeamSquadPage({
     teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
     bank = Number(rules.budget) - teamValue;
 
-    const scoreRows = await getProjectionsForGameweek<ProjectionInputs>(supabase, squad.game_id, viewedGameweek);
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
     const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
       scoreRows.map((r) => {
@@ -309,12 +310,12 @@ export default async function FanTeamSquadPage({
       isPlanningView={isPlanningView}
       isPastView={isPastView}
       pastViewState={pastViewState}
-      minGameweek={gwRange.minGameweek}
-      maxGameweek={gwRange.maxGameweek}
+      minGameweek={gwInfo.minGameweek}
+      maxGameweek={gwInfo.maxGameweek}
       wildcard1UsedGameweek={squad.wildcard_1_used_gameweek}
       wildcard2UsedGameweek={squad.wildcard_2_used_gameweek}
       maxPerClub={Number(rules.max_per_club ?? 3)}
-      seasonStarted={seasonTiming.seasonStarted}
+      seasonStarted={gwInfo.seasonStarted}
       formations={formations}
       currentFormationCode={currentFormationCode}
       isProviderSynced={linkRow?.sync_enabled ?? false}

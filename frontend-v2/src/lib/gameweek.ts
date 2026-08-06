@@ -5,8 +5,8 @@ type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 type FixtureGameweekRow = { gameweek: number; fixtures: { kickoff_at: string } };
 
 /** Earliest fixture kickoff per gameweek for this game - the shared read
- * both getSeasonTiming and getGameweekRange build on, since a fantasy
- * gameweek's real deadline is "the moment its first ball is kicked." */
+ * getGameweekInfo builds on, since a fantasy gameweek's real deadline is
+ * "the moment its first ball is kicked." */
 async function earliestKickoffByGameweek(supabase: Supabase, gameId: number): Promise<Map<number, number>> {
   const { data } = await supabase
     .from("game_fixture_gameweeks")
@@ -23,57 +23,92 @@ async function earliestKickoffByGameweek(supabase: Supabase, gameId: number): Pr
   return byGameweek;
 }
 
+export type GameweekInfo = {
+  seasonStarted: boolean;
+  /** "Which gameweek can transfers/recommendations still actually affect" -
+   * the instant a gameweek's first ball is kicked, planning shifts to the
+   * next one, even if that gameweek still has fixtures left to play. */
+  planningGameweek: number | null;
+  /** For browsing/switching between weeks (not "what should Mary act on
+   * right now" - that's planningGameweek above). Lets a caller clamp an
+   * untrusted ?gameweek= param into range without a second query. */
+  minGameweek: number;
+  maxGameweek: number;
+  gameweeks: { gameweek: number; deadline: string }[];
+};
+
 /**
- * "Which gameweek can transfers/recommendations still actually affect" -
- * the instant a gameweek's first ball is kicked, planning shifts to the
- * next one, even if that gameweek still has fixtures left to play.
+ * One combined read covering both "what's the current planning week" and
+ * "what's the full browsable range" - getSeasonTiming and getGameweekRange
+ * used to each run this same game_fixture_gameweeks query independently;
+ * every board page needs both, so merging them halves that particular
+ * round trip without changing what either was computing.
  */
-export async function getSeasonTiming(
-  supabase: Supabase,
-  gameId: number
-): Promise<{ seasonStarted: boolean; planningGameweek: number | null }> {
+export async function getGameweekInfo(supabase: Supabase, gameId: number): Promise<GameweekInfo> {
   const byGameweek = await earliestKickoffByGameweek(supabase, gameId);
   if (byGameweek.size === 0) {
-    return { seasonStarted: false, planningGameweek: null };
+    return { seasonStarted: false, planningGameweek: null, minGameweek: 1, maxGameweek: 1, gameweeks: [] };
   }
 
   const now = Date.now();
   const gameweek1Kickoff = byGameweek.get(1);
   const seasonStarted = gameweek1Kickoff !== undefined && now >= gameweek1Kickoff;
 
-  const upcoming = Array.from(byGameweek.entries())
-    .filter(([, kickoff]) => kickoff >= now)
-    .sort((a, b) => a[0] - b[0]);
-  const planningGameweek = upcoming.length > 0 ? upcoming[0][0] : null;
+  const sorted = Array.from(byGameweek.entries())
+    .map(([gameweek, kickoff]) => ({ gameweek, kickoff }))
+    .sort((a, b) => a.gameweek - b.gameweek);
+  const upcoming = sorted.filter((g) => g.kickoff >= now);
+  const planningGameweek = upcoming.length > 0 ? upcoming[0].gameweek : null;
 
-  return { seasonStarted, planningGameweek };
+  return {
+    seasonStarted,
+    planningGameweek,
+    minGameweek: sorted[0].gameweek,
+    maxGameweek: sorted[sorted.length - 1].gameweek,
+    gameweeks: sorted.map(({ gameweek, kickoff }) => ({ gameweek, deadline: new Date(kickoff).toISOString() })),
+  };
+}
+
+/** @deprecated use getGameweekInfo - kept for the handful of callers
+ * (actions.ts files, captains page) that only ever needed this half. */
+export async function getSeasonTiming(supabase: Supabase, gameId: number): Promise<{ seasonStarted: boolean; planningGameweek: number | null }> {
+  const info = await getGameweekInfo(supabase, gameId);
+  return { seasonStarted: info.seasonStarted, planningGameweek: info.planningGameweek };
 }
 
 /**
- * Every gameweek this game's calendar currently knows about, with its
- * computed deadline - for browsing/switching between weeks (not for
- * "what should Mary act on right now", that's still getSeasonTiming).
- * min/maxGameweek let callers clamp an untrusted ?gameweek= param into
- * range without a second query.
+ * Paginated in 1000-row pages, fetched speculatively in parallel rather
+ * than one page at a time - PostgREST silently caps any single query at
+ * 1000 rows server-side regardless of what the client asks for, so a pool
+ * the size of EFL Fantasy's (~3,458 rows) needs multiple pages, and a
+ * naive sequential loop turns that into N full network round trips
+ * stacked back to back (confirmed live: this was a real, measurable chunk
+ * of a ~5s page load). Firing a fixed batch of page requests at once costs
+ * the same as one request's worth of latency for every pool below
+ * SPECULATIVE_PAGES * PAGE_SIZE rows - every real pool in this app today -
+ * and only falls back to a sequential tail for the (currently
+ * hypothetical) case of a pool larger than that.
  */
-export async function getGameweekRange(
-  supabase: Supabase,
-  gameId: number
-): Promise<{ minGameweek: number; maxGameweek: number; gameweeks: { gameweek: number; deadline: string }[] }> {
-  const byGameweek = await earliestKickoffByGameweek(supabase, gameId);
-  if (byGameweek.size === 0) {
-    return { minGameweek: 1, maxGameweek: 1, gameweeks: [] };
+export async function fetchAllPaginated<T>(fetchPage: (from: number, to: number) => Promise<T[] | null>): Promise<T[]> {
+  const PAGE_SIZE = 1000;
+  const SPECULATIVE_PAGES = 4;
+  const speculative = await Promise.all(
+    Array.from({ length: SPECULATIVE_PAGES }, (_, i) => fetchPage(i * PAGE_SIZE, i * PAGE_SIZE + PAGE_SIZE - 1))
+  );
+  const rows: T[] = [];
+  let lastPageWasFull = false;
+  for (const page of speculative) {
+    rows.push(...(page ?? []));
+    lastPageWasFull = (page ?? []).length === PAGE_SIZE;
   }
-
-  const gameweeks = Array.from(byGameweek.entries())
-    .map(([gameweek, kickoff]) => ({ gameweek, deadline: new Date(kickoff).toISOString() }))
-    .sort((a, b) => a.gameweek - b.gameweek);
-
-  return {
-    minGameweek: gameweeks[0].gameweek,
-    maxGameweek: gameweeks[gameweeks.length - 1].gameweek,
-    gameweeks,
-  };
+  if (lastPageWasFull) {
+    for (let from = SPECULATIVE_PAGES * PAGE_SIZE; ; from += PAGE_SIZE) {
+      const page = (await fetchPage(from, from + PAGE_SIZE - 1)) ?? [];
+      rows.push(...page);
+      if (page.length < PAGE_SIZE) break;
+    }
+  }
+  return rows;
 }
 
 export type GameweekProjectionRow<TInputs> = { game_player_id: number; hail_mary_score: number | null; inputs: TInputs | null };
@@ -90,12 +125,6 @@ export type GameweekProjectionRow<TInputs> = { game_player_id: number; hail_mary
  * ever changes, more than one row can exist per player/gameweek, so this
  * dedupes to the newest created_at per player, same tie-break
  * player_projection_summary's own view definition already uses.
- *
- * Paginated in 1000-row pages - PostgREST silently caps any single query
- * at 1000 rows server-side regardless of what the client asks for (the
- * same truncation eflfantasy/page.tsx's fetchAllPoolRows already works
- * around). A large pool (EFL Fantasy's ~3,458 rows) makes this the first
- * caller to actually hit it.
  *
  * Ordered by created_at desc THEN id desc, not created_at alone - every
  * row from a single compute_projections.py run shares the exact same
@@ -115,9 +144,7 @@ export async function getProjectionsForGameweek<TInputs = unknown>(
   gameweek: number
 ): Promise<GameweekProjectionRow<TInputs>[]> {
   type Row = GameweekProjectionRow<TInputs> & { id: number; created_at: string };
-  const PAGE_SIZE = 1000;
-  const data: Row[] = [];
-  for (let from = 0; ; from += PAGE_SIZE) {
+  const data = await fetchAllPaginated<Row>(async (from, to) => {
     const { data: page } = await supabase
       .from("projections")
       .select("id, game_player_id, hail_mary_score, inputs, created_at, game_players!inner(game_id)")
@@ -125,16 +152,14 @@ export async function getProjectionsForGameweek<TInputs = unknown>(
       .eq("gameweek", gameweek)
       .order("created_at", { ascending: false })
       .order("id", { ascending: false })
-      .range(from, from + PAGE_SIZE - 1)
+      .range(from, to)
       .returns<Row[]>();
-    if (!page || page.length === 0) break;
-    data.push(...page);
-    if (page.length < PAGE_SIZE) break;
-  }
+    return page;
+  });
 
   const seen = new Set<number>();
   const rows: GameweekProjectionRow<TInputs>[] = [];
-  for (const r of data ?? []) {
+  for (const r of data) {
     if (seen.has(r.game_player_id)) continue;
     seen.add(r.game_player_id);
     rows.push({ game_player_id: r.game_player_id, hail_mary_score: r.hail_mary_score, inputs: r.inputs });
