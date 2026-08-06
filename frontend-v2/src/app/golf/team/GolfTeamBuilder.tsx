@@ -4,6 +4,9 @@ import { Fragment, useEffect, useMemo, useState, useTransition } from "react";
 import {
   buildGolfTeam,
   computeTeamTotal,
+  computeTeamRisk,
+  CUT_RISK_THRESHOLD,
+  TOP_CONTRIBUTOR_SHARE_THRESHOLD,
   GOLF_SQUAD_SIZE,
   GOLF_TEAM_VARIANTS,
   type GolfOptimizerPlayer,
@@ -83,6 +86,7 @@ export default function GolfTeamBuilder({
     () => computeTeamTotal(team, captainOverrideId),
     [team, captainOverrideId]
   );
+  const risk = useMemo(() => computeTeamRisk(team, captainId, underdogId), [team, captainId, underdogId]);
   // Rounded to £0.1m granularity - summing several decimal prices in JS
   // float arithmetic can land a fraction of a penny off zero (order-
   // dependent), which would otherwise flip "£0.0m left" to "over budget"
@@ -435,6 +439,36 @@ export default function GolfTeamBuilder({
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {team.length === GOLF_SQUAD_SIZE && (
+        <div className="mt-4 rounded-xl border border-navy-700 bg-navy-900 p-4">
+          <p className="text-xs font-medium uppercase tracking-wide text-navy-400">Team risk</p>
+          <p className="mt-2 text-sm text-navy-300">
+            Expected cut misses:{" "}
+            <span className="font-semibold text-white">
+              {risk.expectedCutMisses.toFixed(1)} of {GOLF_SQUAD_SIZE}
+            </span>
+            {risk.missingCutDataCount > 0 && (
+              <span className="text-navy-500"> ({risk.missingCutDataCount} without make-cut data)</span>
+            )}
+          </p>
+          {risk.cutRiskCount >= 3 && (
+            <p className="mt-1.5 text-sm text-amber-400">
+              ⚠ {risk.cutRiskCount} of your {GOLF_SQUAD_SIZE} picks have under a {Math.round(CUT_RISK_THRESHOLD * 100)}% chance to make
+              the cut - a lot of your team is on the same coin flip.
+            </p>
+          )}
+          {risk.topContributor && risk.topContributor.share >= TOP_CONTRIBUTOR_SHARE_THRESHOLD && (
+            <p className="mt-1.5 text-sm text-amber-400">
+              ⚠ {risk.topContributor.fullName} carries {(risk.topContributor.share * 100).toFixed(0)}% of your projected total - a bad
+              day for him hits harder than an evenly-spread team.
+            </p>
+          )}
+          {risk.cutRiskCount < 3 && (!risk.topContributor || risk.topContributor.share < TOP_CONTRIBUTOR_SHARE_THRESHOLD) && (
+            <p className="mt-1.5 text-sm text-navy-400">No major concentration flags - risk looks reasonably spread across your 6.</p>
+          )}
         </div>
       )}
 

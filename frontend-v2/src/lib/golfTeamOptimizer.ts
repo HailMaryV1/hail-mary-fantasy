@@ -384,3 +384,79 @@ export function computeTeamTotal(
   }
   return { total: Math.round(total * 100) / 100, captainId: captain.gamePlayerId, underdogId: underdog.gamePlayerId };
 }
+
+// A pick is "at cut risk" below a coin flip - genuinely more likely than
+// not to be gone after 2 rounds rather than 4. Not tied to any specific
+// variant's identity (Ceiling Max is SUPPOSED to stack risk) - this is
+// informational, not a constraint, so one clean round-number threshold
+// beats a variant-specific one.
+const CUT_RISK_THRESHOLD = 0.5;
+
+// A pick carrying meaningfully more than its "fair share" (1/6 = 16.7%,
+// unweighted by captain/underdog) of the team's final projected total is
+// a concentration flag - one bad day for them swings the whole team more
+// than an evenly-spread team would allow. 25% (1.5x fair share) is the
+// point a single golfer's outcome starts dominating rather than merely
+// leading, chosen as a clean round number above the 16.7% baseline
+// rather than a tuned constant with no real anchor yet.
+const TOP_CONTRIBUTOR_SHARE_THRESHOLD = 0.25;
+
+export type GolfTeamRisk = {
+  // Sum of (1 - makeCutProbability) across the team - the expected COUNT
+  // of your 6 picks who miss the cut, not a per-golfer probability. An
+  // honest additive expectation (see field_averages()'s own match_count-
+  // weighting philosophy in compute_golf_projections.py for the same
+  // "expectation is just a sum" approach), skipping golfers with no
+  // make-cut data rather than guessing a value for them.
+  expectedCutMisses: number;
+  // How many picks are individually below CUT_RISK_THRESHOLD - concentration
+  // in the risk dimension, not just its average (six 50/50 picks and one
+  // 100% pick + five 0% picks can share the same expectedCutMisses but are
+  // very different bets).
+  cutRiskCount: number;
+  // Golfers with no makeCutProbability at all (unusual - e.g. missing
+  // avg_stats) excluded from expectedCutMisses/cutRiskCount rather than
+  // silently treated as 0% or 100%.
+  missingCutDataCount: number;
+  // The single golfer carrying the largest share of the team's final
+  // projected total (captain/underdog multipliers included, since that's
+  // the real number a bad day for them costs you) - null only when the
+  // team's total is 0 (nothing to share).
+  topContributor: { gamePlayerId: number; fullName: string; share: number } | null;
+};
+
+export function computeTeamRisk(
+  team: GolfOptimizerPlayer[],
+  captainId: number | null,
+  underdogId: number | null
+): GolfTeamRisk {
+  let expectedCutMisses = 0;
+  let cutRiskCount = 0;
+  let missingCutDataCount = 0;
+  for (const p of team) {
+    if (p.makeCutProbability == null) {
+      missingCutDataCount++;
+      continue;
+    }
+    expectedCutMisses += 1 - p.makeCutProbability;
+    if (p.makeCutProbability < CUT_RISK_THRESHOLD) cutRiskCount++;
+  }
+
+  const contributions = team.map((p) => ({
+    p,
+    points: p.expectedPoints * (p.gamePlayerId === captainId || p.gamePlayerId === underdogId ? 1.25 : 1.0),
+  }));
+  const totalPoints = contributions.reduce((s, c) => s + c.points, 0);
+  const top = contributions.reduce((best, c) => (!best || c.points > best.points ? c : best), null as (typeof contributions)[number] | null);
+  const topContributor =
+    top && totalPoints > 0 ? { gamePlayerId: top.p.gamePlayerId, fullName: top.p.fullName, share: top.points / totalPoints } : null;
+
+  return {
+    expectedCutMisses: Math.round(expectedCutMisses * 100) / 100,
+    cutRiskCount,
+    missingCutDataCount,
+    topContributor,
+  };
+}
+
+export { CUT_RISK_THRESHOLD, TOP_CONTRIBUTOR_SHARE_THRESHOLD };
