@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useOptimistic, useState, useTransition } from "react";
+import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import Kit from "@/components/Kit";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
+import { searchPool } from "@/lib/poolSearch";
 import { makeTransfer, makeClubTransfer } from "./actions";
+
+export const POOL_PAGE_SIZE = 15;
 
 type NextFixture = { opponent: string; isHome: boolean; gameweek: number };
 
@@ -60,10 +63,14 @@ export default function EFLFantasyBoard({
   minGameweek,
   maxGameweek,
   squad,
-  pool,
+  pool: initialPool,
+  poolTotalCount: initialPoolTotalCount,
   clubs,
-  clubPool,
+  clubPool: initialClubPool,
+  clubPoolTotalCount: initialClubPoolTotalCount,
+  teams: teamsProp,
   squadSummary,
+  isPoolServerDriven,
 }: {
   squadId: number;
   squadName: string;
@@ -76,9 +83,18 @@ export default function EFLFantasyBoard({
   maxGameweek: number;
   squad: BoardPlayer[];
   pool: PoolPlayer[];
+  poolTotalCount: number;
   clubs: BoardClub[];
   clubPool: PoolClub[];
+  clubPoolTotalCount: number;
+  teams: string[];
   squadSummary: string[];
+  // False for a past-gameweek view, whose pool page.tsx already fetched
+  // in full (see eflfantasy/page.tsx's fetchAllPoolRows) - that rare,
+  // small-scale path keeps the old client-side filter/sort/paginate
+  // behavior rather than hitting search_game_player_pool, since it's
+  // scored from real actuals, not projections.
+  isPoolServerDriven: boolean;
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   // Multiple squad members can be marked for sale at once - see
@@ -94,16 +110,102 @@ export default function EFLFantasyBoard({
   const [menuIsSquadMember, setMenuIsSquadMember] = useState(false);
   const [menuIsClub, setMenuIsClub] = useState(false);
   const [infoPlayerId, setInfoPlayerId] = useState<number | null>(null);
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
   const [teamFilter, setTeamFilter] = useState<string>("ALL");
   const [leagueFilter, setLeagueFilter] = useState<string>("ALL");
   const [poolTab, setPoolTab] = useState<"players" | "clubs">("players");
+  const [poolPage, setPoolPage] = useState(1);
 
   const [optimisticSquad, applyOptimisticSquad] = useOptimistic(squad, (_current: BoardPlayer[], next: BoardPlayer[]) => next);
   const [optimisticClubs, applyOptimisticClubs] = useOptimistic(clubs, (_current: BoardClub[], next: BoardClub[]) => next);
 
-  const teams = Array.from(new Set(pool.map((p) => p.team_name))).sort();
+  // Debounced search - typing shouldn't fire a fresh server request on
+  // every keystroke.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchInput), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setPoolPage(1);
+  }, [posFilter, teamFilter, leagueFilter, debouncedSearch, poolTab]);
+
+  // Server-driven pool state - only the page actually on screen, fetched
+  // fresh from search_game_player_pool whenever a filter/search/page/tab
+  // changes (see migration 0099/0100/0101 + poolSearch.ts). Starts from
+  // whatever page.tsx already loaded for the very first render, so mount
+  // doesn't cost a redundant duplicate request.
+  const [pool, setPool] = useState<PoolPlayer[]>(initialPool);
+  const [poolTotalCount, setPoolTotalCount] = useState(initialPoolTotalCount);
+  const [clubPool, setClubPool] = useState<PoolClub[]>(initialClubPool);
+  const [clubPoolTotalCount, setClubPoolTotalCount] = useState(initialClubPoolTotalCount);
+  const [isPoolLoading, startPoolTransition] = useTransition();
+  const isFirstRender = useRef(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  function refetchPool() {
+    if (!isPoolServerDriven) return;
+    startPoolTransition(async () => {
+      if (poolTab === "players") {
+        const result = await searchPool({
+          gameSlug: "eflfantasy",
+          gameweek: viewedGameweek,
+          position: posFilter === "ALL" ? null : posFilter,
+          teamName: teamFilter === "ALL" ? null : teamFilter,
+          competition: leagueFilter === "ALL" ? null : leagueFilter,
+          search: debouncedSearch,
+          excludeIds: squad.map((p) => p.game_player_id),
+          excludeClub: true,
+          page: poolPage,
+          pageSize: POOL_PAGE_SIZE,
+        });
+        setPool(
+          result.rows.map((r) => ({
+            game_player_id: r.game_player_id,
+            full_name: r.full_name,
+            position: r.position as PoolPlayer["position"],
+            team_name: r.team_name,
+            score: r.hail_mary_score,
+            competition: r.competition,
+          }))
+        );
+        setPoolTotalCount(result.totalCount);
+      } else {
+        const result = await searchPool({
+          gameSlug: "eflfantasy",
+          gameweek: viewedGameweek,
+          position: "CLUB",
+          competition: leagueFilter === "ALL" ? null : leagueFilter,
+          search: debouncedSearch,
+          excludeIds: clubs.map((c) => c.game_player_id),
+          page: poolPage,
+          pageSize: POOL_PAGE_SIZE,
+        });
+        setClubPool(
+          result.rows.map((r) => ({
+            game_player_id: r.game_player_id,
+            club_name: r.team_name,
+            score: r.hail_mary_score,
+            competition: r.competition,
+          }))
+        );
+        setClubPoolTotalCount(result.totalCount);
+      }
+    });
+  }
+
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    refetchPool();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posFilter, teamFilter, leagueFilter, debouncedSearch, poolTab, poolPage, viewedGameweek, refreshKey]);
+
+  const teams = isPoolServerDriven ? teamsProp : Array.from(new Set(initialPool.map((p) => p.team_name))).sort();
 
   const pendingOutPlayers = optimisticSquad.filter((p) => pendingOutIds.has(p.game_player_id));
   const pendingOutClubs = optimisticClubs.filter((c) => pendingOutClubIds.has(c.game_player_id));
@@ -131,8 +233,42 @@ export default function EFLFantasyBoard({
     emptyLabel: `Sold ${c.club_name}`,
   }));
 
-  const menuPlayer = !menuIsClub && menuPlayerId != null ? (menuIsSquadMember ? optimisticSquad : pool).find((p) => p.game_player_id === menuPlayerId) : undefined;
-  const menuClub = menuIsClub && menuPlayerId != null ? (menuIsSquadMember ? optimisticClubs : clubPool).find((c) => c.game_player_id === menuPlayerId) : undefined;
+  // Not server-driven (past view) - old full-array filter/sort, unchanged.
+  const filteredPool = isPoolServerDriven
+    ? pool
+    : initialPool
+        .filter(
+          (p) =>
+            (posFilter === "ALL" || p.position === posFilter) &&
+            (teamFilter === "ALL" || p.team_name === teamFilter) &&
+            (leagueFilter === "ALL" || p.competition === leagueFilter) &&
+            (debouncedSearch === "" || p.full_name.toLowerCase().includes(debouncedSearch.toLowerCase()))
+        )
+        .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+  const filteredClubPool = isPoolServerDriven
+    ? clubPool
+    : initialClubPool
+        .filter(
+          (c) =>
+            (leagueFilter === "ALL" || c.competition === leagueFilter) &&
+            (debouncedSearch === "" || c.club_name.toLowerCase().includes(debouncedSearch.toLowerCase()))
+        )
+        .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+
+  const pagedPool = isPoolServerDriven ? filteredPool : filteredPool.slice((poolPage - 1) * POOL_PAGE_SIZE, poolPage * POOL_PAGE_SIZE);
+  const pagedClubPool = isPoolServerDriven ? filteredClubPool : filteredClubPool.slice((poolPage - 1) * POOL_PAGE_SIZE, poolPage * POOL_PAGE_SIZE);
+  const activeTotalCount = isPoolServerDriven
+    ? poolTab === "players"
+      ? poolTotalCount
+      : clubPoolTotalCount
+    : poolTab === "players"
+      ? filteredPool.length
+      : filteredClubPool.length;
+  const totalPoolPages = Math.max(1, Math.ceil(activeTotalCount / POOL_PAGE_SIZE));
+  const clampedPoolPage = Math.min(poolPage, totalPoolPages);
+
+  const menuPlayer = !menuIsClub && menuPlayerId != null ? (menuIsSquadMember ? optimisticSquad : pagedPool).find((p) => p.game_player_id === menuPlayerId) : undefined;
+  const menuClub = menuIsClub && menuPlayerId != null ? (menuIsSquadMember ? optimisticClubs : pagedClubPool).find((c) => c.game_player_id === menuPlayerId) : undefined;
   const menuActions: PlayerAction[] = menuIsClub
     ? menuClub
       ? menuIsSquadMember
@@ -165,10 +301,10 @@ export default function EFLFantasyBoard({
   function legalOutgoingFor(p: PoolPlayer): BoardPlayer[] {
     return pendingOutPlayers.filter((o) => o.position === p.position);
   }
-  const legalPoolIds = new Set(pool.filter((p) => legalOutgoingFor(p).length > 0).map((p) => p.game_player_id));
+  const legalPoolIds = new Set(pagedPool.filter((p) => legalOutgoingFor(p).length > 0).map((p) => p.game_player_id));
 
   function handleTransfer(inGamePlayerId: number) {
-    const incomingPoolPlayer = pool.find((p) => p.game_player_id === inGamePlayerId);
+    const incomingPoolPlayer = pagedPool.find((p) => p.game_player_id === inGamePlayerId);
     if (!incomingPoolPlayer) return;
     const outgoing = legalOutgoingFor(incomingPoolPlayer)[0];
     if (!outgoing) return;
@@ -177,12 +313,19 @@ export default function EFLFantasyBoard({
       applyOptimisticSquad(optimisticSwap(optimisticSquad, outgoing.game_player_id, incomingPoolPlayer));
       const result = await makeTransfer({ squadId, outGamePlayerId: outgoing.game_player_id, inGamePlayerId });
       if (result?.error) setTransferError(result.error);
-      else setPendingOutIds((prev) => { const next = new Set(prev); next.delete(outgoing.game_player_id); return next; });
+      else {
+        setPendingOutIds((prev) => {
+          const next = new Set(prev);
+          next.delete(outgoing.game_player_id);
+          return next;
+        });
+        setRefreshKey((k) => k + 1);
+      }
     });
   }
 
   function handleClubTransfer(inGamePlayerId: number) {
-    const incomingPoolClub = clubPool.find((c) => c.game_player_id === inGamePlayerId);
+    const incomingPoolClub = pagedClubPool.find((c) => c.game_player_id === inGamePlayerId);
     const outgoing = pendingOutClubs[0];
     if (!incomingPoolClub || !outgoing) return;
     setTransferError(null);
@@ -190,34 +333,16 @@ export default function EFLFantasyBoard({
       applyOptimisticClubs(optimisticSwap(optimisticClubs, outgoing.game_player_id, incomingPoolClub));
       const result = await makeClubTransfer({ squadId, outGamePlayerId: outgoing.game_player_id, inGamePlayerId });
       if (result?.error) setTransferError(result.error);
-      else setPendingOutClubIds((prev) => { const next = new Set(prev); next.delete(outgoing.game_player_id); return next; });
+      else {
+        setPendingOutClubIds((prev) => {
+          const next = new Set(prev);
+          next.delete(outgoing.game_player_id);
+          return next;
+        });
+        setRefreshKey((k) => k + 1);
+      }
     });
   }
-
-  const filteredPool = pool
-    .filter(
-      (p) =>
-        (posFilter === "ALL" || p.position === posFilter) &&
-        (teamFilter === "ALL" || p.team_name === teamFilter) &&
-        (leagueFilter === "ALL" || p.competition === leagueFilter) &&
-        (search === "" || p.full_name.toLowerCase().includes(search.toLowerCase()))
-    )
-    .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
-
-  const filteredClubPool = clubPool
-    .filter((c) => (leagueFilter === "ALL" || c.competition === leagueFilter) && (search === "" || c.club_name.toLowerCase().includes(search.toLowerCase())))
-    .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
-
-  const POOL_PAGE_SIZE = 15;
-  const [poolPage, setPoolPage] = useState(1);
-  useEffect(() => {
-    setPoolPage(1);
-  }, [posFilter, teamFilter, leagueFilter, search, poolTab]);
-  const activeList = poolTab === "players" ? filteredPool : filteredClubPool;
-  const totalPoolPages = Math.max(1, Math.ceil(activeList.length / POOL_PAGE_SIZE));
-  const clampedPoolPage = Math.min(poolPage, totalPoolPages);
-  const pagedPool = filteredPool.slice((clampedPoolPage - 1) * POOL_PAGE_SIZE, clampedPoolPage * POOL_PAGE_SIZE);
-  const pagedClubPool = filteredClubPool.slice((clampedPoolPage - 1) * POOL_PAGE_SIZE, clampedPoolPage * POOL_PAGE_SIZE);
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
@@ -358,7 +483,7 @@ export default function EFLFantasyBoard({
             <PlayerInfoPanel gameSlug="eflfantasy" gamePlayerId={infoPlayerId} onBack={() => setInfoPlayerId(null)} />
           ) : (
             <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-              <div className="mb-3 flex gap-2">
+              <div className="mb-3 flex items-center gap-2">
                 <button
                   onClick={() => setPoolTab("players")}
                   className={`rounded-full px-3 py-1 text-xs font-medium ${poolTab === "players" ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"}`}
@@ -371,6 +496,7 @@ export default function EFLFantasyBoard({
                 >
                   Clubs
                 </button>
+                {isPoolLoading && <span className="text-[10px] text-navy-500">Loading…</span>}
               </div>
 
               <select
@@ -415,8 +541,8 @@ export default function EFLFantasyBoard({
               ) : null}
 
               <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
                 placeholder={poolTab === "players" ? "Search player..." : "Search club..."}
                 className="mt-2 w-full rounded-lg border border-navy-700 bg-navy-950 px-3 py-2 text-sm text-white placeholder:text-navy-500 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
               />
@@ -529,7 +655,7 @@ export default function EFLFantasyBoard({
                     </tbody>
                   </table>
                 )}
-                {activeList.length > 0 && (
+                {activeTotalCount > 0 && (
                   <div className="mt-2 flex items-center justify-between text-[10px] text-navy-500">
                     <button
                       onClick={() => setPoolPage((p) => Math.max(1, p - 1))}
@@ -539,8 +665,8 @@ export default function EFLFantasyBoard({
                       ← Prev
                     </button>
                     <span>
-                      {(clampedPoolPage - 1) * POOL_PAGE_SIZE + 1}-{Math.min(clampedPoolPage * POOL_PAGE_SIZE, activeList.length)} of{" "}
-                      {activeList.length}
+                      {(clampedPoolPage - 1) * POOL_PAGE_SIZE + 1}-{Math.min(clampedPoolPage * POOL_PAGE_SIZE, activeTotalCount)} of{" "}
+                      {activeTotalCount}
                     </span>
                     <button
                       onClick={() => setPoolPage((p) => Math.min(totalPoolPages, p + 1))}

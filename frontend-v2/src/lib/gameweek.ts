@@ -104,11 +104,15 @@ export async function fetchAllPaginated<T>(fetchPage: (from: number, to: number)
 export type GameweekProjectionRow<TInputs> = { game_player_id: number; hail_mary_score: number | null; inputs: TInputs | null };
 
 /**
- * Real projections for one specific gameweek of this game - unlike
- * player_projection_summary (which always resolves to whichever
- * gameweek is currently "planning", regardless of what's asked for),
- * this reads the raw projections table directly so a board page can
- * browse any computed gameweek, not just the live one.
+ * Real projections for one specific gameweek, scoped to a known, small
+ * set of game_player_ids - a squad's own ~9-15 members, not the whole
+ * pool (the pool's browse table gets its scores from
+ * search_game_player_pool/poolSearch.ts instead, which only ever touches
+ * the one page actually on screen). Unlike player_projection_summary
+ * (which always resolves to whichever gameweek is currently "planning",
+ * regardless of what's asked for), this reads the raw projections table
+ * directly so a board page can browse any computed gameweek, not just
+ * the live one.
  *
  * projections is unique on (algorithm_version_id, game_player_id,
  * gameweek), not (game_player_id, gameweek) - if an algorithm version
@@ -120,36 +124,35 @@ export type GameweekProjectionRow<TInputs> = { game_player_id: number; hail_mary
  * row from a single compute_projections.py run shares the exact same
  * created_at (one transaction-scoped now()), and its upsert never
  * advances created_at on a later re-run either (on conflict do update
- * touches hail_mary_score/inputs only). With that many ties, plain
- * ORDER BY created_at + range()-based pagination is not guaranteed
- * stable across two separate HTTP requests - confirmed live: some of a
- * squad's GW2 rows fell into the gap between page 1 and page 2 and came
- * back as neither, even though every row genuinely existed. id is a
- * real identity column, so adding it as a tiebreaker makes the sort (and
- * therefore the pagination) fully deterministic.
+ * touches hail_mary_score/inputs only). With that many ties, a plain
+ * ORDER BY created_at + range()-based pagination isn't guaranteed stable
+ * across two separate HTTP requests - confirmed live, back when this
+ * function fetched an entire game's pool in pages: some of a squad's
+ * GW2 rows fell into the gap between page 1 and page 2 and came back as
+ * neither, even though every row genuinely existed. id is a real
+ * identity column, so adding it as a tiebreaker makes the sort fully
+ * deterministic - kept even now that the set being queried is small
+ * enough to never need pagination in the first place.
  */
-export async function getProjectionsForGameweek<TInputs = unknown>(
+export async function getProjectionsForPlayerIds<TInputs = unknown>(
   supabase: Supabase,
-  gameId: number,
-  gameweek: number
+  gameweek: number,
+  gamePlayerIds: number[]
 ): Promise<GameweekProjectionRow<TInputs>[]> {
+  if (gamePlayerIds.length === 0) return [];
   type Row = GameweekProjectionRow<TInputs> & { id: number; created_at: string };
-  const data = await fetchAllPaginated<Row>(async (from, to) => {
-    const { data: page } = await supabase
-      .from("projections")
-      .select("id, game_player_id, hail_mary_score, inputs, created_at, game_players!inner(game_id)")
-      .eq("game_players.game_id", gameId)
-      .eq("gameweek", gameweek)
-      .order("created_at", { ascending: false })
-      .order("id", { ascending: false })
-      .range(from, to)
-      .returns<Row[]>();
-    return page;
-  });
+  const { data } = await supabase
+    .from("projections")
+    .select("id, game_player_id, hail_mary_score, inputs, created_at")
+    .in("game_player_id", gamePlayerIds)
+    .eq("gameweek", gameweek)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .returns<Row[]>();
 
   const seen = new Set<number>();
   const rows: GameweekProjectionRow<TInputs>[] = [];
-  for (const r of data) {
+  for (const r of data ?? []) {
     if (seen.has(r.game_player_id)) continue;
     seen.add(r.game_player_id);
     rows.push({ game_player_id: r.game_player_id, hail_mary_score: r.hail_mary_score, inputs: r.inputs });

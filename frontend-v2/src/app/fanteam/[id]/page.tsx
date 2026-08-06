@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getGameweekInfo, getProjectionsForGameweek, type GameweekProjectionRow } from "@/lib/gameweek";
+import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import FanTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./FanTeamBoard";
@@ -118,7 +118,11 @@ export default async function FanTeamSquadPage({
     supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", squad.game_id),
     isPastView
       ? Promise.resolve<GameweekProjectionRow<ProjectionInputs>[]>([])
-      : getProjectionsForGameweek<ProjectionInputs>(supabase, squad.game_id, viewedGameweek),
+      : getProjectionsForPlayerIds<ProjectionInputs>(
+          supabase,
+          viewedGameweek,
+          (poolRaw ?? []).map((p) => p.game_player_id)
+        ),
   ]);
   const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
   type GwFixtureRow = {

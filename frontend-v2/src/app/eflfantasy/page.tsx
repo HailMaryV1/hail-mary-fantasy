@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getGameweekInfo, getProjectionsForGameweek, fetchAllPaginated, type GameweekProjectionRow } from "@/lib/gameweek";
+import { getGameweekInfo, getProjectionsForPlayerIds, fetchAllPaginated } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
+import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
-import EFLFantasyBoard, { type BoardPlayer, type PoolPlayer, type BoardClub, type PoolClub } from "./EFLFantasyBoard";
+import EFLFantasyBoard, { type BoardPlayer, type PoolPlayer, type BoardClub, type PoolClub, POOL_PAGE_SIZE } from "./EFLFantasyBoard";
 
 export const dynamic = "force-dynamic";
 
@@ -47,18 +48,14 @@ const LEAGUE_LABELS: Record<string, string> = {
 
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
-// EFL Fantasy's combined pool (3,386 players + 72 clubs = 3,458 rows) is
-// the first squad-pool query in this app to exceed PostgREST's row cap -
-// confirmed live via a direct REST call that even an explicit
-// .limit(4000) still comes back truncated at exactly 1000 rows
-// (Content-Range: 0-999/3458), because the cap is enforced server-side
-// (Supabase project's db-max-rows setting), not by whatever the client
-// asks for. Without this, clubs whose players happened to sort past row
-// 1000 (e.g. Blackburn Rovers) silently showed only a handful of their
-// real ~47 registered players in the pool/team filter, with no error
-// anywhere (same class of bug already documented in this repo's memory
-// from an earlier player_gameweek_predictions incident) - paginating in
-// 1000-row pages is the only fix that actually gets every row.
+// Only used for the past-gameweek branch below (browsing a completed
+// week's actual results, which player_gameweek_results doesn't cover yet
+// for any game - see gameweekHistory.ts) - a genuinely rare path with no
+// real data to show today, unlike the planning/future branch this page
+// hits on every normal load. Full-pool fetching is fine to keep here
+// rather than building a whole second search RPC for it: correctness for
+// "what else was available, by real result" matters more than raw speed
+// on a path nobody can actually reach until a gameweek finishes.
 async function fetchAllPoolRows(supabase: Supabase, gameSlug: string): Promise<PoolRow[]> {
   return fetchAllPaginated<PoolRow>(async (from, to) => {
     const { data } = await supabase
@@ -109,13 +106,12 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
 
   const squadId = squad.id;
 
-  const [{ data: squadPlayersRaw }, poolRaw, gwInfo, { data: clubHistoryRaw }] = await Promise.all([
+  const [{ data: squadPlayersRaw }, gwInfo, { data: clubHistoryRaw }] = await Promise.all([
     supabase
       .from("squad_players")
       .select("game_player_id, game_players(players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
-    fetchAllPoolRows(supabase, "eflfantasy"),
     getGameweekInfo(supabase, game.id),
     supabase
       .from("game_player_stats")
@@ -126,6 +122,15 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       .eq("gameweek", 0)
       .returns<ClubHistoryRow[]>(),
   ]);
+
+  const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
+    game_player_id: sp.game_player_id,
+    full_name: sp.game_players.players.full_name,
+    position: sp.game_players.players.position,
+    team_id: sp.game_players.players.team_id,
+    team_name: sp.game_players.players.teams.name,
+  }));
+  const squadIds = squadPlayers.map((p) => p.game_player_id);
 
   const planningGameweek = gwInfo.planningGameweek ?? 1;
   const requestedGameweek = Number(gameweekParam);
@@ -138,20 +143,12 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   // The fixture (if any) each team plays in the gameweek being viewed -
   // not "soonest future fixture from today" (that only ever matched the
   // planning gameweek), so this stays correct when browsing any week.
-  // Bundled with this gameweek's real projections (skipped for a past
-  // view) in one parallel batch, rather than two separate awaited calls -
-  // that was adding two whole extra network round trips to every load.
-  const [{ data: fixturesRaw }, scoreRows] = await Promise.all([
-    supabase
-      .from("game_fixture_gameweeks")
-      .select("gameweek, fixtures(home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))")
-      .eq("game_id", game.id)
-      .eq("gameweek", viewedGameweek)
-      .returns<FixtureRow[]>(),
-    isPastView
-      ? Promise.resolve<GameweekProjectionRow<unknown>[]>([])
-      : getProjectionsForGameweek(supabase, game.id, viewedGameweek),
-  ]);
+  const { data: fixturesRaw } = await supabase
+    .from("game_fixture_gameweeks")
+    .select("gameweek, fixtures(home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))")
+    .eq("game_id", game.id)
+    .eq("gameweek", viewedGameweek)
+    .returns<FixtureRow[]>();
 
   const nextFixtureByTeamId = new Map<number, { opponent: string; isHome: boolean; gameweek: number }>();
   for (const row of fixturesRaw ?? []) {
@@ -176,10 +173,13 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   let boardClubs: BoardClub[];
   let boardPool: PoolPlayer[];
   let boardClubPool: PoolClub[];
+  let poolTotalCount = 0;
+  let clubPoolTotalCount = 0;
+  let teams: string[] = [];
   let pastViewState: "not_locked" | "no_results_yet" | null = null;
 
   if (isPastView) {
-    const lock = await getSquadGameweekLock(supabase, squadId, viewedGameweek);
+    const [lock, poolRaw] = await Promise.all([getSquadGameweekLock(supabase, squadId, viewedGameweek), fetchAllPoolRows(supabase, "eflfantasy")]);
     if (!lock) {
       boardSquad = [];
       boardClubs = [];
@@ -245,20 +245,34 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
         }))
         .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+      poolTotalCount = boardPool.length;
+      clubPoolTotalCount = boardClubPool.length;
     }
   } else {
-    const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
-      game_player_id: sp.game_player_id,
-      full_name: sp.game_players.players.full_name,
-      position: sp.game_players.players.position,
-      team_id: sp.game_players.players.team_id,
-      team_name: sp.game_players.players.teams.name,
-    }));
-    const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
-
-    // Real per-gameweek scores for whichever week is being viewed - covers
-    // both players and clubs in one query (club picks go through the same
-    // projections table, see compute_club_scores()).
+    // Real per-gameweek scores for just the squad's own ~9 members - the
+    // pool's browse table gets its scores from search_game_player_pool
+    // instead (via EFLFantasyBoard's own on-demand fetch), never a
+    // whole-pool read here.
+    const [scoreRows, initialPool, initialClubPool, teamNames] = await Promise.all([
+      getProjectionsForPlayerIds(supabase, viewedGameweek, squadIds),
+      searchPool({
+        gameSlug: "eflfantasy",
+        gameweek: viewedGameweek,
+        excludeIds: squadIds,
+        excludeClub: true,
+        page: 1,
+        pageSize: POOL_PAGE_SIZE,
+      }),
+      searchPool({
+        gameSlug: "eflfantasy",
+        gameweek: viewedGameweek,
+        position: "CLUB",
+        excludeIds: squadIds,
+        page: 1,
+        pageSize: POOL_PAGE_SIZE,
+      }),
+      listPoolTeams("eflfantasy"),
+    ]);
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
 
     boardSquad = squadPlayers
@@ -285,30 +299,26 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
       }));
 
-    boardPool = poolRaw
-      .filter((p) => p.position !== "CLUB" && !squadIds.has(p.game_player_id))
-      .map((p) => ({
-        game_player_id: p.game_player_id,
-        full_name: p.full_name,
-        position: p.position as "GK" | "DEF" | "MID" | "FWD",
-        team_name: p.team_name,
-        score: scoreByGamePlayerId.get(p.game_player_id) ?? p.hail_mary_score,
-        competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
-        nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
-      }))
-      .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
-
-    boardClubPool = poolRaw
-      .filter((p) => p.position === "CLUB" && !squadIds.has(p.game_player_id))
-      .map((p) => ({
-        game_player_id: p.game_player_id,
-        club_name: p.team_name,
-        score: scoreByGamePlayerId.get(p.game_player_id) ?? p.hail_mary_score,
-        competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
-        nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
-        lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
-      }))
-      .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+    boardPool = initialPool.rows.map((r) => ({
+      game_player_id: r.game_player_id,
+      full_name: r.full_name,
+      position: r.position as "GK" | "DEF" | "MID" | "FWD",
+      team_name: r.team_name,
+      score: r.hail_mary_score,
+      competition: r.competition ? (LEAGUE_LABELS[r.competition] ?? r.competition) : null,
+      nextFixture: nextFixtureByTeamId.get(r.team_id) ?? null,
+    }));
+    boardClubPool = initialClubPool.rows.map((r) => ({
+      game_player_id: r.game_player_id,
+      club_name: r.team_name,
+      score: r.hail_mary_score,
+      competition: r.competition ? (LEAGUE_LABELS[r.competition] ?? r.competition) : null,
+      nextFixture: nextFixtureByTeamId.get(r.team_id) ?? null,
+      lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(r.game_player_id) ?? null,
+    }));
+    poolTotalCount = initialPool.totalCount;
+    clubPoolTotalCount = initialClubPool.totalCount;
+    teams = teamNames;
   }
 
   const totalProjectedPoints =
@@ -344,9 +354,13 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       maxGameweek={gwInfo.maxGameweek}
       squad={boardSquad}
       pool={boardPool}
+      poolTotalCount={poolTotalCount}
       clubs={boardClubs}
       clubPool={boardClubPool}
+      clubPoolTotalCount={clubPoolTotalCount}
+      teams={teams}
       squadSummary={squadSummary}
+      isPoolServerDriven={!isPastView}
     />
   );
 }
