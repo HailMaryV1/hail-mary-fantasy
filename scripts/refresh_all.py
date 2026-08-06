@@ -70,11 +70,21 @@ def run_step(label, relative_args):
     return ok
 
 
-def current_golf_tournament(conn):
-    """Same "current" definition every golf page already uses (most
-    recently STARTED tournament, see golf/page.tsx/golf/team/page.tsx) -
-    not "most recently imported", since import timing and start_time can
-    differ. Returns None if FanTeam Golf isn't seeded at all yet or no
+def active_golf_tournaments(conn):
+    """Every tournament that still needs its own re-scrape, not just the
+    single most-recently-STARTED one. Importing a brand-new week's
+    tournament (via /golf/import) already makes it the newest by
+    start_time with zero extra step needed - the query below picks it up
+    on the very next run automatically. The real gap this closes: the
+    OLD tournament stops being scraped the instant a newer one exists,
+    even if its last scrape landed before its own end_time (confirmed
+    live, 2026-08-06 - a tournament's raw.points was last updated ~3
+    hours before its official end_time, then frozen there forever once
+    the next tournament's import made it no longer "the" current one).
+    Keeping any tournament whose end_time is within the last 48h in the
+    refresh set gives it a few more twice-daily cycles to catch FanTeam
+    posting truly final scores, without re-scraping the entire history
+    forever. Returns [] if FanTeam Golf isn't seeded at all yet or no
     tournament has ever been imported - either is a legitimate steady
     state, not an error."""
     cur = conn.cursor()
@@ -84,12 +94,11 @@ def current_golf_tournament(conn):
         from golf_tournaments t
         join fantasy_games fg on fg.id = t.game_id
         where fg.slug = 'fanteam-golf'
+          and t.end_time > now() - interval '48 hours'
         order by t.start_time desc
-        limit 1
         """
     )
-    row = cur.fetchone()
-    return row[0] if row else None
+    return [row[0] for row in cur.fetchall()]
 
 
 def upcoming_gameweeks(conn, game_slug):
@@ -230,19 +239,23 @@ def main():
     # the recompute step, is what makes "today's round scores" show up
     # without anyone revisiting /golf/import - directly closes the gap
     # where a tournament's scores/prices only ever updated if someone
-    # remembered to paste the same URL in again each day.
+    # remembered to paste the same URL in again each day. Loops over
+    # every tournament active_golf_tournaments() returns (not just one)
+    # so importing next week's tournament doesn't silently cut off this
+    # week's still-finishing one - see that function's own docstring.
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:
-        golf_tournament_ref = current_golf_tournament(conn)
+        golf_tournament_refs = active_golf_tournaments(conn)
     finally:
         conn.close()
 
-    if golf_tournament_ref:
-        results.append(run_step(f"Re-scrape FanTeam Golf tournament ({golf_tournament_ref})", ["scraper_fanteam_golf.py", golf_tournament_ref]))
-        results.append(run_step("Re-import FanTeam Golf tournament", ["import_fanteam_golf.py"]))
-        results.append(
-            run_step(f"Recompute Hail Mary Golf projections ({golf_tournament_ref})", ["scripts/compute_golf_projections.py", golf_tournament_ref])
-        )
+    if golf_tournament_refs:
+        for golf_tournament_ref in golf_tournament_refs:
+            results.append(run_step(f"Re-scrape FanTeam Golf tournament ({golf_tournament_ref})", ["scraper_fanteam_golf.py", golf_tournament_ref]))
+            results.append(run_step("Re-import FanTeam Golf tournament", ["import_fanteam_golf.py"]))
+            results.append(
+                run_step(f"Recompute Hail Mary Golf projections ({golf_tournament_ref})", ["scripts/compute_golf_projections.py", golf_tournament_ref])
+            )
     else:
         print("\nNo FanTeam Golf tournament imported yet - skipping golf re-scrape/recompute.")
 
