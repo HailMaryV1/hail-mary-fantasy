@@ -77,36 +77,26 @@ export async function getSeasonTiming(supabase: Supabase, gameId: number): Promi
 }
 
 /**
- * Paginated in 1000-row pages, fetched speculatively in parallel rather
- * than one page at a time - PostgREST silently caps any single query at
- * 1000 rows server-side regardless of what the client asks for, so a pool
- * the size of EFL Fantasy's (~3,458 rows) needs multiple pages, and a
- * naive sequential loop turns that into N full network round trips
- * stacked back to back (confirmed live: this was a real, measurable chunk
- * of a ~5s page load). Firing a fixed batch of page requests at once costs
- * the same as one request's worth of latency for every pool below
- * SPECULATIVE_PAGES * PAGE_SIZE rows - every real pool in this app today -
- * and only falls back to a sequential tail for the (currently
- * hypothetical) case of a pool larger than that.
+ * Paginated in 1000-row pages - PostgREST silently caps any single query
+ * at 1000 rows server-side regardless of what the client asks for, so a
+ * pool the size of EFL Fantasy's (~3,458 rows) needs multiple pages.
+ *
+ * Sequential, deliberately not parallel - firing every page at once was
+ * tried and made things worse, not better: confirmed live, EFL Fantasy's
+ * board page (which already runs several other queries in the same
+ * parallel batch) went from ~5s to ~17s once its two paginated reads each
+ * fired 4 concurrent requests on top of that - almost certainly Supabase's
+ * free-tier pooler connection limit getting saturated and queuing/
+ * throttling the pile-up, not the extra requests' raw latency. A page at
+ * a time keeps this call's own connection footprint at exactly one.
  */
 export async function fetchAllPaginated<T>(fetchPage: (from: number, to: number) => Promise<T[] | null>): Promise<T[]> {
   const PAGE_SIZE = 1000;
-  const SPECULATIVE_PAGES = 4;
-  const speculative = await Promise.all(
-    Array.from({ length: SPECULATIVE_PAGES }, (_, i) => fetchPage(i * PAGE_SIZE, i * PAGE_SIZE + PAGE_SIZE - 1))
-  );
   const rows: T[] = [];
-  let lastPageWasFull = false;
-  for (const page of speculative) {
-    rows.push(...(page ?? []));
-    lastPageWasFull = (page ?? []).length === PAGE_SIZE;
-  }
-  if (lastPageWasFull) {
-    for (let from = SPECULATIVE_PAGES * PAGE_SIZE; ; from += PAGE_SIZE) {
-      const page = (await fetchPage(from, from + PAGE_SIZE - 1)) ?? [];
-      rows.push(...page);
-      if (page.length < PAGE_SIZE) break;
-    }
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const page = (await fetchPage(from, from + PAGE_SIZE - 1)) ?? [];
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) break;
   }
   return rows;
 }
