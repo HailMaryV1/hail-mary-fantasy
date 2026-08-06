@@ -101,6 +101,17 @@ graded data) since averaging over the branches individually gives the
 same overall mean as the blended rate by construction; only the
 distribution's SHAPE (floor/ceiling/spread) was wrong.
 
+MADE-CUT RATE RESCALE: avg_stats.madeCut's name implies a 0..1 made-cut
+rate, but FanTeam actually reports a NET score on a -1..+1 scale -
+(cuts_made - cuts_missed) / starts, not cuts_made / starts. Confirmed
+live: raw*match_count is always an exact integer. This was invisible for
+elite golfers (make every cut -> reads 1.0 either way) but silently
+floor-clamped anyone with a genuinely mixed record toward a 0% made-cut
+rate (42 of 134 golfers in the Rocket Classic field had a negative raw
+value), dragging the shrinkage cohort prior down to ~0.22 and
+under-projecting most of the field. See made_cut_probability() below -
+raw values are rescaled to (x+1)/2 before being used as a rate anywhere.
+
 RUN:
     python3 scripts/compute_golf_projections.py <tournament_id_or_url>
 """
@@ -473,6 +484,24 @@ def course_history_adjustment(ch_row):
     return points, detail
 
 
+def made_cut_probability(raw_made_cut):
+    """FanTeam's avgStats.madeCut is NOT the 0..1 cut-making rate its name
+    implies. Confirmed live against the Rocket Classic field: raw*match_count
+    is always an exact integer equal to (cuts_made - cuts_missed) - i.e. it's
+    a NET score on a -1..+1 scale (a golfer who made all their cuts reads
+    1.0, same as a true rate would, which is what made this invisible at the
+    top of the field - but a golfer who made only 1 of 13 starts reads
+    -0.846, not the 0.077 a real rate would show). 42 of 134 golfers in that
+    field had a negative raw value, all silently floor-clamped to a 0%
+    made-cut rate downstream - dragging the shrinkage cohort average from a
+    plausible ~0.6 down to 0.224 and systematically under-projecting anyone
+    with a genuinely mixed record. Rescale to an actual probability before
+    it's used as one anywhere."""
+    if raw_made_cut is None:
+        return None
+    return (float(raw_made_cut) + 1) / 2
+
+
 def field_averages(entries):
     """Match_count-weighted field average for every count stat + finish
     tier - the shrinkage prior, computed fresh from THIS tournament's own
@@ -487,6 +516,8 @@ def field_averages(entries):
         weight_total += mc
         for key in sums:
             value = e["avg_stats"].get(key)
+            if key == "madeCut":
+                value = made_cut_probability(value)
             if value is not None:
                 sums[key] += float(value) * mc
     if weight_total == 0:
@@ -591,7 +622,7 @@ def project_entry(entry, cohort, scoring_rules, weights, golfer_odds=None):
     blended_tier_probs, market_blend_detail = blend_market_tier_probs(tier_probs, golfer_odds)
     exclusive = resolve_exclusive_tiers(blended_tier_probs)
 
-    made_cut_rate = max(0.0, min(1.0, shrink(avg_stats.get("madeCut"), mc, cohort["madeCut"], k)))
+    made_cut_rate = max(0.0, min(1.0, shrink(made_cut_probability(avg_stats.get("madeCut")), mc, cohort["madeCut"], k)))
     made_cut_stat_rates, missed_cut_stat_rates, conditional_tier_probs = branch_rates(shrunk_rates, exclusive, made_cut_rate)
 
     # Point value of one simulated draw's expected contribution per stat -
