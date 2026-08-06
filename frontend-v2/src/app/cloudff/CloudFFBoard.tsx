@@ -205,7 +205,10 @@ export default function CloudFFBoard({
         position: posFilter === "ALL" ? null : posFilter,
         teamName: teamFilter === "ALL" ? null : teamFilter,
         search: debouncedSearch,
-        excludeIds: squad.map((p) => p.game_player_id),
+        // optimisticSquad, not squad - see DreamTeamBoard.tsx's identical
+        // fix for why the server prop can't be trusted to be fresh at the
+        // moment this refetch fires.
+        excludeIds: optimisticSquad.map((p) => p.game_player_id),
         maxPrice: maxValue,
         sortBy,
         page: poolPage,

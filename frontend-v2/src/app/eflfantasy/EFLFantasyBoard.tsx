@@ -156,7 +156,10 @@ export default function EFLFantasyBoard({
           teamName: teamFilter === "ALL" ? null : teamFilter,
           competition: leagueFilter === "ALL" ? null : leagueFilter,
           search: debouncedSearch,
-          excludeIds: squad.map((p) => p.game_player_id),
+          // optimisticSquad, not squad - see DreamTeamBoard.tsx's identical
+          // fix for why the server prop can't be trusted to be fresh at the
+          // moment this refetch fires.
+          excludeIds: optimisticSquad.map((p) => p.game_player_id),
           excludeClub: true,
           page: poolPage,
           pageSize: POOL_PAGE_SIZE,
@@ -179,7 +182,9 @@ export default function EFLFantasyBoard({
           position: "CLUB",
           competition: leagueFilter === "ALL" ? null : leagueFilter,
           search: debouncedSearch,
-          excludeIds: clubs.map((c) => c.game_player_id),
+          // optimisticClubs, not clubs - same reasoning as the players
+          // branch above.
+          excludeIds: optimisticClubs.map((c) => c.game_player_id),
           page: poolPage,
           pageSize: POOL_PAGE_SIZE,
         });

@@ -247,7 +247,15 @@ export default function DreamTeamBoard({
         position: posFilter === "ALL" ? null : posFilter,
         teamName: teamFilter === "ALL" ? null : teamFilter,
         search: debouncedSearch,
-        excludeIds: squad.map((p) => p.game_player_id),
+        // optimisticSquad, not squad - the server-confirmed squad prop only
+        // lands once Next's revalidation round trip completes, which isn't
+        // guaranteed to happen before this refetch fires (triggered
+        // synchronously by handleTransfer's own refreshKey bump). optimisticSquad
+        // updates the instant a transfer is submitted, so it's always the
+        // true current squad at refetch time - using the stale prop here
+        // let a just-sold player keep excluding correctly-purchasable
+        // replacements and let a just-bought player linger in the pool.
+        excludeIds: optimisticSquad.map((p) => p.game_player_id),
         maxPrice: maxValue,
         sortBy,
         page: poolPage,
