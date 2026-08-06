@@ -271,11 +271,29 @@ def import_players(cur, game_id, players_data, team_id_by_squad_id):
             # raw_stats->>'PT1' as a hardcoded key for every game, not
             # aliased per-game like everything else here (confirmed by
             # reading it) - every game's importer is expected to write
-            # this literal key. No PT60/PT90 equivalent exists in this
-            # feed (no 60+/90-minute split) - left absent, which
-            # compute_involvement_rates() already has a real fallback for
-            # (task: "appearance-rate fallback for missing PT1/60/90").
+            # this literal key.
+            #
+            # PT60/PT90 set equal to PT1 (not left absent) - real bug
+            # caught live 2026-08-06 via the Player Info panel: a 44-
+            # appearance ever-present defender (Sean McLoughlin) was
+            # projecting only 31 expected minutes. _implied_involvement()'s
+            # "appearance-rate fallback" (compute_projections.py) only
+            # triggers when PT1 ITSELF is missing (pt1 <= 0) - it never
+            # fires here, since this feed's real PT1 is always present.
+            # With PT60/PT90 left absent, the SQL layer's coalesce(...,0)
+            # read them as a real, literal zero - "this player has NEVER
+            # once reached 60 minutes in 44 appearances" - not as "no
+            # data," collapsing cond60_rate/cond90_rate toward nothing for
+            # every single EFL Fantasy player. This feed has no real 60+/
+            # 90-minute split (same gap minutes_played's own appearances*90
+            # proxy above already documents), so PT60=PT90=appearances is
+            # the consistent application of that exact same proxy -
+            # every real appearance assumed a full match - rather than a
+            # different, silently-wrong assumption creeping in one field
+            # over.
             "PT1": appearances,
+            "PT60": appearances,
+            "PT90": appearances,
             "appearances": appearances,
             "keyPasses": p.get("keyPasses", 0),
             "shotsOnTarget": p.get("shotsOnTarget", 0),
