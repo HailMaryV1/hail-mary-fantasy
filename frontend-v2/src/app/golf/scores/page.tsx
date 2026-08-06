@@ -57,6 +57,8 @@ type PredictionRow = {
   full_name: string;
   price: number | null;
   expected_points: number | null;
+  expected_floor: number | null;
+  expected_ceiling: number | null;
   actual_points: number | null;
   points_difference: number | null;
 };
@@ -203,13 +205,17 @@ export default async function GolfScoresPage({ searchParams }: { searchParams: P
     const [{ data: predRows }, { data: squads }] = await Promise.all([
       supabase
         .from("golf_tournament_predictions")
-        .select("game_player_id, price, expected_points, actual_points, points_difference, game_players(golfers(full_name))")
+        .select(
+          "game_player_id, price, expected_points, expected_floor, expected_ceiling, actual_points, points_difference, game_players(golfers(full_name))"
+        )
         .eq("tournament_id", tournament.id)
         .returns<
           {
             game_player_id: number;
             price: number | null;
             expected_points: number | null;
+            expected_floor: number | null;
+            expected_ceiling: number | null;
             actual_points: number | null;
             points_difference: number | null;
             game_players: { golfers: { full_name: string } } | null;
@@ -229,6 +235,8 @@ export default async function GolfScoresPage({ searchParams }: { searchParams: P
         fullName: r.game_players?.golfers?.full_name ?? "Unknown",
         price: r.price != null ? Number(r.price) : null,
         expectedPoints: r.expected_points != null ? Number(r.expected_points) : null,
+        expectedFloor: r.expected_floor != null ? Number(r.expected_floor) : null,
+        expectedCeiling: r.expected_ceiling != null ? Number(r.expected_ceiling) : null,
         actualPoints: r.actual_points != null ? Number(r.actual_points) : null,
         pointsDifference: r.points_difference != null ? Number(r.points_difference) : null,
       }))
@@ -242,6 +250,8 @@ export default async function GolfScoresPage({ searchParams }: { searchParams: P
           full_name: r.game_players?.golfers?.full_name ?? "Unknown",
           price: r.price,
           expected_points: r.expected_points,
+          expected_floor: r.expected_floor,
+          expected_ceiling: r.expected_ceiling,
           actual_points: r.actual_points,
           points_difference: r.points_difference,
         },
