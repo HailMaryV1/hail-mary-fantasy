@@ -41,7 +41,7 @@ export default async function GolfHubPage() {
           A weekly tournament import, decomposed through Hail Mary Golf&apos;s own scoring model, into rankings and picks.
         </p>
 
-        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Link
             href="/golf/import"
             className="rounded-xl border border-navy-700 bg-navy-900 p-4 transition-colors hover:border-sky-500 hover:bg-navy-800"
@@ -62,6 +62,13 @@ export default async function GolfHubPage() {
           >
             <p className="text-sm font-semibold text-white">Player Rankings</p>
             <p className="mt-1 text-xs text-navy-400">Hail Mary Golf&apos;s per-golfer projections</p>
+          </Link>
+          <Link
+            href="/golf/scores"
+            className="rounded-xl border border-navy-700 bg-navy-900 p-4 transition-colors hover:border-sky-500 hover:bg-navy-800"
+          >
+            <p className="text-sm font-semibold text-white">Scores</p>
+            <p className="mt-1 text-xs text-navy-400">Projected vs. actual for the whole field, plus your teams&apos; grades</p>
           </Link>
         </div>
 
