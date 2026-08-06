@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useOptimistic, useState, useTransition } from "react";
+import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
+import { searchPool } from "@/lib/poolSearch";
 import { makeFanteamTransfer, reorderFanteamBench, setFanteamFormation, setFanteamCaptain, swapFanteamLineup } from "../actions";
+
+export const POOL_PAGE_SIZE = 15;
 
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
 
@@ -196,7 +199,11 @@ export default function FanTeamBoard({
   rawCaptainId,
   rawViceCaptainId,
   squad,
-  pool,
+  pool: initialPool,
+  poolTotalCount: initialPoolTotalCount,
+  teams: teamsProp,
+  fixtureTiles,
+  isPoolServerDriven,
   squadSummary,
 }: {
   squadId: number;
@@ -235,6 +242,16 @@ export default function FanTeamBoard({
   rawViceCaptainId: number | null;
   squad: BoardPlayer[];
   pool: PoolPlayer[];
+  poolTotalCount: number;
+  teams: string[];
+  // Every team's next-6-gameweek fixture difficulty, keyed "teamId:gameweek" -
+  // see DreamTeamBoard.tsx's identical prop for why this is passed as a
+  // plain object rather than recomputed per pool row.
+  fixtureTiles: Record<string, FixtureTile>;
+  // False for a past-gameweek view - see DreamTeamBoard.tsx's identical
+  // reasoning (that path keeps the old client-side filter/paginate
+  // behavior over an already-fetched full pool).
+  isPoolServerDriven: boolean;
   squadSummary: string[];
 }) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
@@ -271,7 +288,7 @@ export default function FanTeamBoard({
   // Player Info replaces the pool browser panel in place, rather than
   // navigating away - matches the real Dream Team Tonic app's pattern.
   const [infoPlayerId, setInfoPlayerId] = useState<number | null>(null);
-  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
   const [teamFilter, setTeamFilter] = useState<string>("ALL");
   const [maxValue, setMaxValue] = useState<number | null>(null);
@@ -295,7 +312,95 @@ export default function FanTeamBoard({
   const optimisticTeamValue = optimisticSquad.reduce((sum, p) => sum + p.price, 0);
   const optimisticBank = budget - optimisticTeamValue;
 
-  const teams = Array.from(new Set(pool.map((p) => p.team_name))).sort();
+  // Debounced search - typing shouldn't fire a fresh server request on
+  // every keystroke.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchInput), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  // 15 rows/page rather than rendering the whole (position/team/value/
+  // search-filtered) pool at once. Resets to page 1 whenever the filter
+  // shape changes, so a stale page number never lands on an empty page.
+  const [poolPage, setPoolPage] = useState(1);
+  useEffect(() => {
+    setPoolPage(1);
+  }, [posFilter, teamFilter, maxValue, sortBy, debouncedSearch]);
+
+  // Server-driven pool state - see DreamTeamBoard.tsx's identical pattern.
+  const [pool, setPool] = useState<PoolPlayer[]>(initialPool);
+  const [poolTotalCount, setPoolTotalCount] = useState(initialPoolTotalCount);
+  const [isPoolLoading, startPoolTransition] = useTransition();
+  const isFirstRender = useRef(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  function buildFixtures(teamId: number): (FixtureTile | null)[] {
+    return Array.from({ length: 6 }, (_, i) => fixtureTiles[`${teamId}:${viewedGameweek + i}`] ?? null);
+  }
+
+  function refetchPool() {
+    if (!isPoolServerDriven) return;
+    startPoolTransition(async () => {
+      const result = await searchPool({
+        gameSlug: "fanteam",
+        gameweek: viewedGameweek,
+        position: posFilter === "ALL" ? null : posFilter,
+        teamName: teamFilter === "ALL" ? null : teamFilter,
+        search: debouncedSearch,
+        excludeIds: squad.map((p) => p.game_player_id),
+        maxPrice: maxValue,
+        sortBy,
+        page: poolPage,
+        pageSize: POOL_PAGE_SIZE,
+      });
+      setPool(
+        result.rows.map((r) => ({
+          game_player_id: r.game_player_id,
+          full_name: r.full_name,
+          position: r.position as PoolPlayer["position"],
+          team_name: r.team_name,
+          team_id: r.team_id,
+          price: r.price,
+          score: r.hail_mary_score,
+          fixtures: buildFixtures(r.team_id),
+          goalProjected: r.goalProjected,
+          assistProjected: r.assistProjected,
+          bonusProjected: r.bonusProjected,
+        }))
+      );
+      setPoolTotalCount(result.totalCount);
+    });
+  }
+
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    refetchPool();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posFilter, teamFilter, maxValue, sortBy, debouncedSearch, poolPage, viewedGameweek, refreshKey]);
+
+  const teams = isPoolServerDriven ? teamsProp : Array.from(new Set(initialPool.map((p) => p.team_name))).sort();
+
+  // Not server-driven (past view) - old full-array filter/sort, unchanged.
+  const filteredPool = isPoolServerDriven
+    ? pool
+    : initialPool
+        .filter(
+          (p) =>
+            (posFilter === "ALL" || p.position === posFilter) &&
+            (teamFilter === "ALL" || p.team_name === teamFilter) &&
+            (debouncedSearch === "" || p.full_name.toLowerCase().includes(debouncedSearch.toLowerCase())) &&
+            (maxValue === null || p.price <= maxValue)
+        )
+        .sort((a, b) => sortValue(b, sortBy) - sortValue(a, sortBy));
+
+  const activeTotalCount = isPoolServerDriven ? poolTotalCount : filteredPool.length;
+  const totalPoolPages = Math.max(1, Math.ceil(activeTotalCount / POOL_PAGE_SIZE));
+  const clampedPoolPage = Math.min(poolPage, totalPoolPages);
+  const pagedPool = isPoolServerDriven ? filteredPool : filteredPool.slice((poolPage - 1) * POOL_PAGE_SIZE, poolPage * POOL_PAGE_SIZE);
 
   const wildcardWindow = wildcardWindowFor(planningGameweek);
   const wildcardActiveThisGameweek = wildcard1UsedGameweek === planningGameweek || wildcard2UsedGameweek === planningGameweek;
@@ -439,7 +544,7 @@ export default function FanTeamBoard({
     handleSetCaptain(captainId, playerId);
   }
 
-  const menuPlayer = menuPlayerId != null ? (menuIsSquadMember ? optimisticSquad : pool).find((p) => p.game_player_id === menuPlayerId) : undefined;
+  const menuPlayer = menuPlayerId != null ? (menuIsSquadMember ? optimisticSquad : pagedPool).find((p) => p.game_player_id === menuPlayerId) : undefined;
   const menuActions: PlayerAction[] = !menuPlayer
     ? []
     : menuIsSquadMember
@@ -538,7 +643,7 @@ export default function FanTeamBoard({
       return (clubCounts.get(p.team_id) ?? 0) + 1 <= maxPerClub;
     });
   }
-  const legalPoolIds = new Set(pool.filter((p) => legalOutgoingFor(p).length > 0).map((p) => p.game_player_id));
+  const legalPoolIds = new Set(pagedPool.filter((p) => legalOutgoingFor(p).length > 0).map((p) => p.game_player_id));
 
   const costPreview = !seasonStarted
     ? "Free (pre-season)"
@@ -549,7 +654,7 @@ export default function FanTeamBoard({
         : "-4 pts (no free transfers left)";
 
   function handleTransfer(inGamePlayerId: number) {
-    const incomingPoolPlayer = pool.find((p) => p.game_player_id === inGamePlayerId);
+    const incomingPoolPlayer = pagedPool.find((p) => p.game_player_id === inGamePlayerId);
     if (!incomingPoolPlayer) return;
     // Of the empty slots this player can actually afford (and whose club
     // count still has room), fill the cheapest-outgoing one first - that
@@ -569,34 +674,12 @@ export default function FanTeamBoard({
           return next;
         });
         setUseWildcard(false);
+        setRefreshKey((k) => k + 1);
       }
     });
   }
 
-  const filteredPool = pool
-    .filter(
-      (p) =>
-        (posFilter === "ALL" || p.position === posFilter) &&
-        (teamFilter === "ALL" || p.team_name === teamFilter) &&
-        (search === "" || p.full_name.toLowerCase().includes(search.toLowerCase())) &&
-        (maxValue === null || p.price <= maxValue)
-    )
-    .sort((a, b) => sortValue(b, sortBy) - sortValue(a, sortBy));
-
   const sortColumnLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "Pts";
-
-  // 15 rows/page rather than rendering the whole (position/team/value/
-  // search-filtered) pool at once - fewer DOM nodes to paint per
-  // keystroke/filter change. Resets to page 1 whenever the filtered set
-  // changes shape, so a stale page number never lands on an empty page.
-  const POOL_PAGE_SIZE = 15;
-  const [poolPage, setPoolPage] = useState(1);
-  useEffect(() => {
-    setPoolPage(1);
-  }, [posFilter, teamFilter, maxValue, sortBy, search]);
-  const totalPoolPages = Math.max(1, Math.ceil(filteredPool.length / POOL_PAGE_SIZE));
-  const clampedPoolPage = Math.min(poolPage, totalPoolPages);
-  const pagedPool = filteredPool.slice((clampedPoolPage - 1) * POOL_PAGE_SIZE, clampedPoolPage * POOL_PAGE_SIZE);
 
   // Captains score double - a simple sum, not the more elaborate
   // auto-sub-probability-weighted total used elsewhere.
@@ -844,7 +927,10 @@ export default function FanTeamBoard({
             <PlayerInfoPanel gameSlug="fanteam" gamePlayerId={infoPlayerId} onBack={() => setInfoPlayerId(null)} />
           ) : (
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-            <h2 className="text-sm font-semibold text-white">Browse all available players</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold text-white">Browse all available players</h2>
+              {isPoolLoading && <span className="text-[10px] text-navy-500">Loading…</span>}
+            </div>
             <div className="mt-3 flex flex-wrap gap-2">
               {(["ALL", "GK", "DEF", "MID", "FWD"] as const).map((pos) => (
                 <button
@@ -896,8 +982,8 @@ export default function FanTeamBoard({
               </select>
             </div>
             <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search player..."
               className="mt-2 w-full rounded-lg border border-navy-700 bg-navy-950 px-3 py-2 text-sm text-white placeholder:text-navy-500 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
             />
@@ -965,7 +1051,7 @@ export default function FanTeamBoard({
                   })}
                 </tbody>
               </table>
-              {filteredPool.length > 0 && (
+              {activeTotalCount > 0 && (
                 <div className="mt-2 flex items-center justify-between text-[10px] text-navy-500">
                   <button
                     onClick={() => setPoolPage((p) => Math.max(1, p - 1))}
@@ -975,7 +1061,8 @@ export default function FanTeamBoard({
                     ← Prev
                   </button>
                   <span>
-                    {(clampedPoolPage - 1) * POOL_PAGE_SIZE + 1}-{Math.min(clampedPoolPage * POOL_PAGE_SIZE, filteredPool.length)} of {filteredPool.length}
+                    {(clampedPoolPage - 1) * POOL_PAGE_SIZE + 1}-{Math.min(clampedPoolPage * POOL_PAGE_SIZE, activeTotalCount)} of{" "}
+                    {activeTotalCount}
                   </span>
                   <button
                     onClick={() => setPoolPage((p) => Math.min(totalPoolPages, p + 1))}

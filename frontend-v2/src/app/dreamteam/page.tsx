@@ -3,8 +3,9 @@ import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
+import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
-import DreamTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./DreamTeamBoard";
+import DreamTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./DreamTeamBoard";
 
 export const dynamic = "force-dynamic";
 
@@ -89,14 +90,13 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
 
   const squadId = squad.id;
 
-  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, gwInfo, { count: substitutesUsed }] = await Promise.all([
+  const [{ data: rulesRow }, { data: squadPlayersRaw }, gwInfo, { count: substitutesUsed }] = await Promise.all([
     supabase.from("game_squad_rules").select("budget").eq("game_id", game.id).single(),
     supabase
       .from("squad_players")
       .select("game_player_id, is_starting, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
-    supabase.from("game_player_pool").select("*").eq("game_slug", "dreamteam").returns<PoolRow[]>(),
     getGameweekInfo(supabase, game.id),
     supabase.from("squad_substitutions").select("id", { count: "exact", head: true }).eq("squad_id", squadId),
   ]);
@@ -109,14 +109,15 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
     : planningGameweek;
   const isPlanningView = viewedGameweek === planningGameweek;
   const isPastView = viewedGameweek < planningGameweek;
+  const squadIds = (squadPlayersRaw ?? []).map((sp) => sp.game_player_id);
 
   // Fixture-difficulty tiles for GW(viewed) through GW(viewed+5), per team -
   // reuses the existing team_fixture_difficulty table (already built for
-  // the Fixtures page) rather than inventing a new source. Bundled with
-  // this specific gameweek's real projections (skipped for a past view,
-  // which doesn't need them) in one parallel batch, rather than a separate
-  // awaited call after - that was adding a whole extra network round trip
-  // to every page load.
+  // the Fixtures page) rather than inventing a new source. Small and
+  // game-wide (every team, not just the pool page on screen), so fetched
+  // in full regardless of view - bundled with the squad's own real
+  // projections (skipped for a past view, which doesn't need them) in one
+  // parallel batch, rather than a separate awaited call after.
   const [{ data: gwFixtureRows }, { data: difficultyRows }, scoreRows] = await Promise.all([
     supabase
       .from("game_fixture_gameweeks")
@@ -127,11 +128,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
     supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id),
     isPastView
       ? Promise.resolve<GameweekProjectionRow<ProjectionInputs>[]>([])
-      : getProjectionsForPlayerIds<ProjectionInputs>(
-          supabase,
-          viewedGameweek,
-          (poolRaw ?? []).map((p) => p.game_player_id)
-        ),
+      : getProjectionsForPlayerIds<ProjectionInputs>(supabase, viewedGameweek, squadIds),
   ]);
   const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
   type GwFixtureRow = {
@@ -150,12 +147,18 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       tilesByTeamGw.set(key, { opponentAbbr: abbreviate(oppName), isHome, difficulty });
     }
   }
+  // Plain-object mirror of tilesByTeamGw - a Map can't cross the server/
+  // client boundary as a prop, and the board needs this same lookup to
+  // resolve fixtures for every pool page it fetches after the first.
+  const fixtureTilesRecord: Record<string, FixtureTile> = Object.fromEntries(tilesByTeamGw);
   const emptyStats = { goalProjected: 0, assistProjected: 0, bonusProjected: 0 };
 
   let boardSquad: BoardPlayer[];
   let teamValue: number;
   let bank: number;
   let boardPool: PoolPlayer[];
+  let poolTotalCount = 0;
+  let teams: string[] = [];
   let pastViewState: "not_locked" | "no_results_yet" | null = null;
 
   if (isPastView) {
@@ -163,8 +166,16 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
     // today's (possibly since-transferred) live squad_players, plus real
     // actual points where they've been captured (see gameweekHistory.ts -
     // player_gameweek_results is empty for every game pre-season, so this
-    // degrades to "not yet played" rather than a blank/broken page).
-    const lock = await getSquadGameweekLock(supabase, squadId, viewedGameweek);
+    // degrades to "not yet played" rather than a blank/broken page). Full
+    // pool fetch is fine to keep here rather than a server-driven search -
+    // a genuinely rare path (nobody can browse it until a real gameweek
+    // finishes) that's scored from real actuals, not projections, and
+    // Dream Team's whole pool is well under PostgREST's 1000-row cap
+    // anyway (a single request, not the multi-page problem EFL Fantasy had).
+    const [lock, { data: poolRaw }] = await Promise.all([
+      getSquadGameweekLock(supabase, squadId, viewedGameweek),
+      supabase.from("game_player_pool").select("*").eq("game_slug", "dreamteam").returns<PoolRow[]>(),
+    ]);
     if (!lock) {
       boardSquad = [];
       teamValue = 0;
@@ -199,7 +210,8 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
         }));
       teamValue = boardSquad.reduce((sum, p) => sum + p.price, 0);
       bank = Number(rules.budget) - teamValue;
-      boardPool = (poolRaw ?? [])
+      const poolRows = poolRaw ?? [];
+      boardPool = poolRows
         .filter((p) => !lock.snapshot.players.some((sp) => sp.game_player_id === p.game_player_id))
         .map((p) => ({
           game_player_id: p.game_player_id,
@@ -212,12 +224,15 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
           ...emptyStats,
         }))
         .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+      poolTotalCount = boardPool.length;
+      teams = Array.from(new Set(poolRows.map((p) => p.team_name))).sort();
     }
   } else {
     // Current planning gameweek, or a future preview - today's live squad,
-    // with that specific gameweek's real computed projections (not
-    // necessarily the "current" ones player_projection_summary would
-    // return - see getProjectionsForGameweek's docstring).
+    // with that specific gameweek's real computed projections. The pool's
+    // browse table gets its own scores from search_game_player_pool
+    // instead (via DreamTeamBoard's on-demand fetch), never a whole-pool
+    // read here.
     const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
       game_player_id: sp.game_player_id,
       is_starting: sp.is_starting,
@@ -227,7 +242,6 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       team_id: sp.game_players.players.team_id,
       team_name: sp.game_players.players.teams.name,
     }));
-    const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
     teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
     bank = Number(rules.budget) - teamValue;
 
@@ -263,19 +277,30 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 
-    boardPool = (poolRaw ?? [])
-      .filter((p) => !squadIds.has(p.game_player_id))
-      .map((p) => ({
-        game_player_id: p.game_player_id,
-        full_name: p.full_name,
-        position: p.position,
-        team_name: p.team_name,
-        price: Number(p.price),
-        score: scoreByGamePlayerId.get(p.game_player_id) ?? Number(p.hail_mary_score ?? 0),
-        fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
-        ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
-      }))
-      .sort((a, b) => b.score - a.score);
+    const [initialPool, teamNames] = await Promise.all([
+      searchPool({
+        gameSlug: "dreamteam",
+        gameweek: viewedGameweek,
+        excludeIds: squadIds,
+        page: 1,
+        pageSize: POOL_PAGE_SIZE,
+      }),
+      listPoolTeams("dreamteam"),
+    ]);
+    boardPool = initialPool.rows.map((r) => ({
+      game_player_id: r.game_player_id,
+      full_name: r.full_name,
+      position: r.position as "GK" | "DEF" | "MID" | "FWD",
+      team_name: r.team_name,
+      price: r.price,
+      score: r.hail_mary_score,
+      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${r.team_id}:${viewedGameweek + i}`) ?? null),
+      goalProjected: r.goalProjected,
+      assistProjected: r.assistProjected,
+      bonusProjected: r.bonusProjected,
+    }));
+    poolTotalCount = initialPool.totalCount;
+    teams = teamNames;
   }
 
   const totalProjectedPoints = boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
@@ -324,6 +349,10 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       seasonStarted={gwInfo.seasonStarted}
       squad={boardSquad}
       pool={boardPool}
+      poolTotalCount={poolTotalCount}
+      teams={teams}
+      fixtureTiles={fixtureTilesRecord}
+      isPoolServerDriven={!isPastView}
       squadSummary={squadSummary}
     />
   );

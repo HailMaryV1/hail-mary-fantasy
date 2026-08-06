@@ -3,8 +3,9 @@ import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
+import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
-import CloudFFBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./CloudFFBoard";
+import CloudFFBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./CloudFFBoard";
 
 export const dynamic = "force-dynamic";
 
@@ -75,14 +76,13 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
 
   const squadId = squad.id;
 
-  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, gwInfo, { data: formationsRaw }] = await Promise.all([
+  const [{ data: rulesRow }, { data: squadPlayersRaw }, gwInfo, { data: formationsRaw }] = await Promise.all([
     supabase.from("game_squad_rules").select("budget").eq("game_id", game.id).single(),
     supabase
       .from("squad_players")
       .select("game_player_id, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
-    supabase.from("game_player_pool").select("*").eq("game_slug", "cloudff").returns<PoolRow[]>(),
     getGameweekInfo(supabase, game.id),
     // Cloud FF uses named formations despite having no bench (every squad
     // player counts as "starting") - formation is derived from the squad's
@@ -99,6 +99,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
     : planningGameweek;
   const isPlanningView = viewedGameweek === planningGameweek;
   const isPastView = viewedGameweek < planningGameweek;
+  const squadIds = (squadPlayersRaw ?? []).map((sp) => sp.game_player_id);
 
   const [{ data: gwFixtureRows }, { data: difficultyRows }, scoreRows] = await Promise.all([
     supabase
@@ -110,11 +111,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
     supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id),
     isPastView
       ? Promise.resolve<GameweekProjectionRow<ProjectionInputs>[]>([])
-      : getProjectionsForPlayerIds<ProjectionInputs>(
-          supabase,
-          viewedGameweek,
-          (poolRaw ?? []).map((p) => p.game_player_id)
-        ),
+      : getProjectionsForPlayerIds<ProjectionInputs>(supabase, viewedGameweek, squadIds),
   ]);
   const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
   type GwFixtureRow = {
@@ -133,17 +130,30 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       tilesByTeamGw.set(key, { opponentAbbr: abbreviate(oppName), isHome, difficulty });
     }
   }
+  // Plain-object mirror of tilesByTeamGw - see DreamTeamBoard.tsx's page
+  // for why this crosses the server/client boundary as a prop instead of
+  // being recomputed per pool row.
+  const fixtureTilesRecord: Record<string, FixtureTile> = Object.fromEntries(tilesByTeamGw);
   const emptyStats = { goalProjected: 0, assistProjected: 0, bonusProjected: 0 };
 
   let boardSquad: BoardPlayer[];
   let teamValue: number;
   let bank: number;
   let boardPool: PoolPlayer[];
+  let poolTotalCount = 0;
+  let teams: string[] = [];
   let pastViewState: "not_locked" | "no_results_yet" | null = null;
   let formationCode: string | null;
 
   if (isPastView) {
-    const lock = await getSquadGameweekLock(supabase, squadId, viewedGameweek);
+    // Full pool fetch is fine to keep here rather than a server-driven
+    // search - see DreamTeamBoard.tsx's page for why (rare path, scored
+    // from real actuals, and Cloud FF's pool is well under PostgREST's
+    // 1000-row cap anyway).
+    const [lock, { data: poolRaw }] = await Promise.all([
+      getSquadGameweekLock(supabase, squadId, viewedGameweek),
+      supabase.from("game_player_pool").select("*").eq("game_slug", "cloudff").returns<PoolRow[]>(),
+    ]);
     if (!lock) {
       boardSquad = [];
       teamValue = 0;
@@ -178,7 +188,8 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       teamValue = boardSquad.reduce((sum, p) => sum + p.price, 0);
       bank = Number(rules.budget) - teamValue;
       const lockedIds = new Set(lock.snapshot.players.map((p) => p.game_player_id));
-      boardPool = (poolRaw ?? [])
+      const poolRows = poolRaw ?? [];
+      boardPool = poolRows
         .filter((p) => !lockedIds.has(p.game_player_id))
         .map((p) => ({
           game_player_id: p.game_player_id,
@@ -191,6 +202,8 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
           ...emptyStats,
         }))
         .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+      poolTotalCount = boardPool.length;
+      teams = Array.from(new Set(poolRows.map((p) => p.team_name))).sort();
 
       const startingCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 } as Record<string, number>;
       for (const p of boardSquad) startingCounts[p.position] = (startingCounts[p.position] ?? 0) + 1;
@@ -208,7 +221,6 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       team_id: sp.game_players.players.team_id,
       team_name: sp.game_players.players.teams.name,
     }));
-    const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
     teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
     bank = Number(rules.budget) - teamValue;
 
@@ -245,19 +257,30 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 
-    boardPool = (poolRaw ?? [])
-      .filter((p) => !squadIds.has(p.game_player_id))
-      .map((p) => ({
-        game_player_id: p.game_player_id,
-        full_name: p.full_name,
-        position: p.position,
-        team_name: p.team_name,
-        price: Number(p.price),
-        score: scoreByGamePlayerId.get(p.game_player_id) ?? Number(p.hail_mary_score ?? 0),
-        fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
-        ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
-      }))
-      .sort((a, b) => b.score - a.score);
+    const [initialPool, teamNames] = await Promise.all([
+      searchPool({
+        gameSlug: "cloudff",
+        gameweek: viewedGameweek,
+        excludeIds: squadIds,
+        page: 1,
+        pageSize: POOL_PAGE_SIZE,
+      }),
+      listPoolTeams("cloudff"),
+    ]);
+    boardPool = initialPool.rows.map((r) => ({
+      game_player_id: r.game_player_id,
+      full_name: r.full_name,
+      position: r.position as "GK" | "DEF" | "MID" | "FWD",
+      team_name: r.team_name,
+      price: r.price,
+      score: r.hail_mary_score,
+      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${r.team_id}:${viewedGameweek + i}`) ?? null),
+      goalProjected: r.goalProjected,
+      assistProjected: r.assistProjected,
+      bonusProjected: r.bonusProjected,
+    }));
+    poolTotalCount = initialPool.totalCount;
+    teams = teamNames;
   }
 
   // No bench and no squad-level captain (Cloud FF's captain is picked per
@@ -298,6 +321,10 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       formationCode={formationCode}
       squad={boardSquad}
       pool={boardPool}
+      poolTotalCount={poolTotalCount}
+      teams={teams}
+      fixtureTiles={fixtureTilesRecord}
+      isPoolServerDriven={!isPastView}
       squadSummary={squadSummary}
     />
   );
