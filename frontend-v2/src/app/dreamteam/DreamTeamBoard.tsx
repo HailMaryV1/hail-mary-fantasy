@@ -5,6 +5,7 @@ import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
+import GameweekSwitcher from "@/components/GameweekSwitcher";
 import { setBooster, makeTransfer, setCaptain } from "./actions";
 
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
@@ -107,6 +108,12 @@ export default function DreamTeamBoard({
   bank,
   teamValue,
   planningGameweek,
+  viewedGameweek,
+  isPlanningView,
+  isPastView,
+  pastViewState,
+  minGameweek,
+  maxGameweek,
   boosters,
   substitutesUsed,
   seasonStarted,
@@ -120,6 +127,12 @@ export default function DreamTeamBoard({
   bank: number;
   teamValue: number;
   planningGameweek: number;
+  viewedGameweek: number;
+  isPlanningView: boolean;
+  isPastView: boolean;
+  pastViewState: "not_locked" | "no_results_yet" | null;
+  minGameweek: number;
+  maxGameweek: number;
   boosters: {
     active: Booster | null;
     activeGameweek: number | null;
@@ -251,24 +264,24 @@ export default function DreamTeamBoard({
           {
             label: (menuPlayer as BoardPlayer).isCaptain ? "Captain ✓" : "Make Captain",
             onClick: () => handleMakeCaptain(menuPlayer.game_player_id),
-            disabled: (menuPlayer as BoardPlayer).isCaptain,
+            disabled: (menuPlayer as BoardPlayer).isCaptain || !isPlanningView,
           },
           {
             label: (menuPlayer as BoardPlayer).isViceCaptain ? "Vice-Captain ✓" : "Make Vice-Captain",
             onClick: () => handleMakeViceCaptain(menuPlayer.game_player_id),
-            disabled: (menuPlayer as BoardPlayer).isViceCaptain,
+            disabled: (menuPlayer as BoardPlayer).isViceCaptain || !isPlanningView,
           },
           {
             label: "Transfer Out",
             onClick: () => setPendingOutIds((prev) => new Set(prev).add(menuPlayer.game_player_id)),
-            disabled: pendingOutIds.has(menuPlayer.game_player_id) || (seasonStarted && pendingOutIds.size >= transfers),
+            disabled: !isPlanningView || pendingOutIds.has(menuPlayer.game_player_id) || (seasonStarted && pendingOutIds.size >= transfers),
           },
           { label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) },
         ]
       : [{ label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) }];
 
   const pendingOutPlayers = optimisticSquad.filter((p) => pendingOutIds.has(p.game_player_id));
-  const canTransfer = !seasonStarted || transfers > 0;
+  const canTransfer = isPlanningView && (!seasonStarted || transfers > 0);
 
   // Budget is constant - back-derived once from the server-confirmed
   // bank+teamValue props so a transfer's optimistic squad can recompute
@@ -352,9 +365,30 @@ export default function DreamTeamBoard({
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
       <div className="mx-auto max-w-7xl">
-        <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
-          ← Back to main menu
-        </Link>
+        <div className="flex items-center justify-between gap-2">
+          <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
+            ← Back to main menu
+          </Link>
+          <GameweekSwitcher
+            basePath="/dreamteam"
+            currentGameweek={viewedGameweek}
+            minGameweek={minGameweek}
+            maxGameweek={maxGameweek}
+            planningGameweek={planningGameweek}
+          />
+        </div>
+
+        {!isPlanningView && (
+          <p className="mt-3 rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+            {isPastView
+              ? pastViewState === "not_locked"
+                ? `GW${viewedGameweek} was never locked in - no squad to show. Switch back to GW${planningGameweek} to keep planning.`
+                : pastViewState === "no_results_yet"
+                  ? `Showing your GW${viewedGameweek} locked squad - results haven't been captured yet.`
+                  : `Showing your GW${viewedGameweek} locked squad and actual points.`
+              : `Previewing GW${viewedGameweek} projections - read-only. Switch back to GW${planningGameweek} to make changes.`}
+          </p>
+        )}
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
           <StatBox label="Projected Points" value={optimisticTotalPoints.toFixed(1)} />
@@ -370,7 +404,7 @@ export default function DreamTeamBoard({
                 return (
                   <button
                     key={b}
-                    disabled={used || isBoosterPending}
+                    disabled={used || isBoosterPending || !isPlanningView}
                     onClick={() => handleBooster(active ? null : b)}
                     title={used ? `${BOOSTER_LABELS[b]} - already used this season` : BOOSTER_LABELS[b]}
                     className={`rounded px-2 py-1 text-[10px] font-bold ${
@@ -439,7 +473,7 @@ export default function DreamTeamBoard({
                         ["next2", "Next 2 GW Fix"],
                         ["next3", "Next 3 GW Fix"],
                         ["pts", "Pts"],
-                        ["pred", `Pred +/- GW${planningGameweek}`],
+                        ["pred", `Pred +/- GW${viewedGameweek}`],
                       ] as [DisplayMode, string][]
                     ).map(([mode, label]) => (
                       <button
@@ -556,7 +590,7 @@ export default function DreamTeamBoard({
                     <th className="pb-2 pr-2 font-medium">{sortColumnLabel}</th>
                     {Array.from({ length: 6 }, (_, i) => (
                       <th key={i} className="px-1 pb-2 text-center font-medium">
-                        GW{planningGameweek + i}
+                        GW{viewedGameweek + i}
                       </th>
                     ))}
                   </tr>

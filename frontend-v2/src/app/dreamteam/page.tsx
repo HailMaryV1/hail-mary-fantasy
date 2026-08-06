@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming } from "@/lib/gameweek";
+import { getSeasonTiming, getGameweekRange, getProjectionsForGameweek } from "@/lib/gameweek";
+import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import DreamTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./DreamTeamBoard";
 
@@ -48,7 +49,8 @@ type ProjectionInputs = {
   reconciliation?: { bonus?: number };
 };
 
-export default async function DreamTeamPage() {
+export default async function DreamTeamPage({ searchParams }: { searchParams: Promise<{ gameweek?: string }> }) {
+  const { gameweek: gameweekParam } = await searchParams;
   const supabase = await createAuthServerClient();
   const {
     data: { user },
@@ -87,7 +89,7 @@ export default async function DreamTeamPage() {
 
   const squadId = squad.id;
 
-  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, { count: substitutesUsed }] = await Promise.all([
+  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, gwRange, { count: substitutesUsed }] = await Promise.all([
     supabase.from("game_squad_rules").select("budget").eq("game_id", game.id).single(),
     supabase
       .from("squad_players")
@@ -96,74 +98,34 @@ export default async function DreamTeamPage() {
       .returns<SquadPlayerRow[]>(),
     supabase.from("game_player_pool").select("*").eq("game_slug", "dreamteam").returns<PoolRow[]>(),
     getSeasonTiming(supabase, game.id),
+    getGameweekRange(supabase, game.id),
     supabase.from("squad_substitutions").select("id", { count: "exact", head: true }).eq("squad_id", squadId),
   ]);
 
   const rules = rulesRow ?? { budget: 50 };
   const planningGameweek = seasonTiming.planningGameweek ?? 1;
+  const requestedGameweek = Number(gameweekParam);
+  const viewedGameweek = Number.isInteger(requestedGameweek)
+    ? Math.min(Math.max(requestedGameweek, gwRange.minGameweek), gwRange.maxGameweek)
+    : planningGameweek;
+  const isPlanningView = viewedGameweek === planningGameweek;
+  const isPastView = viewedGameweek < planningGameweek;
 
-  const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
-    game_player_id: sp.game_player_id,
-    is_starting: sp.is_starting,
-    price: sp.game_players.price,
-    full_name: sp.game_players.players.full_name,
-    position: sp.game_players.players.position,
-    team_id: sp.game_players.players.team_id,
-    team_name: sp.game_players.players.teams.name,
-  }));
-  const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
-  const teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
-  const bank = Number(rules.budget) - teamValue;
-
-  // Real per-gameweek projected scores for this specific planning
-  // gameweek - player_projection_summary always exposes exactly the
-  // gameweek closest to "now" per player (see its view definition), which
-  // is guaranteed to line up with planningGameweek since both resolve
-  // "next actionable gameweek" the same way.
-  //
-  // These three reads (scores, fixture-gameweeks, fixture-difficulty) are
-  // independent of each other's results - only combined afterward in JS -
-  // so they run as one Promise.all instead of three back-to-back network
-  // round trips (each one was adding its own full latency hop before the
-  // page could render at all).
-  const [{ data: scoreRows }, { data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
-    supabase
-      .from("player_projection_summary")
-      .select("game_player_id, hail_mary_score, inputs")
-      .eq("game_slug", "dreamteam")
-      .returns<{ game_player_id: number; hail_mary_score: number | null; inputs: ProjectionInputs | null }[]>(),
-    // Real fixture-difficulty tiles for GW(planning) through GW(planning+5),
-    // per team - reuses the existing team_fixture_difficulty table (already
-    // built for the Fixtures page) rather than inventing a new source.
+  // Fixture-difficulty tiles for GW(viewed) through GW(viewed+5), per team -
+  // reuses the existing team_fixture_difficulty table (already built for
+  // the Fixtures page) rather than inventing a new source. Independent of
+  // the past/future branch below, always anchored on whatever gameweek is
+  // actually being viewed.
+  const [{ data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
     supabase
       .from("game_fixture_gameweeks")
       .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
       .eq("game_id", game.id)
-      .gte("gameweek", planningGameweek)
-      .lte("gameweek", planningGameweek + 5),
+      .gte("gameweek", viewedGameweek)
+      .lte("gameweek", viewedGameweek + 5),
     supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id),
   ]);
-  const scoreByGamePlayerId = new Map<number, number>((scoreRows ?? []).map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
-  // Real projected goals/assists/bonus for the "Sort by" dropdown - pulled
-  // straight from the same decomposed-scoring inputs compute_projections.py
-  // already writes (primary fixture's stat projections + Dream Team's PPM
-  // bonus reconciliation), not a second guess at the same numbers.
-  const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
-    (scoreRows ?? []).map((r) => {
-      const primaryStats = r.inputs?.fixtures?.[0]?.stats;
-      return [
-        r.game_player_id,
-        {
-          goalProjected: Number(primaryStats?.goal?.projected ?? 0),
-          assistProjected: Number(primaryStats?.assist?.projected ?? 0),
-          bonusProjected: Number(r.inputs?.reconciliation?.bonus ?? 0),
-        },
-      ];
-    })
-  );
-
   const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
-
   type GwFixtureRow = {
     gameweek: number;
     fixtures: { id: number; home_team_id: number; away_team_id: number; teams_home: { name: string }; teams_away: { name: string } };
@@ -180,54 +142,155 @@ export default async function DreamTeamPage() {
       tilesByTeamGw.set(key, { opponentAbbr: abbreviate(oppName), isHome, difficulty });
     }
   }
-
   const emptyStats = { goalProjected: 0, assistProjected: 0, bonusProjected: 0 };
 
-  const boardSquad: BoardPlayer[] = squadPlayers.map((p) => ({
-    game_player_id: p.game_player_id,
-    full_name: p.full_name,
-    position: p.position,
-    team_name: p.team_name,
-    price: Number(p.price),
-    score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
-    isCaptain: p.game_player_id === squad.captain_game_player_id,
-    isViceCaptain: p.game_player_id === squad.vice_captain_game_player_id,
-    fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${planningGameweek + i}`) ?? null),
-    ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
-  }));
+  let boardSquad: BoardPlayer[];
+  let teamValue: number;
+  let bank: number;
+  let boardPool: PoolPlayer[];
+  let pastViewState: "not_locked" | "no_results_yet" | null = null;
 
-  const totalProjectedPoints = boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
-  const currentCaptain = boardSquad.find((p) => p.isCaptain);
-  const squadSummary = buildSquadSummary({
-    players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score })),
-    totalProjectedPoints,
-    teamValue,
-    budgetRemaining: bank,
-    captain: currentCaptain ? { fullName: currentCaptain.full_name, score: currentCaptain.score ?? 0 } : null,
-    // Fixture/health-derived reasoning and the forward-looking transfer
-    // plan live only in the full Ask Mary analysis (runAskMaryAnalysis) -
-    // deliberately not run on every squad-board page load, since it's a
-    // real multi-gameweek search plus prediction-recording pass, not a
-    // cheap read. The summary here uses only data this page already has.
-    topStrength: null,
-    topWeakness: null,
-    nextStepTransferCount: null,
-    nextStepGameweek: null,
-  });
+  if (isPastView) {
+    // Past gameweek - show the squad as it was actually locked in, not
+    // today's (possibly since-transferred) live squad_players, plus real
+    // actual points where they've been captured (see gameweekHistory.ts -
+    // player_gameweek_results is empty for every game pre-season, so this
+    // degrades to "not yet played" rather than a blank/broken page).
+    const lock = await getSquadGameweekLock(supabase, squadId, viewedGameweek);
+    if (!lock) {
+      boardSquad = [];
+      teamValue = 0;
+      bank = 0;
+      boardPool = [];
+      pastViewState = "not_locked";
+    } else {
+      const [identities, actuals] = await Promise.all([
+        resolvePlayerIdentities(
+          supabase,
+          lock.snapshot.players.map((p) => p.game_player_id)
+        ),
+        getActualPoints(supabase, game.id, viewedGameweek),
+      ]);
+      const hasAnyResult = lock.snapshot.players.some((p) => actuals.get(p.game_player_id)?.points != null);
+      pastViewState = hasAnyResult ? null : "no_results_yet";
 
-  const boardPool: PoolPlayer[] = (poolRaw ?? [])
-    .filter((p) => !squadIds.has(p.game_player_id))
-    .map((p) => ({
+      boardSquad = lock.snapshot.players
+        .map((sp) => identities.get(sp.game_player_id))
+        .filter((id): id is NonNullable<typeof id> => id != null)
+        .map((id) => ({
+          game_player_id: id.game_player_id,
+          full_name: id.full_name,
+          position: id.position as BoardPlayer["position"],
+          team_name: id.team_name,
+          price: id.price,
+          score: actuals.get(id.game_player_id)?.points ?? null,
+          isCaptain: id.game_player_id === lock.snapshot.captainGamePlayerId,
+          isViceCaptain: id.game_player_id === lock.snapshot.viceCaptainGamePlayerId,
+          fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${id.team_id}:${viewedGameweek + i}`) ?? null),
+          ...emptyStats,
+        }));
+      teamValue = boardSquad.reduce((sum, p) => sum + p.price, 0);
+      bank = Number(rules.budget) - teamValue;
+      boardPool = (poolRaw ?? [])
+        .filter((p) => !lock.snapshot.players.some((sp) => sp.game_player_id === p.game_player_id))
+        .map((p) => ({
+          game_player_id: p.game_player_id,
+          full_name: p.full_name,
+          position: p.position,
+          team_name: p.team_name,
+          price: Number(p.price),
+          score: actuals.get(p.game_player_id)?.points ?? null,
+          fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
+          ...emptyStats,
+        }))
+        .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+    }
+  } else {
+    // Current planning gameweek, or a future preview - today's live squad,
+    // with that specific gameweek's real computed projections (not
+    // necessarily the "current" ones player_projection_summary would
+    // return - see getProjectionsForGameweek's docstring).
+    const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
+      game_player_id: sp.game_player_id,
+      is_starting: sp.is_starting,
+      price: sp.game_players.price,
+      full_name: sp.game_players.players.full_name,
+      position: sp.game_players.players.position,
+      team_id: sp.game_players.players.team_id,
+      team_name: sp.game_players.players.teams.name,
+    }));
+    const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
+    teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
+    bank = Number(rules.budget) - teamValue;
+
+    const scoreRows = await getProjectionsForGameweek<ProjectionInputs>(supabase, game.id, viewedGameweek);
+    const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+    // Real projected goals/assists/bonus for the "Sort by" dropdown - pulled
+    // straight from the same decomposed-scoring inputs compute_projections.py
+    // already writes (primary fixture's stat projections + Dream Team's PPM
+    // bonus reconciliation), not a second guess at the same numbers.
+    const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
+      scoreRows.map((r) => {
+        const primaryStats = r.inputs?.fixtures?.[0]?.stats;
+        return [
+          r.game_player_id,
+          {
+            goalProjected: Number(primaryStats?.goal?.projected ?? 0),
+            assistProjected: Number(primaryStats?.assist?.projected ?? 0),
+            bonusProjected: Number(r.inputs?.reconciliation?.bonus ?? 0),
+          },
+        ];
+      })
+    );
+
+    boardSquad = squadPlayers.map((p) => ({
       game_player_id: p.game_player_id,
       full_name: p.full_name,
       position: p.position,
       team_name: p.team_name,
       price: Number(p.price),
-      score: scoreByGamePlayerId.get(p.game_player_id) ?? Number(p.hail_mary_score ?? 0),
-      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${planningGameweek + i}`) ?? null),
+      score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
+      isCaptain: p.game_player_id === squad.captain_game_player_id,
+      isViceCaptain: p.game_player_id === squad.vice_captain_game_player_id,
+      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
-    }))
-    .sort((a, b) => b.score - a.score);
+    }));
+
+    boardPool = (poolRaw ?? [])
+      .filter((p) => !squadIds.has(p.game_player_id))
+      .map((p) => ({
+        game_player_id: p.game_player_id,
+        full_name: p.full_name,
+        position: p.position,
+        team_name: p.team_name,
+        price: Number(p.price),
+        score: scoreByGamePlayerId.get(p.game_player_id) ?? Number(p.hail_mary_score ?? 0),
+        fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
+        ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
+      }))
+      .sort((a, b) => b.score - a.score);
+  }
+
+  const totalProjectedPoints = boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
+  const currentCaptain = boardSquad.find((p) => p.isCaptain);
+  const squadSummary = isPlanningView
+    ? buildSquadSummary({
+        players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score })),
+        totalProjectedPoints,
+        teamValue,
+        budgetRemaining: bank,
+        captain: currentCaptain ? { fullName: currentCaptain.full_name, score: currentCaptain.score ?? 0 } : null,
+        // Fixture/health-derived reasoning and the forward-looking transfer
+        // plan live only in the full Ask Mary analysis (runAskMaryAnalysis) -
+        // deliberately not run on every squad-board page load, since it's a
+        // real multi-gameweek search plus prediction-recording pass, not a
+        // cheap read. The summary here uses only data this page already has.
+        topStrength: null,
+        topWeakness: null,
+        nextStepTransferCount: null,
+        nextStepGameweek: null,
+      })
+    : [];
 
   return (
     <DreamTeamBoard
@@ -237,6 +300,12 @@ export default async function DreamTeamPage() {
       bank={bank}
       teamValue={teamValue}
       planningGameweek={planningGameweek}
+      viewedGameweek={viewedGameweek}
+      isPlanningView={isPlanningView}
+      isPastView={isPastView}
+      pastViewState={pastViewState}
+      minGameweek={gwRange.minGameweek}
+      maxGameweek={gwRange.maxGameweek}
       boosters={{
         active: squad.active_booster,
         activeGameweek: squad.active_booster_gameweek,

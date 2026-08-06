@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming } from "@/lib/gameweek";
+import { getSeasonTiming, getGameweekRange, getProjectionsForGameweek } from "@/lib/gameweek";
+import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import EFLFantasyBoard, { type BoardPlayer, type PoolPlayer, type BoardClub, type PoolClub } from "./EFLFantasyBoard";
 
@@ -75,7 +76,8 @@ async function fetchAllPoolRows(supabase: Supabase, gameSlug: string): Promise<P
   return rows;
 }
 
-export default async function EFLFantasyPage() {
+export default async function EFLFantasyPage({ searchParams }: { searchParams: Promise<{ gameweek?: string }> }) {
+  const { gameweek: gameweekParam } = await searchParams;
   const supabase = await createAuthServerClient();
   const {
     data: { user },
@@ -111,28 +113,16 @@ export default async function EFLFantasyPage() {
   }
 
   const squadId = squad.id;
-  const nowIso = new Date().toISOString();
 
-  const [{ data: squadPlayersRaw }, poolRaw, { data: fixturesRaw }, { data: clubHistoryRaw }, seasonTiming] = await Promise.all([
+  const [{ data: squadPlayersRaw }, poolRaw, seasonTiming, gwRange, { data: clubHistoryRaw }] = await Promise.all([
     supabase
       .from("squad_players")
       .select("game_player_id, game_players(players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
     fetchAllPoolRows(supabase, "eflfantasy"),
-    supabase
-      .from("game_fixture_gameweeks")
-      .select("gameweek, fixtures(home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))")
-      .eq("game_id", game.id)
-      .gte("fixtures.kickoff_at", nowIso)
-      .order("gameweek")
-      // Same truncation risk pre-season, when every one of the season's
-      // ~1,656 gameweek mappings is still "future" - only the earliest
-      // gameweek's ~36 fixtures are actually needed (one per team, and
-      // rows are already ordered by gameweek ascending), but this stays
-      // explicit rather than relying on that ordering alone.
-      .limit(2000)
-      .returns<FixtureRow[]>(),
+    getSeasonTiming(supabase, game.id),
+    getGameweekRange(supabase, game.id),
     supabase
       .from("game_player_stats")
       .select("game_player_id, total_points, game_players!inner(game_id, position_code)")
@@ -141,14 +131,26 @@ export default async function EFLFantasyPage() {
       .eq("season", "2025/26")
       .eq("gameweek", 0)
       .returns<ClubHistoryRow[]>(),
-    getSeasonTiming(supabase, game.id),
   ]);
 
   const planningGameweek = seasonTiming.planningGameweek ?? 1;
+  const requestedGameweek = Number(gameweekParam);
+  const viewedGameweek = Number.isInteger(requestedGameweek)
+    ? Math.min(Math.max(requestedGameweek, gwRange.minGameweek), gwRange.maxGameweek)
+    : planningGameweek;
+  const isPlanningView = viewedGameweek === planningGameweek;
+  const isPastView = viewedGameweek < planningGameweek;
 
-  // Next fixture per team - earliest future gameweek's opponent, both
-  // home and away sides. fixturesRaw is already ordered by gameweek
-  // ascending, so the first hit per team_id is its soonest fixture.
+  // The fixture (if any) each team plays in the gameweek being viewed -
+  // not "soonest future fixture from today" (that only ever matched the
+  // planning gameweek), so this stays correct when browsing any week.
+  const { data: fixturesRaw } = await supabase
+    .from("game_fixture_gameweeks")
+    .select("gameweek, fixtures(home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))")
+    .eq("game_id", game.id)
+    .eq("gameweek", viewedGameweek)
+    .returns<FixtureRow[]>();
+
   const nextFixtureByTeamId = new Map<number, { opponent: string; isHome: boolean; gameweek: number }>();
   for (const row of fixturesRaw ?? []) {
     const f = row.fixtures;
@@ -164,102 +166,181 @@ export default async function EFLFantasyPage() {
   // Real 2025/26 season-average points per club (same historical
   // baseline compute_club_scores() fixture-adjusts from) - shown as-is
   // alongside the fixture, so "why was this club picked" has a real
-  // number behind it, not just this gameweek's projected score.
+  // number behind it, not just this gameweek's projected score. Season
+  // total, not gameweek-scoped, so unaffected by which week is viewed.
   const lastSeasonPointsByGamePlayerId = new Map<number, number>((clubHistoryRaw ?? []).map((r) => [r.game_player_id, Number(r.total_points ?? 0)]));
 
-  const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
-    game_player_id: sp.game_player_id,
-    full_name: sp.game_players.players.full_name,
-    position: sp.game_players.players.position,
-    team_id: sp.game_players.players.team_id,
-    team_name: sp.game_players.players.teams.name,
-  }));
-  const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
+  let boardSquad: BoardPlayer[];
+  let boardClubs: BoardClub[];
+  let boardPool: PoolPlayer[];
+  let boardClubPool: PoolClub[];
+  let pastViewState: "not_locked" | "no_results_yet" | null = null;
 
-  const boardSquad: BoardPlayer[] = squadPlayers
-    .filter((p) => p.position !== "CLUB")
-    .map((p) => ({
-      game_player_id: p.game_player_id,
-      full_name: p.full_name,
-      position: p.position as "GK" | "DEF" | "MID" | "FWD",
-      team_name: p.team_name,
-      score: poolRaw.find((r) => r.game_player_id === p.game_player_id)?.hail_mary_score ?? null,
-      nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+  if (isPastView) {
+    const lock = await getSquadGameweekLock(supabase, squadId, viewedGameweek);
+    if (!lock) {
+      boardSquad = [];
+      boardClubs = [];
+      boardPool = [];
+      boardClubPool = [];
+      pastViewState = "not_locked";
+    } else {
+      const [identities, actuals] = await Promise.all([
+        resolvePlayerIdentities(
+          supabase,
+          lock.snapshot.players.map((p) => p.game_player_id)
+        ),
+        getActualPoints(supabase, game.id, viewedGameweek),
+      ]);
+      const hasAnyResult = lock.snapshot.players.some((p) => actuals.get(p.game_player_id)?.points != null);
+      pastViewState = hasAnyResult ? null : "no_results_yet";
+
+      const lockedIdentities = lock.snapshot.players
+        .map((sp) => identities.get(sp.game_player_id))
+        .filter((id): id is NonNullable<typeof id> => id != null);
+
+      boardSquad = lockedIdentities
+        .filter((id) => id.position !== "CLUB")
+        .map((id) => ({
+          game_player_id: id.game_player_id,
+          full_name: id.full_name,
+          position: id.position as "GK" | "DEF" | "MID" | "FWD",
+          team_name: id.team_name,
+          score: actuals.get(id.game_player_id)?.points ?? null,
+          nextFixture: nextFixtureByTeamId.get(id.team_id) ?? null,
+        }));
+      boardClubs = lockedIdentities
+        .filter((id) => id.position === "CLUB")
+        .map((id) => ({
+          game_player_id: id.game_player_id,
+          club_name: id.team_name,
+          score: actuals.get(id.game_player_id)?.points ?? null,
+          nextFixture: nextFixtureByTeamId.get(id.team_id) ?? null,
+          lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(id.game_player_id) ?? null,
+        }));
+
+      const lockedIds = new Set(lock.snapshot.players.map((p) => p.game_player_id));
+      boardPool = poolRaw
+        .filter((p) => p.position !== "CLUB" && !lockedIds.has(p.game_player_id))
+        .map((p) => ({
+          game_player_id: p.game_player_id,
+          full_name: p.full_name,
+          position: p.position as "GK" | "DEF" | "MID" | "FWD",
+          team_name: p.team_name,
+          score: actuals.get(p.game_player_id)?.points ?? null,
+          competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
+          nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+        }))
+        .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+      boardClubPool = poolRaw
+        .filter((p) => p.position === "CLUB" && !lockedIds.has(p.game_player_id))
+        .map((p) => ({
+          game_player_id: p.game_player_id,
+          club_name: p.team_name,
+          score: actuals.get(p.game_player_id)?.points ?? null,
+          competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
+          nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+          lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
+        }))
+        .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+    }
+  } else {
+    const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
+      game_player_id: sp.game_player_id,
+      full_name: sp.game_players.players.full_name,
+      position: sp.game_players.players.position,
+      team_id: sp.game_players.players.team_id,
+      team_name: sp.game_players.players.teams.name,
     }));
-  const boardClubs: BoardClub[] = squadPlayers
-    .filter((p) => p.position === "CLUB")
-    .map((p) => ({
-      game_player_id: p.game_player_id,
-      // p.team_name (the real "Millwall") not p.full_name (the synthetic
-      // "Millwall Team" row name, see migration 0087's docstring) - the
-      // "Team" suffix exists only to disambiguate the DB row, never meant
-      // for display.
-      club_name: p.team_name,
-      score: poolRaw.find((r) => r.game_player_id === p.game_player_id)?.hail_mary_score ?? null,
-      nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
-      lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
-    }));
+    const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
 
-  // player scores already come straight off the score-computed
-  // game_player_pool view above - override each squad member's null
-  // fallback with its real score from that same view (squad_players
-  // itself doesn't carry a score column).
-  const scoreByGamePlayerId = new Map<number, number>(poolRaw.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
-  boardSquad.forEach((p) => {
-    p.score = scoreByGamePlayerId.get(p.game_player_id) ?? p.score;
-  });
-  boardClubs.forEach((c) => {
-    c.score = scoreByGamePlayerId.get(c.game_player_id) ?? c.score;
-  });
+    // Real per-gameweek scores for whichever week is being viewed - covers
+    // both players and clubs in one query (club picks go through the same
+    // projections table, see compute_club_scores()).
+    const scoreRows = await getProjectionsForGameweek(supabase, game.id, viewedGameweek);
+    const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
 
-  const boardPool: PoolPlayer[] = poolRaw
-    .filter((p) => p.position !== "CLUB" && !squadIds.has(p.game_player_id))
-    .map((p) => ({
-      game_player_id: p.game_player_id,
-      full_name: p.full_name,
-      position: p.position as "GK" | "DEF" | "MID" | "FWD",
-      team_name: p.team_name,
-      score: p.hail_mary_score,
-      competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
-      nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
-    }))
-    .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+    boardSquad = squadPlayers
+      .filter((p) => p.position !== "CLUB")
+      .map((p) => ({
+        game_player_id: p.game_player_id,
+        full_name: p.full_name,
+        position: p.position as "GK" | "DEF" | "MID" | "FWD",
+        team_name: p.team_name,
+        score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
+        nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+      }));
+    boardClubs = squadPlayers
+      .filter((p) => p.position === "CLUB")
+      .map((p) => ({
+        game_player_id: p.game_player_id,
+        // p.team_name (the real "Millwall") not p.full_name (the synthetic
+        // "Millwall Team" row name, see migration 0087's docstring) - the
+        // "Team" suffix exists only to disambiguate the DB row, never meant
+        // for display.
+        club_name: p.team_name,
+        score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
+        nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+        lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
+      }));
 
-  const boardClubPool: PoolClub[] = poolRaw
-    .filter((p) => p.position === "CLUB" && !squadIds.has(p.game_player_id))
-    .map((p) => ({
-      game_player_id: p.game_player_id,
-      club_name: p.team_name,
-      score: p.hail_mary_score,
-      competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
-      nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
-      lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
-    }))
-    .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+    boardPool = poolRaw
+      .filter((p) => p.position !== "CLUB" && !squadIds.has(p.game_player_id))
+      .map((p) => ({
+        game_player_id: p.game_player_id,
+        full_name: p.full_name,
+        position: p.position as "GK" | "DEF" | "MID" | "FWD",
+        team_name: p.team_name,
+        score: scoreByGamePlayerId.get(p.game_player_id) ?? p.hail_mary_score,
+        competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
+        nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+      }))
+      .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+
+    boardClubPool = poolRaw
+      .filter((p) => p.position === "CLUB" && !squadIds.has(p.game_player_id))
+      .map((p) => ({
+        game_player_id: p.game_player_id,
+        club_name: p.team_name,
+        score: scoreByGamePlayerId.get(p.game_player_id) ?? p.hail_mary_score,
+        competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
+        nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+        lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
+      }))
+      .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+  }
 
   const totalProjectedPoints =
     boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0) + boardClubs.reduce((sum, c) => sum + (c.score ?? 0), 0);
-  const squadSummary = buildSquadSummary({
-    players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: 0, score: p.score })),
-    totalProjectedPoints,
-    teamValue: 0,
-    budgetRemaining: 0,
-    hasBudget: false,
-    captain: null,
-    // Fixture/health-derived reasoning lives only in the full Ask Mary
-    // analysis - deliberately not run on every squad-board page load,
-    // same reasoning as dreamteam/page.tsx.
-    topStrength: null,
-    topWeakness: null,
-    nextStepTransferCount: null,
-    nextStepGameweek: null,
-  });
+  const squadSummary = isPlanningView
+    ? buildSquadSummary({
+        players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: 0, score: p.score })),
+        totalProjectedPoints,
+        teamValue: 0,
+        budgetRemaining: 0,
+        hasBudget: false,
+        captain: null,
+        // Fixture/health-derived reasoning lives only in the full Ask Mary
+        // analysis - deliberately not run on every squad-board page load,
+        // same reasoning as dreamteam/page.tsx.
+        topStrength: null,
+        topWeakness: null,
+        nextStepTransferCount: null,
+        nextStepGameweek: null,
+      })
+    : [];
 
   return (
     <EFLFantasyBoard
       squadId={squadId}
       squadName={squad.name}
       planningGameweek={planningGameweek}
+      viewedGameweek={viewedGameweek}
+      isPlanningView={isPlanningView}
+      isPastView={isPastView}
+      pastViewState={pastViewState}
+      minGameweek={gwRange.minGameweek}
+      maxGameweek={gwRange.maxGameweek}
       squad={boardSquad}
       pool={boardPool}
       clubs={boardClubs}

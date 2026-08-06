@@ -5,6 +5,7 @@ import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
+import GameweekSwitcher from "@/components/GameweekSwitcher";
 import { makeFanteamTransfer, reorderFanteamBench, setFanteamFormation, setFanteamCaptain, swapFanteamLineup } from "../actions";
 
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
@@ -179,6 +180,12 @@ export default function FanTeamBoard({
   bank,
   teamValue,
   planningGameweek,
+  viewedGameweek,
+  isPlanningView,
+  isPastView,
+  pastViewState,
+  minGameweek,
+  maxGameweek,
   wildcard1UsedGameweek,
   wildcard2UsedGameweek,
   maxPerClub,
@@ -198,6 +205,12 @@ export default function FanTeamBoard({
   bank: number;
   teamValue: number;
   planningGameweek: number;
+  viewedGameweek: number;
+  isPlanningView: boolean;
+  isPastView: boolean;
+  pastViewState: "not_locked" | "no_results_yet" | null;
+  minGameweek: number;
+  maxGameweek: number;
   wildcard1UsedGameweek: number | null;
   wildcard2UsedGameweek: number | null;
   maxPerClub: number;
@@ -434,18 +447,22 @@ export default function FanTeamBoard({
           {
             label: (menuPlayer as BoardPlayer).isCaptain ? "Captain ✓" : "Make Captain",
             onClick: () => handleMenuMakeCaptain(menuPlayer.game_player_id),
-            disabled: (menuPlayer as BoardPlayer).isCaptain || !(menuPlayer as BoardPlayer).isStarting,
+            disabled: !isPlanningView || (menuPlayer as BoardPlayer).isCaptain || !(menuPlayer as BoardPlayer).isStarting,
           },
           {
             label: (menuPlayer as BoardPlayer).isViceCaptain ? "Vice-Captain ✓" : "Make Vice-Captain",
             onClick: () => handleMenuMakeViceCaptain(menuPlayer.game_player_id),
-            disabled: (menuPlayer as BoardPlayer).isViceCaptain || !(menuPlayer as BoardPlayer).isStarting,
+            disabled: !isPlanningView || (menuPlayer as BoardPlayer).isViceCaptain || !(menuPlayer as BoardPlayer).isStarting,
           },
-          { label: (menuPlayer as BoardPlayer).isStarting ? "Swap / Bench" : "Swap In", onClick: () => setSelectedId(menuPlayer.game_player_id) },
+          {
+            label: (menuPlayer as BoardPlayer).isStarting ? "Swap / Bench" : "Swap In",
+            onClick: () => setSelectedId(menuPlayer.game_player_id),
+            disabled: !isPlanningView,
+          },
           {
             label: "Transfer Out",
             onClick: () => setPendingOutIds((prev) => new Set(prev).add(menuPlayer.game_player_id)),
-            disabled: pendingOutIds.has(menuPlayer.game_player_id),
+            disabled: !isPlanningView || pendingOutIds.has(menuPlayer.game_player_id),
           },
           { label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) },
         ]
@@ -589,9 +606,30 @@ export default function FanTeamBoard({
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
       <div className="mx-auto max-w-7xl">
-        <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
-          ← Back to main menu
-        </Link>
+        <div className="flex items-center justify-between gap-2">
+          <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
+            ← Back to main menu
+          </Link>
+          <GameweekSwitcher
+            basePath={`/fanteam/${squadId}`}
+            currentGameweek={viewedGameweek}
+            minGameweek={minGameweek}
+            maxGameweek={maxGameweek}
+            planningGameweek={planningGameweek}
+          />
+        </div>
+
+        {!isPlanningView && (
+          <p className="mt-3 rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+            {isPastView
+              ? pastViewState === "not_locked"
+                ? `GW${viewedGameweek} was never locked in - no squad to show. Switch back to GW${planningGameweek} to keep planning.`
+                : pastViewState === "no_results_yet"
+                  ? `Showing your GW${viewedGameweek} locked squad - results haven't been captured yet.`
+                  : `Showing your GW${viewedGameweek} locked squad and actual points.`
+              : `Previewing GW${viewedGameweek} projections - read-only. Switch back to GW${planningGameweek} to make changes.`}
+          </p>
+        )}
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
           <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
@@ -617,7 +655,7 @@ export default function FanTeamBoard({
             <span className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Captain</span>
             <select
               value={pendingCaptainId ?? ""}
-              disabled={isCaptainPending}
+              disabled={isCaptainPending || !isPlanningView}
               onChange={(e) => handleCaptainDropdownChange(Number(e.target.value))}
               className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
             >
@@ -633,7 +671,7 @@ export default function FanTeamBoard({
             <span className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Vice-Captain</span>
             <select
               value={pendingViceCaptainId ?? ""}
-              disabled={isCaptainPending}
+              disabled={isCaptainPending || !isPlanningView}
               onChange={(e) => handleViceCaptainDropdownChange(Number(e.target.value))}
               className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
             >
@@ -713,7 +751,7 @@ export default function FanTeamBoard({
                 </Link>
                 <select
                   value={currentFormationCode ?? ""}
-                  disabled={isFormationPending}
+                  disabled={isFormationPending || !isPlanningView}
                   onChange={(e) => handleFormationChange(e.target.value)}
                   aria-label="Formation - picking a new one auto-fills the best 11 for it from your squad"
                   className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
@@ -741,7 +779,7 @@ export default function FanTeamBoard({
                         ["next2", "Next 2 GW Fix"],
                         ["next3", "Next 3 GW Fix"],
                         ["pts", "Pts"],
-                        ["pred", `Pred +/- GW${planningGameweek}`],
+                        ["pred", `Pred +/- GW${viewedGameweek}`],
                       ] as [DisplayMode, string][]
                     ).map(([mode, label]) => (
                       <button
@@ -792,7 +830,7 @@ export default function FanTeamBoard({
                 setMenuPlayerId(p.game_player_id);
                 setMenuIsSquadMember(true);
               }}
-              onReorderBench={isBenchPending ? undefined : handleReorderBench}
+              onReorderBench={isBenchPending || !isPlanningView ? undefined : handleReorderBench}
             />
             {squadSummary.length > 0 && (
               <div className="mt-4 rounded-xl border border-navy-700 bg-navy-900 p-4">
@@ -872,7 +910,7 @@ export default function FanTeamBoard({
                     <th className="pb-2 pr-2 font-medium">{sortColumnLabel}</th>
                     {Array.from({ length: 6 }, (_, i) => (
                       <th key={i} className="px-1 pb-2 text-center font-medium">
-                        GW{planningGameweek + i}
+                        GW{viewedGameweek + i}
                       </th>
                     ))}
                   </tr>

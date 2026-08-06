@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming } from "@/lib/gameweek";
+import { getSeasonTiming, getGameweekRange, getProjectionsForGameweek } from "@/lib/gameweek";
+import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import CloudFFBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile } from "./CloudFFBoard";
 
@@ -36,7 +37,8 @@ type ProjectionInputs = {
   reconciliation?: { bonus?: number };
 };
 
-export default async function CloudFFPage() {
+export default async function CloudFFPage({ searchParams }: { searchParams: Promise<{ gameweek?: string }> }) {
+  const { gameweek: gameweekParam } = await searchParams;
   const supabase = await createAuthServerClient();
   const {
     data: { user },
@@ -73,7 +75,7 @@ export default async function CloudFFPage() {
 
   const squadId = squad.id;
 
-  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, { data: formationsRaw }] = await Promise.all([
+  const [{ data: rulesRow }, { data: squadPlayersRaw }, { data: poolRaw }, seasonTiming, gwRange, { data: formationsRaw }] = await Promise.all([
     supabase.from("game_squad_rules").select("budget").eq("game_id", game.id).single(),
     supabase
       .from("squad_players")
@@ -82,6 +84,7 @@ export default async function CloudFFPage() {
       .returns<SquadPlayerRow[]>(),
     supabase.from("game_player_pool").select("*").eq("game_slug", "cloudff").returns<PoolRow[]>(),
     getSeasonTiming(supabase, game.id),
+    getGameweekRange(supabase, game.id),
     // Cloud FF uses named formations despite having no bench (every squad
     // player counts as "starting") - formation is derived from the squad's
     // live position counts below, never user-picked.
@@ -90,61 +93,24 @@ export default async function CloudFFPage() {
 
   const rules = rulesRow ?? { budget: 100 };
   const planningGameweek = seasonTiming.planningGameweek ?? 1;
+  const formations = formationsRaw ?? [];
+  const requestedGameweek = Number(gameweekParam);
+  const viewedGameweek = Number.isInteger(requestedGameweek)
+    ? Math.min(Math.max(requestedGameweek, gwRange.minGameweek), gwRange.maxGameweek)
+    : planningGameweek;
+  const isPlanningView = viewedGameweek === planningGameweek;
+  const isPastView = viewedGameweek < planningGameweek;
 
-  const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
-    game_player_id: sp.game_player_id,
-    price: sp.game_players.price,
-    full_name: sp.game_players.players.full_name,
-    position: sp.game_players.players.position,
-    team_id: sp.game_players.players.team_id,
-    team_name: sp.game_players.players.teams.name,
-  }));
-  const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
-  const teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
-  const bank = Number(rules.budget) - teamValue;
-
-  const formationCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 } as Record<string, number>;
-  for (const p of squadPlayers) formationCounts[p.position] = (formationCounts[p.position] ?? 0) + 1;
-  const formationCode =
-    (formationsRaw ?? []).find(
-      (f) => f.gk_count === formationCounts.GK && f.def_count === formationCounts.DEF && f.mid_count === formationCounts.MID && f.fwd_count === formationCounts.FWD
-    )?.code ?? null;
-
-  // Same perf-fix pattern already used on /dreamteam: these three reads
-  // are independent of each other's results - only combined afterward in
-  // JS - so they run as one Promise.all instead of three back-to-back
-  // network round trips.
-  const [{ data: scoreRows }, { data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
-    supabase
-      .from("player_projection_summary")
-      .select("game_player_id, hail_mary_score, inputs")
-      .eq("game_slug", "cloudff")
-      .returns<{ game_player_id: number; hail_mary_score: number | null; inputs: ProjectionInputs | null }[]>(),
+  const [{ data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
     supabase
       .from("game_fixture_gameweeks")
       .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
       .eq("game_id", game.id)
-      .gte("gameweek", planningGameweek)
-      .lte("gameweek", planningGameweek + 5),
+      .gte("gameweek", viewedGameweek)
+      .lte("gameweek", viewedGameweek + 5),
     supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id),
   ]);
-  const scoreByGamePlayerId = new Map<number, number>((scoreRows ?? []).map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
-  const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
-    (scoreRows ?? []).map((r) => {
-      const primaryStats = r.inputs?.fixtures?.[0]?.stats;
-      return [
-        r.game_player_id,
-        {
-          goalProjected: Number(primaryStats?.goal?.projected ?? 0),
-          assistProjected: Number(primaryStats?.assist?.projected ?? 0),
-          bonusProjected: Number(r.inputs?.reconciliation?.bonus ?? 0),
-        },
-      ];
-    })
-  );
-
   const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
-
   type GwFixtureRow = {
     gameweek: number;
     fixtures: { id: number; home_team_id: number; away_team_id: number; teams_home: { name: string }; teams_away: { name: string } };
@@ -161,53 +127,155 @@ export default async function CloudFFPage() {
       tilesByTeamGw.set(key, { opponentAbbr: abbreviate(oppName), isHome, difficulty });
     }
   }
-
   const emptyStats = { goalProjected: 0, assistProjected: 0, bonusProjected: 0 };
 
-  const boardSquad: BoardPlayer[] = squadPlayers.map((p) => ({
-    game_player_id: p.game_player_id,
-    full_name: p.full_name,
-    position: p.position,
-    team_name: p.team_name,
-    price: Number(p.price),
-    score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
-    fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${planningGameweek + i}`) ?? null),
-    ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
-  }));
+  let boardSquad: BoardPlayer[];
+  let teamValue: number;
+  let bank: number;
+  let boardPool: PoolPlayer[];
+  let pastViewState: "not_locked" | "no_results_yet" | null = null;
+  let formationCode: string | null;
 
-  const boardPool: PoolPlayer[] = (poolRaw ?? [])
-    .filter((p) => !squadIds.has(p.game_player_id))
-    .map((p) => ({
+  if (isPastView) {
+    const lock = await getSquadGameweekLock(supabase, squadId, viewedGameweek);
+    if (!lock) {
+      boardSquad = [];
+      teamValue = 0;
+      bank = 0;
+      boardPool = [];
+      pastViewState = "not_locked";
+      formationCode = null;
+    } else {
+      const [identities, actuals] = await Promise.all([
+        resolvePlayerIdentities(
+          supabase,
+          lock.snapshot.players.map((p) => p.game_player_id)
+        ),
+        getActualPoints(supabase, game.id, viewedGameweek),
+      ]);
+      const hasAnyResult = lock.snapshot.players.some((p) => actuals.get(p.game_player_id)?.points != null);
+      pastViewState = hasAnyResult ? null : "no_results_yet";
+
+      boardSquad = lock.snapshot.players
+        .map((sp) => identities.get(sp.game_player_id))
+        .filter((id): id is NonNullable<typeof id> => id != null)
+        .map((id) => ({
+          game_player_id: id.game_player_id,
+          full_name: id.full_name,
+          position: id.position as BoardPlayer["position"],
+          team_name: id.team_name,
+          price: id.price,
+          score: actuals.get(id.game_player_id)?.points ?? null,
+          fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${id.team_id}:${viewedGameweek + i}`) ?? null),
+          ...emptyStats,
+        }));
+      teamValue = boardSquad.reduce((sum, p) => sum + p.price, 0);
+      bank = Number(rules.budget) - teamValue;
+      const lockedIds = new Set(lock.snapshot.players.map((p) => p.game_player_id));
+      boardPool = (poolRaw ?? [])
+        .filter((p) => !lockedIds.has(p.game_player_id))
+        .map((p) => ({
+          game_player_id: p.game_player_id,
+          full_name: p.full_name,
+          position: p.position,
+          team_name: p.team_name,
+          price: Number(p.price),
+          score: actuals.get(p.game_player_id)?.points ?? null,
+          fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
+          ...emptyStats,
+        }))
+        .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
+
+      const startingCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 } as Record<string, number>;
+      for (const p of boardSquad) startingCounts[p.position] = (startingCounts[p.position] ?? 0) + 1;
+      formationCode =
+        formations.find(
+          (f) => f.gk_count === startingCounts.GK && f.def_count === startingCounts.DEF && f.mid_count === startingCounts.MID && f.fwd_count === startingCounts.FWD
+        )?.code ?? null;
+    }
+  } else {
+    const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
+      game_player_id: sp.game_player_id,
+      price: sp.game_players.price,
+      full_name: sp.game_players.players.full_name,
+      position: sp.game_players.players.position,
+      team_id: sp.game_players.players.team_id,
+      team_name: sp.game_players.players.teams.name,
+    }));
+    const squadIds = new Set(squadPlayers.map((p) => p.game_player_id));
+    teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
+    bank = Number(rules.budget) - teamValue;
+
+    const formationCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 } as Record<string, number>;
+    for (const p of squadPlayers) formationCounts[p.position] = (formationCounts[p.position] ?? 0) + 1;
+    formationCode =
+      formations.find(
+        (f) => f.gk_count === formationCounts.GK && f.def_count === formationCounts.DEF && f.mid_count === formationCounts.MID && f.fwd_count === formationCounts.FWD
+      )?.code ?? null;
+
+    const scoreRows = await getProjectionsForGameweek<ProjectionInputs>(supabase, game.id, viewedGameweek);
+    const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+    const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
+      scoreRows.map((r) => {
+        const primaryStats = r.inputs?.fixtures?.[0]?.stats;
+        return [
+          r.game_player_id,
+          {
+            goalProjected: Number(primaryStats?.goal?.projected ?? 0),
+            assistProjected: Number(primaryStats?.assist?.projected ?? 0),
+            bonusProjected: Number(r.inputs?.reconciliation?.bonus ?? 0),
+          },
+        ];
+      })
+    );
+
+    boardSquad = squadPlayers.map((p) => ({
       game_player_id: p.game_player_id,
       full_name: p.full_name,
       position: p.position,
       team_name: p.team_name,
       price: Number(p.price),
-      score: scoreByGamePlayerId.get(p.game_player_id) ?? Number(p.hail_mary_score ?? 0),
-      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${planningGameweek + i}`) ?? null),
+      score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
+      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
-    }))
-    .sort((a, b) => b.score - a.score);
+    }));
+
+    boardPool = (poolRaw ?? [])
+      .filter((p) => !squadIds.has(p.game_player_id))
+      .map((p) => ({
+        game_player_id: p.game_player_id,
+        full_name: p.full_name,
+        position: p.position,
+        team_name: p.team_name,
+        price: Number(p.price),
+        score: scoreByGamePlayerId.get(p.game_player_id) ?? Number(p.hail_mary_score ?? 0),
+        fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
+        ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
+      }))
+      .sort((a, b) => b.score - a.score);
+  }
 
   // No bench and no squad-level captain (Cloud FF's captain is picked per
   // real match-day, not once for the whole squad - see matchDayCaptains.ts)
   // - flat sum, no captain sentence.
   const totalProjectedPoints = boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
-  const squadSummary = buildSquadSummary({
-    players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score })),
-    totalProjectedPoints,
-    teamValue,
-    budgetRemaining: bank,
-    captain: null,
-    // Fixture/health-derived reasoning and the forward-looking transfer
-    // plan live only in the full Ask Mary analysis (runAskMaryAnalysis) -
-    // deliberately not run on every squad-board page load, same reasoning
-    // as dreamteam/page.tsx.
-    topStrength: null,
-    topWeakness: null,
-    nextStepTransferCount: null,
-    nextStepGameweek: null,
-  });
+  const squadSummary = isPlanningView
+    ? buildSquadSummary({
+        players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score })),
+        totalProjectedPoints,
+        teamValue,
+        budgetRemaining: bank,
+        captain: null,
+        // Fixture/health-derived reasoning and the forward-looking transfer
+        // plan live only in the full Ask Mary analysis (runAskMaryAnalysis) -
+        // deliberately not run on every squad-board page load, same reasoning
+        // as dreamteam/page.tsx.
+        topStrength: null,
+        topWeakness: null,
+        nextStepTransferCount: null,
+        nextStepGameweek: null,
+      })
+    : [];
 
   return (
     <CloudFFBoard
@@ -216,6 +284,12 @@ export default async function CloudFFPage() {
       bank={bank}
       teamValue={teamValue}
       planningGameweek={planningGameweek}
+      viewedGameweek={viewedGameweek}
+      isPlanningView={isPlanningView}
+      isPastView={isPastView}
+      pastViewState={pastViewState}
+      minGameweek={gwRange.minGameweek}
+      maxGameweek={gwRange.maxGameweek}
       formationCode={formationCode}
       squad={boardSquad}
       pool={boardPool}
