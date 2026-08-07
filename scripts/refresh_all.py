@@ -209,19 +209,35 @@ def main():
                 run_step(f"Recompute EFL Fantasy GW{gw}", ["scripts/compute_projections.py", "eflfantasy", "--gameweek", str(gw)])
             )
 
-    # Dream Team - players/prices only, deliberately no recompute step
-    # yet: unlike FanTeam/Cloud FF, Dream Team has zero
-    # game_fixture_gameweeks rows (confirmed live, 2026-08-03) - no
-    # fixture/gameweek calendar has ever been built for it, so
-    # compute_projections.py has nothing to run against. That's a
-    # separate, larger piece of work (matching fixtures to gameweeks,
-    # same reused-fixture-row technique as the other games) - out of
-    # scope for just keeping player/price data fresh. See
-    # import_dreamteam.py's own docstring for the real live source
-    # (engagecraft-fantasy-backend-prod.azurewebsites.net) and matching
-    # logic.
+    # Dream Team - players/prices + its own gameweek calendar
+    # (import_dreamteam.py's sync_gameweek_calendar copies FanTeam's real
+    # soccer_epl (fixture_id, gameweek) pairs onto dreamteam's game_id -
+    # see that script's docstring). That calendar only ever covers league
+    # fixtures though, so assign_dreamteam_cup_gameweeks.py runs right
+    # after it to bucket any Carabao Cup/FA Cup/European fixture that's
+    # landed in `fixtures` (via the Odds import above) into whichever
+    # Dream Team gameweek window its kickoff falls in - a fixture that
+    # doesn't exist yet (e.g. a cup round not drawn) simply finds nothing
+    # to assign, not an error, and picks itself up automatically the
+    # first refresh after it appears.
     results.append(run_step("Dream Team players (no login needed)", ["scraper_dreamteam.py"]))
     results.append(run_step("Import Dream Team players", ["import_dreamteam.py"]))
+    results.append(run_step("Dream Team: assign cup/Europe fixtures to gameweeks", ["scripts/assign_dreamteam_cup_gameweeks.py"]))
+
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    try:
+        dreamteam_gameweeks = upcoming_gameweeks(conn, "dreamteam")
+    finally:
+        conn.close()
+
+    if not dreamteam_gameweeks:
+        print("\nNo upcoming Dream Team gameweeks found in game_fixture_gameweeks - skipping score recompute.")
+    else:
+        print(f"\nRecomputing Hail Mary Score for Dream Team gameweeks: {dreamteam_gameweeks}")
+        for gw in dreamteam_gameweeks:
+            results.append(
+                run_step(f"Recompute Dream Team GW{gw}", ["scripts/compute_projections.py", "dreamteam", "--gameweek", str(gw)])
+            )
 
     results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
     results.append(run_step("Capture squad state at deadline (Mary Performance Lab)", ["scripts/capture_squad_gameweek_state.py"]))
