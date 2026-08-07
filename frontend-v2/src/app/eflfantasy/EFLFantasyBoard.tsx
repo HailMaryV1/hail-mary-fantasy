@@ -43,6 +43,13 @@ export type PoolClub = BoardClub;
 
 type DisplayMode = "next1" | "next2" | "next3" | "pts";
 const FIXTURE_MODE_COUNT: Record<string, number> = { next1: 1, next2: 2, next3: 3 };
+// Off for now (2026-08-07, user request) - the pitch card always shows
+// pts + next fixture together instead, since unlimited weekly transfers
+// make planning several gameweeks ahead less useful here than on the
+// other games. The toggle machinery stays intact (displayMode state,
+// FIXTURE_MODE_COUNT, the dropdown JSX below) so it's a one-line flip
+// to bring back, not a rebuild.
+const FIXTURE_TOGGLE_ENABLED = false;
 
 // attack_score is 0-1, higher = a better attacking fixture (easier) for
 // that team - same tiering used on the other games' boards. Now backed
@@ -65,6 +72,16 @@ function fixtureTilesFor(tiles: (FixtureTile | null)[], count: number): { label:
       label: t.isHome ? t.opponentAbbr : t.opponentAbbr.toLowerCase(),
       colorClass: difficultyColor(t.difficulty),
     }));
+}
+
+// Pitch/Player-Info specific: unlike the pool table's compact upper/
+// lowercase convention (fixtureTilesFor above), the pitch card has room
+// to spell out home/away explicitly rather than relying on letter case,
+// which the user found unclear - "vs"/"@" makes it unambiguous at a
+// glance.
+function pitchFixtureTile(tile: FixtureTile | null | undefined): { label: string; colorClass: string }[] {
+  if (!tile) return [];
+  return [{ label: `${tile.isHome ? "vs" : "@"} ${tile.opponentAbbr}`, colorClass: difficultyColor(tile.difficulty) }];
 }
 
 function optimisticSwap<T extends { game_player_id: number }>(current: T[], outId: number, incoming: T): T[] {
@@ -248,6 +265,11 @@ export default function EFLFantasyBoard({
   const pendingOutPlayers = optimisticSquad.filter((p) => pendingOutIds.has(p.game_player_id));
   const pendingOutClubs = optimisticClubs.filter((c) => pendingOutClubIds.has(c.game_player_id));
 
+  // Pitch chips always show both points and next fixture together now -
+  // unlimited free transfers every gameweek (see gameConfig.ts's
+  // hasBudget/transfer rules) means looking more than one week ahead
+  // rarely changes a decision, so the old Next1/2/3-vs-Pts toggle (still
+  // available - see FIXTURE_TOGGLE_ENABLED below) isn't the default view.
   const pitchPlayers: PitchPlayer[] = optimisticSquad.map((p) => ({
     game_player_id: p.game_player_id,
     full_name: p.full_name,
@@ -256,7 +278,11 @@ export default function EFLFantasyBoard({
     is_starting: true,
     price: null,
     score: p.score,
-    statTiles: displayMode in FIXTURE_MODE_COUNT ? fixtureTilesFor(p.fixtures, FIXTURE_MODE_COUNT[displayMode]) : undefined,
+    statText: FIXTURE_TOGGLE_ENABLED && displayMode in FIXTURE_MODE_COUNT ? undefined : `${p.score != null ? p.score.toFixed(1) : "-"} pts`,
+    statTiles:
+      FIXTURE_TOGGLE_ENABLED && displayMode in FIXTURE_MODE_COUNT
+        ? fixtureTilesFor(p.fixtures, FIXTURE_MODE_COUNT[displayMode])
+        : pitchFixtureTile(p.fixtures[0]),
     isEmpty: pendingOutIds.has(p.game_player_id),
     emptyLabel: `Sold ${p.full_name}`,
   }));
@@ -267,7 +293,11 @@ export default function EFLFantasyBoard({
     team_name: c.club_name,
     is_starting: true,
     price: null,
-    statTiles: displayMode in FIXTURE_MODE_COUNT ? fixtureTilesFor(c.fixtures, FIXTURE_MODE_COUNT[displayMode]) : undefined,
+    statText: FIXTURE_TOGGLE_ENABLED && displayMode in FIXTURE_MODE_COUNT ? undefined : `${c.score != null ? c.score.toFixed(1) : "-"} pts`,
+    statTiles:
+      FIXTURE_TOGGLE_ENABLED && displayMode in FIXTURE_MODE_COUNT
+        ? fixtureTilesFor(c.fixtures, FIXTURE_MODE_COUNT[displayMode])
+        : pitchFixtureTile(c.fixtures[0]),
     score: c.score,
     isEmpty: pendingOutClubIds.has(c.game_player_id),
     emptyLabel: `Sold ${c.club_name}`,
@@ -464,48 +494,48 @@ export default function EFLFantasyBoard({
                 >
                   Ask Mary
                 </Link>
-                <div className="relative">
-                  <button
-                    onClick={() => setOptionsOpen((o) => !o)}
-                    className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
-                  >
-                    ☰ Options
-                  </button>
-                  {optionsOpen && (
-                    <div className="absolute right-0 top-full z-10 mt-1 w-56 rounded-xl border border-navy-700 bg-navy-900 p-2 shadow-xl">
-                      <p className="px-2 py-1 text-[10px] font-semibold uppercase text-navy-500">Show on players</p>
-                      {(
-                        [
-                          ["next1", "Next GW Fix"],
-                          ["next2", "Next 2 GW Fix"],
-                          ["next3", "Next 3 GW Fix"],
-                          ["pts", "Pts"],
-                        ] as [DisplayMode, string][]
-                      ).map(([mode, label]) => (
-                        <button
-                          key={mode}
-                          onClick={() => {
-                            setDisplayMode(mode);
-                            setOptionsOpen(false);
-                          }}
-                          className={`block w-full rounded-lg px-2 py-1.5 text-left text-xs ${
-                            displayMode === mode ? "bg-sky-500 font-medium text-navy-950" : "text-navy-200 hover:bg-navy-800"
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                      <div className="my-1 border-t border-navy-800" />
-                      <Link
-                        href="/eflfantasy/performance-lab"
-                        className="block rounded-lg px-2 py-1.5 text-left text-xs text-navy-200 hover:bg-navy-800"
-                        onClick={() => setOptionsOpen(false)}
-                      >
-                        Performance Lab
-                      </Link>
-                    </div>
-                  )}
-                </div>
+                <Link
+                  href="/eflfantasy/performance-lab"
+                  className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
+                >
+                  Performance Lab
+                </Link>
+                {FIXTURE_TOGGLE_ENABLED && (
+                  <div className="relative">
+                    <button
+                      onClick={() => setOptionsOpen((o) => !o)}
+                      className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
+                    >
+                      ☰ Options
+                    </button>
+                    {optionsOpen && (
+                      <div className="absolute right-0 top-full z-10 mt-1 w-56 rounded-xl border border-navy-700 bg-navy-900 p-2 shadow-xl">
+                        <p className="px-2 py-1 text-[10px] font-semibold uppercase text-navy-500">Show on players</p>
+                        {(
+                          [
+                            ["next1", "Next GW Fix"],
+                            ["next2", "Next 2 GW Fix"],
+                            ["next3", "Next 3 GW Fix"],
+                            ["pts", "Pts"],
+                          ] as [DisplayMode, string][]
+                        ).map(([mode, label]) => (
+                          <button
+                            key={mode}
+                            onClick={() => {
+                              setDisplayMode(mode);
+                              setOptionsOpen(false);
+                            }}
+                            className={`block w-full rounded-lg px-2 py-1.5 text-left text-xs ${
+                              displayMode === mode ? "bg-sky-500 font-medium text-navy-950" : "text-navy-200 hover:bg-navy-800"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
             <PitchView

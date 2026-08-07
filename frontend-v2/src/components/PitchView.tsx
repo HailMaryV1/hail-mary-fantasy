@@ -121,7 +121,7 @@ export default function PitchView({
             isSelected
               ? "bg-navy-900 ring-2 ring-sky-400"
               : isClickable
-                ? "bg-navy-900/90 ring-1 ring-navy-700 hover:ring-sky-500"
+                ? "bg-navy-800 ring-1 ring-navy-600 hover:ring-sky-500"
                 : "cursor-not-allowed bg-navy-900/40 opacity-40"
           }`}
         >
@@ -136,7 +136,7 @@ export default function PitchView({
             </span>
           )}
           <Kit teamName={player.team_name} size="lg" />
-          <span className="w-full min-w-0 truncate text-[10px] font-medium text-white sm:text-xs" title={player.full_name}>
+          <span className="w-full min-w-0 truncate text-[11px] font-bold text-white sm:text-xs" title={player.full_name}>
             {player.position === "CLUB" ? player.full_name : shortenPlayerName(player.full_name)}
           </span>
           <span className="flex items-center justify-center gap-0.5">
@@ -144,7 +144,19 @@ export default function PitchView({
             <FormPill status={player.formStatus} />
           </span>
           {player.price != null && <span className="text-[10px] text-navy-300">£{Number(player.price).toFixed(1)}m</span>}
-          {player.statTiles !== undefined ? (
+          {/* statText (or the default score) is the primary line; statTiles
+              renders as an additional line underneath rather than replacing
+              it whenever a caller supplies both (EFL Fantasy's pitch card -
+              see EFLFantasyBoard.tsx - shows pts + fixture together). Every
+              other caller still only ever sets one of the two, so this stays
+              behaviorally identical for them. */}
+          {(player.statText !== undefined || player.statTiles === undefined) &&
+            (player.statText !== undefined ? (
+              <span className="text-xs font-bold text-sky-300">{player.statText}</span>
+            ) : (
+              player.score != null && <span className="text-xs font-bold text-sky-300">{player.score.toFixed(1)} pts</span>
+            ))}
+          {player.statTiles !== undefined && (
             <span className="mt-0.5 flex flex-wrap items-center justify-center gap-0.5">
               {player.statTiles.length === 0 ? (
                 <span className="text-[10px] text-navy-600">-</span>
@@ -156,10 +168,6 @@ export default function PitchView({
                 ))
               )}
             </span>
-          ) : player.statText !== undefined ? (
-            <span className="text-[10px] text-sky-400">{player.statText}</span>
-          ) : (
-            player.score != null && <span className="text-[10px] text-sky-400">{player.score.toFixed(1)} pts</span>
           )}
         </button>
         {zone === "bench" && player.position === "GK" && <span className="mt-0.5 text-[9px] text-white/40">Reserve GK</span>}
