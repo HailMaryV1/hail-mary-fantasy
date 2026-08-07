@@ -1,4 +1,5 @@
 import { getTeamColors } from "@/lib/teamColors";
+import { getKitImage } from "@/lib/kitImages";
 
 // One reusable jersey silhouette (collar notch, short sleeves, body) -
 // hand-drawn, not copied from anywhere, so filling it with a club's real
@@ -12,6 +13,18 @@ const SIZE_CLASSES = {
 } as const;
 
 export default function Kit({ teamName, size = "lg" }: { teamName: string; size?: "sm" | "lg" }) {
+  const realKit = getKitImage(teamName);
+  if (realKit) {
+    return (
+      <img
+        src={realKit}
+        alt=""
+        aria-hidden="true"
+        className={`shrink-0 object-contain ${SIZE_CLASSES[size]}`}
+      />
+    );
+  }
+
   const { primary, secondary, striped } = getTeamColors(teamName);
   const clipId = `kit-clip-${teamName.replace(/[^a-zA-Z0-9]/g, "")}-${size}`;
 
