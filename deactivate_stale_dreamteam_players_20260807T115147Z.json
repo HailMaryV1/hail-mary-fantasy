@@ -1,0 +1,18 @@
+[
+  {
+    "game_player_id": 3493,
+    "player_id": 1893,
+    "full_name": "Paddy McNair",
+    "team_id": 22,
+    "team_name": "Rochdale",
+    "is_active_before": true
+  },
+  {
+    "game_player_id": 1001,
+    "player_id": 4095,
+    "full_name": "Gustavo Nunes",
+    "team_id": 40,
+    "team_name": "Swansea City",
+    "is_active_before": true
+  }
+]

@@ -15,17 +15,25 @@ const SIZE_CLASSES = {
 export default function Kit({ teamName, size = "lg" }: { teamName: string; size?: "sm" | "lg" }) {
   const realKit = getKitImage(teamName);
   if (realKit) {
+    // A real kit render can be almost entirely white (Tottenham, Leeds,
+    // Fulham, several EFL clubs' home shirts) - legible on the product
+    // photo's white background it was generated against, but nearly
+    // invisible on this app's dark navy chip. A light, slightly rounded
+    // backdrop gives every kit consistent contrast regardless of how
+    // pale it is, rather than special-casing individual clubs.
     return (
-      <img
-        src={realKit}
-        alt=""
-        aria-hidden="true"
-        width={40}
-        height={40}
-        loading="lazy"
-        decoding="async"
-        className={`shrink-0 object-contain ${SIZE_CLASSES[size]}`}
-      />
+      <span className={`inline-flex shrink-0 items-center justify-center rounded-md bg-slate-100 p-0.5 ${SIZE_CLASSES[size]}`}>
+        <img
+          src={realKit}
+          alt=""
+          aria-hidden="true"
+          width={40}
+          height={40}
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-contain"
+        />
+      </span>
     );
   }
 
