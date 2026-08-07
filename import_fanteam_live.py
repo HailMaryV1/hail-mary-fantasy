@@ -216,13 +216,30 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
         # only catches a surname getting LONGER on the live side (initials
         # expanding to full names); this catches it getting SHORTER too.
         live_surname_key = surname_key(live_full_name)
-        candidates = [
-            (pid, name, team_id)
-            for pid, name, team_id in by_position.get(live_position, [])
-            if live_compact.endswith(surname_key(name))
-            or (live_surname_key and compact(name).endswith(live_surname_key))
-            or (is_mononym and compact(name).startswith(live_compact))
-        ]
+        # surname_key() can legitimately collapse to "" or a single letter
+        # for a placeholder name like "Trialist 111" or "Trialist A" (real
+        # rows - lower-league clubs list genuine unnamed trialists on
+        # their provisional squads, see EFL Fantasy's own import). "" or
+        # "a" is not a real surname, but str.endswith("") is
+        # unconditionally True and str.endswith("a") matches a huge
+        # fraction of real names, so an unguarded endswith check here
+        # would treat EVERY same-position player as an "ambiguous" match
+        # against these rows - confirmed live 2026-08-07 for Dream Team's
+        # own copy of this exact pattern (see import_dreamteam.py). A
+        # candidate surname_key shorter than this can never participate.
+        MIN_SURNAME_KEY_LEN = 2
+
+        def _surname_matches(candidate_name: str) -> bool:
+            candidate_key = surname_key(candidate_name)
+            if len(candidate_key) >= MIN_SURNAME_KEY_LEN and live_compact.endswith(candidate_key):
+                return True
+            if len(live_surname_key) >= MIN_SURNAME_KEY_LEN and compact(candidate_name).endswith(live_surname_key):
+                return True
+            if is_mononym and compact(candidate_name).startswith(live_compact):
+                return True
+            return False
+
+        candidates = [(pid, name, team_id) for pid, name, team_id in by_position.get(live_position, []) if _surname_matches(name)]
 
         # Position-bucketing above is an optimisation, not an identity
         # rule - FanTeam does reclassify a player's listed position (real
@@ -237,13 +254,7 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
         # position bucket found nothing, so the common case (position
         # unchanged) is untouched.
         if not candidates:
-            candidates = [
-                (pid, name, team_id)
-                for pid, name, team_id in all_players
-                if live_compact.endswith(surname_key(name))
-                or (live_surname_key and compact(name).endswith(live_surname_key))
-                or (is_mononym and compact(name).startswith(live_compact))
-            ]
+            candidates = [(pid, name, team_id) for pid, name, team_id in all_players if _surname_matches(name)]
 
         # An exact compact-name match beats any looser prefix/suffix
         # candidate outright (resolves e.g. "Rodri" matching both itself
