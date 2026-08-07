@@ -78,9 +78,6 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
     return (
       <div className="min-h-screen bg-navy-950 px-6 py-10">
         <main className="mx-auto max-w-lg">
-          <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
-            ← Back to main menu
-          </Link>
           <h1 className="mt-6 text-xl font-semibold text-white">Dream Team</h1>
           <p className="mt-2 text-sm text-navy-300">No squad yet.</p>
         </main>

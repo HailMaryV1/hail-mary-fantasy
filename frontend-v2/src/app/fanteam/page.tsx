@@ -31,10 +31,6 @@ export default async function FanTeamHubPage() {
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
       <div className="mx-auto max-w-2xl">
-        <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
-          ← Back to main menu
-        </Link>
-
         <h1 className="mt-4 text-2xl font-semibold text-white">{game?.display_name ?? "FanTeam"}</h1>
         <p className="mt-1 text-sm text-navy-300">Pick a squad, or start a new one - FanTeam lets you hold several entries at once.</p>
 

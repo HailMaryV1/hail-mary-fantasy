@@ -692,10 +692,6 @@ export default function FanTeamBoard({
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
       <div className="mx-auto max-w-7xl">
-        <Link href="/" className="text-sm font-medium text-navy-400 hover:text-sky-400">
-          ← Back to main menu
-        </Link>
-
         {!isPlanningView && (
           <p className="mt-3 rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
             {isPastView
