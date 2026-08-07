@@ -5,7 +5,7 @@ import { getGameweekInfo, getProjectionsForPlayerIds, fetchAllPaginated } from "
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
-import EFLFantasyBoard, { type BoardPlayer, type PoolPlayer, type BoardClub, type PoolClub, POOL_PAGE_SIZE } from "./EFLFantasyBoard";
+import EFLFantasyBoard, { type BoardPlayer, type PoolPlayer, type BoardClub, type PoolClub, type FixtureTile, POOL_PAGE_SIZE } from "./EFLFantasyBoard";
 
 export const dynamic = "force-dynamic";
 
@@ -33,12 +33,15 @@ type PoolRow = {
 type FixtureRow = {
   gameweek: number;
   fixtures: {
+    id: number;
     home_team_id: number;
     away_team_id: number;
     home: { name: string };
     away: { name: string };
   } | null;
 };
+
+type DifficultyRow = { fixture_id: number; team_id: number; attack_score: number };
 
 const LEAGUE_LABELS: Record<string, string> = {
   efl_championship: "Championship",
@@ -140,26 +143,54 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   const isPlanningView = viewedGameweek === planningGameweek;
   const isPastView = viewedGameweek < planningGameweek;
 
-  // The fixture (if any) each team plays in the gameweek being viewed -
-  // not "soonest future fixture from today" (that only ever matched the
-  // planning gameweek), so this stays correct when browsing any week.
-  const { data: fixturesRaw } = await supabase
-    .from("game_fixture_gameweeks")
-    .select("gameweek, fixtures(home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))")
-    .eq("game_id", game.id)
-    .eq("gameweek", viewedGameweek)
-    .returns<FixtureRow[]>();
+  // Next-6-gameweek fixture difficulty for every team (not just the
+  // gameweek being viewed) - the colour-coded pills need a run of
+  // fixtures to show "next 1/2/3", same pattern as FanTeamBoard/
+  // DreamTeamBoard's page.tsx. attack_score comes straight from the
+  // team_fixture_difficulty view, which already prefers real bookmaker
+  // odds over the EFL-FDR fallback per fixture (see migration 0017 +
+  // this project's fixture-difficulty memory) - this display picks up
+  // that real-vs-fallback distinction automatically, no separate query
+  // needed.
+  const [{ data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
+    supabase
+      .from("game_fixture_gameweeks")
+      .select("gameweek, fixtures(id, home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))")
+      .eq("game_id", game.id)
+      .gte("gameweek", viewedGameweek)
+      .lte("gameweek", viewedGameweek + 5)
+      .returns<FixtureRow[]>(),
+    supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id).returns<DifficultyRow[]>(),
+  ]);
 
-  const nextFixtureByTeamId = new Map<number, { opponent: string; isHome: boolean; gameweek: number }>();
-  for (const row of fixturesRaw ?? []) {
+  const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
+  const tilesByTeamGw = new Map<string, FixtureTile>();
+  // Full (non-abbreviated) opponent name for just the viewed gameweek -
+  // only used by the "Why These Clubs" panel's prose line, which reads
+  // better as "next vs Millwall" than the abbreviated pill's "MIL".
+  const nextFixtureLabelByTeamId = new Map<number, string>();
+  for (const row of gwFixtureRows ?? []) {
     const f = row.fixtures;
     if (!f) continue;
-    if (!nextFixtureByTeamId.has(f.home_team_id)) {
-      nextFixtureByTeamId.set(f.home_team_id, { opponent: f.away.name, isHome: true, gameweek: row.gameweek });
+    for (const [teamId, oppName, isHome] of [
+      [f.home_team_id, f.away.name, true],
+      [f.away_team_id, f.home.name, false],
+    ] as [number, string, boolean][]) {
+      const key = `${teamId}:${row.gameweek}`;
+      const difficulty = difficultyByFixtureTeam.get(`${f.id}:${teamId}`) ?? 0.5;
+      tilesByTeamGw.set(key, { opponentAbbr: abbreviate(oppName), isHome, difficulty });
+      if (row.gameweek === viewedGameweek) {
+        nextFixtureLabelByTeamId.set(teamId, `next ${isHome ? "vs" : "away to"} ${oppName} (GW${row.gameweek})`);
+      }
     }
-    if (!nextFixtureByTeamId.has(f.away_team_id)) {
-      nextFixtureByTeamId.set(f.away_team_id, { opponent: f.home.name, isHome: false, gameweek: row.gameweek });
-    }
+  }
+  // Plain-object mirror of tilesByTeamGw - see DreamTeamBoard.tsx's page
+  // for why this crosses the server/client boundary as a prop instead of
+  // being recomputed per pool row.
+  const fixtureTilesRecord: Record<string, FixtureTile> = Object.fromEntries(tilesByTeamGw);
+
+  function buildFixtures(teamId: number): (FixtureTile | null)[] {
+    return Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${teamId}:${viewedGameweek + i}`) ?? null);
   }
 
   // Real 2025/26 season-average points per club (same historical
@@ -209,7 +240,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           position: id.position as "GK" | "DEF" | "MID" | "FWD",
           team_name: id.team_name,
           score: actuals.get(id.game_player_id)?.points ?? null,
-          nextFixture: nextFixtureByTeamId.get(id.team_id) ?? null,
+          fixtures: buildFixtures(id.team_id),
         }));
       boardClubs = lockedIdentities
         .filter((id) => id.position === "CLUB")
@@ -217,7 +248,8 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           game_player_id: id.game_player_id,
           club_name: id.team_name,
           score: actuals.get(id.game_player_id)?.points ?? null,
-          nextFixture: nextFixtureByTeamId.get(id.team_id) ?? null,
+          fixtures: buildFixtures(id.team_id),
+          nextFixtureLabel: nextFixtureLabelByTeamId.get(id.team_id) ?? null,
           lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(id.game_player_id) ?? null,
         }));
 
@@ -231,7 +263,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           team_name: p.team_name,
           score: actuals.get(p.game_player_id)?.points ?? null,
           competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
-          nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+          fixtures: buildFixtures(p.team_id),
         }))
         .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
       boardClubPool = poolRaw
@@ -241,7 +273,8 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           club_name: p.team_name,
           score: actuals.get(p.game_player_id)?.points ?? null,
           competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
-          nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+          fixtures: buildFixtures(p.team_id),
+          nextFixtureLabel: nextFixtureLabelByTeamId.get(p.team_id) ?? null,
           lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
         }))
         .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
@@ -283,7 +316,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         position: p.position as "GK" | "DEF" | "MID" | "FWD",
         team_name: p.team_name,
         score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
-        nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+        fixtures: buildFixtures(p.team_id),
       }));
     boardClubs = squadPlayers
       .filter((p) => p.position === "CLUB")
@@ -295,7 +328,8 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         // for display.
         club_name: p.team_name,
         score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
-        nextFixture: nextFixtureByTeamId.get(p.team_id) ?? null,
+        fixtures: buildFixtures(p.team_id),
+        nextFixtureLabel: nextFixtureLabelByTeamId.get(p.team_id) ?? null,
         lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
       }));
 
@@ -306,14 +340,15 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       team_name: r.team_name,
       score: r.hail_mary_score,
       competition: r.competition ? (LEAGUE_LABELS[r.competition] ?? r.competition) : null,
-      nextFixture: nextFixtureByTeamId.get(r.team_id) ?? null,
+      fixtures: buildFixtures(r.team_id),
     }));
     boardClubPool = initialClubPool.rows.map((r) => ({
       game_player_id: r.game_player_id,
       club_name: r.team_name,
       score: r.hail_mary_score,
       competition: r.competition ? (LEAGUE_LABELS[r.competition] ?? r.competition) : null,
-      nextFixture: nextFixtureByTeamId.get(r.team_id) ?? null,
+      fixtures: buildFixtures(r.team_id),
+      nextFixtureLabel: nextFixtureLabelByTeamId.get(r.team_id) ?? null,
       lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(r.game_player_id) ?? null,
     }));
     poolTotalCount = initialPool.totalCount;
@@ -361,6 +396,15 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       teams={teams}
       squadSummary={squadSummary}
       isPoolServerDriven={!isPastView}
+      fixtureTiles={fixtureTilesRecord}
     />
   );
+}
+
+function abbreviate(teamName: string): string {
+  return teamName
+    .replace(/^(AFC|FC)\s+/, "")
+    .replace(/\s+(FC|United|Town|City|Hotspur|Wanderers|Albion)$/, "")
+    .slice(0, 3)
+    .toUpperCase();
 }

@@ -12,7 +12,7 @@ import { makeTransfer, makeClubTransfer } from "./actions";
 
 export const POOL_PAGE_SIZE = 15;
 
-type NextFixture = { opponent: string; isHome: boolean; gameweek: number };
+export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
 
 export type BoardPlayer = {
   game_player_id: number;
@@ -20,7 +20,7 @@ export type BoardPlayer = {
   position: "GK" | "DEF" | "MID" | "FWD";
   team_name: string;
   score: number | null;
-  nextFixture?: NextFixture | null;
+  fixtures: (FixtureTile | null)[];
   competition?: string | null;
 };
 export type PoolPlayer = BoardPlayer;
@@ -31,19 +31,40 @@ export type BoardClub = {
   game_player_id: number;
   club_name: string;
   score: number | null;
-  nextFixture?: NextFixture | null;
+  fixtures: (FixtureTile | null)[];
+  // Full (non-abbreviated) opponent name for the "Why These Clubs" prose
+  // line only - the colour-coded pills use fixtures[]'s abbreviated
+  // opponentAbbr instead.
+  nextFixtureLabel?: string | null;
   lastSeasonAvgPoints?: number | null;
   competition?: string | null;
 };
 export type PoolClub = BoardClub;
 
-function FixturePill({ fixture }: { fixture: NextFixture | null | undefined }) {
-  if (!fixture) return null;
-  return (
-    <span className="rounded bg-navy-800 px-1 py-0.5 text-[9px] font-medium text-navy-300" title={`GW${fixture.gameweek}`}>
-      {fixture.isHome ? "v" : "@"} {fixture.opponent}
-    </span>
-  );
+type DisplayMode = "next1" | "next2" | "next3" | "pts";
+const FIXTURE_MODE_COUNT: Record<string, number> = { next1: 1, next2: 2, next3: 3 };
+
+// attack_score is 0-1, higher = a better attacking fixture (easier) for
+// that team - same tiering used on the other games' boards. Now backed
+// by the 3-tier fixture-difficulty system (real bookmaker odds, falling
+// back to EFL's own real FDR, see this project's fixture-difficulty
+// memory) rather than the old averagePoints proxy.
+function difficultyColor(d: number): string {
+  if (d >= 0.6) return "bg-emerald-600";
+  if (d >= 0.45) return "bg-emerald-800";
+  if (d >= 0.35) return "bg-navy-700";
+  if (d >= 0.25) return "bg-amber-800";
+  return "bg-red-800";
+}
+
+function fixtureTilesFor(tiles: (FixtureTile | null)[], count: number): { label: string; colorClass: string }[] {
+  return tiles
+    .slice(0, count)
+    .filter((t): t is FixtureTile => t !== null)
+    .map((t) => ({
+      label: t.isHome ? t.opponentAbbr : t.opponentAbbr.toLowerCase(),
+      colorClass: difficultyColor(t.difficulty),
+    }));
 }
 
 function optimisticSwap<T extends { game_player_id: number }>(current: T[], outId: number, incoming: T): T[] {
@@ -71,6 +92,7 @@ export default function EFLFantasyBoard({
   teams: teamsProp,
   squadSummary,
   isPoolServerDriven,
+  fixtureTiles,
 }: {
   squadId: number;
   squadName: string;
@@ -95,7 +117,12 @@ export default function EFLFantasyBoard({
   // behavior rather than hitting search_game_player_pool, since it's
   // scored from real actuals, not projections.
   isPoolServerDriven: boolean;
+  // Every team's next-6-gameweek fixture difficulty, keyed "teamId:gameweek" -
+  // see FanTeamBoard.tsx's identical prop for why this is passed as a
+  // plain object rather than recomputed per pool row.
+  fixtureTiles: Record<string, FixtureTile>;
 }) {
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
   // Multiple squad members can be marked for sale at once - see
   // DreamTeamBoard.tsx/CloudFFBoard.tsx's identical "no fictional shared
@@ -145,6 +172,10 @@ export default function EFLFantasyBoard({
   const isFirstRender = useRef(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  function buildFixtures(teamId: number): (FixtureTile | null)[] {
+    return Array.from({ length: 6 }, (_, i) => fixtureTiles[`${teamId}:${viewedGameweek + i}`] ?? null);
+  }
+
   function refetchPool() {
     if (!isPoolServerDriven) return;
     startPoolTransition(async () => {
@@ -172,6 +203,7 @@ export default function EFLFantasyBoard({
             team_name: r.team_name,
             score: r.hail_mary_score,
             competition: r.competition,
+            fixtures: buildFixtures(r.team_id),
           }))
         );
         setPoolTotalCount(result.totalCount);
@@ -194,6 +226,7 @@ export default function EFLFantasyBoard({
             club_name: r.team_name,
             score: r.hail_mary_score,
             competition: r.competition,
+            fixtures: buildFixtures(r.team_id),
           }))
         );
         setClubPoolTotalCount(result.totalCount);
@@ -223,6 +256,7 @@ export default function EFLFantasyBoard({
     is_starting: true,
     price: null,
     score: p.score,
+    statTiles: displayMode in FIXTURE_MODE_COUNT ? fixtureTilesFor(p.fixtures, FIXTURE_MODE_COUNT[displayMode]) : undefined,
     isEmpty: pendingOutIds.has(p.game_player_id),
     emptyLabel: `Sold ${p.full_name}`,
   }));
@@ -233,6 +267,7 @@ export default function EFLFantasyBoard({
     team_name: c.club_name,
     is_starting: true,
     price: null,
+    statTiles: displayMode in FIXTURE_MODE_COUNT ? fixtureTilesFor(c.fixtures, FIXTURE_MODE_COUNT[displayMode]) : undefined,
     score: c.score,
     isEmpty: pendingOutClubIds.has(c.game_player_id),
     emptyLabel: `Sold ${c.club_name}`,
@@ -274,6 +309,18 @@ export default function EFLFantasyBoard({
 
   const menuPlayer = !menuIsClub && menuPlayerId != null ? (menuIsSquadMember ? optimisticSquad : pagedPool).find((p) => p.game_player_id === menuPlayerId) : undefined;
   const menuClub = menuIsClub && menuPlayerId != null ? (menuIsSquadMember ? optimisticClubs : pagedClubPool).find((c) => c.game_player_id === menuPlayerId) : undefined;
+
+  // Player Info's fixture-pill row - looks across every list this
+  // game_player_id could have been opened from (own squad, browse pool,
+  // clubs, club pool), same coloured pills as the pitch/pool table.
+  function fixturesForInfoPanel(id: number): { label: string; colorClass: string }[] {
+    const found =
+      optimisticSquad.find((p) => p.game_player_id === id) ??
+      pagedPool.find((p) => p.game_player_id === id) ??
+      optimisticClubs.find((c) => c.game_player_id === id) ??
+      pagedClubPool.find((c) => c.game_player_id === id);
+    return found ? fixtureTilesFor(found.fixtures, 3) : [];
+  }
   const menuActions: PlayerAction[] = menuIsClub
     ? menuClub
       ? menuIsSquadMember
@@ -426,6 +473,29 @@ export default function EFLFantasyBoard({
                   </button>
                   {optionsOpen && (
                     <div className="absolute right-0 top-full z-10 mt-1 w-56 rounded-xl border border-navy-700 bg-navy-900 p-2 shadow-xl">
+                      <p className="px-2 py-1 text-[10px] font-semibold uppercase text-navy-500">Show on players</p>
+                      {(
+                        [
+                          ["next1", "Next GW Fix"],
+                          ["next2", "Next 2 GW Fix"],
+                          ["next3", "Next 3 GW Fix"],
+                          ["pts", "Pts"],
+                        ] as [DisplayMode, string][]
+                      ).map(([mode, label]) => (
+                        <button
+                          key={mode}
+                          onClick={() => {
+                            setDisplayMode(mode);
+                            setOptionsOpen(false);
+                          }}
+                          className={`block w-full rounded-lg px-2 py-1.5 text-left text-xs ${
+                            displayMode === mode ? "bg-sky-500 font-medium text-navy-950" : "text-navy-200 hover:bg-navy-800"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                      <div className="my-1 border-t border-navy-800" />
                       <Link
                         href="/eflfantasy/performance-lab"
                         className="block rounded-lg px-2 py-1.5 text-left text-xs text-navy-200 hover:bg-navy-800"
@@ -475,7 +545,7 @@ export default function EFLFantasyBoard({
                       <span className="font-medium text-white">{c.club_name}</span>
                       <span className="text-navy-400">
                         {c.lastSeasonAvgPoints != null ? `averaged ${c.lastSeasonAvgPoints.toFixed(1)} pts/GW last season` : "no last-season data"}
-                        {c.nextFixture ? ` · next ${c.nextFixture.isHome ? "vs" : "away to"} ${c.nextFixture.opponent} (GW${c.nextFixture.gameweek})` : ""}
+                        {c.nextFixtureLabel ? ` · ${c.nextFixtureLabel}` : ""}
                       </span>
                     </div>
                   ))}
@@ -485,7 +555,12 @@ export default function EFLFantasyBoard({
           </div>
 
           {infoPlayerId != null ? (
-            <PlayerInfoPanel gameSlug="eflfantasy" gamePlayerId={infoPlayerId} onBack={() => setInfoPlayerId(null)} />
+            <PlayerInfoPanel
+              gameSlug="eflfantasy"
+              gamePlayerId={infoPlayerId}
+              onBack={() => setInfoPlayerId(null)}
+              fixtures={fixturesForInfoPanel(infoPlayerId)}
+            />
           ) : (
             <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
               <div className="mb-3 flex items-center gap-2">
@@ -559,6 +634,11 @@ export default function EFLFantasyBoard({
                       <tr className="text-navy-500">
                         <th className="pb-2 pr-2 font-medium">Player</th>
                         <th className="pb-2 pr-2 font-medium">Pts</th>
+                        {Array.from({ length: 6 }, (_, i) => (
+                          <th key={i} className="px-1 pb-2 text-center font-medium">
+                            GW{viewedGameweek + i}
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
@@ -592,16 +672,24 @@ export default function EFLFantasyBoard({
                                 <Kit teamName={p.team_name} size="sm" />
                                 <div>
                                   <div className="font-medium text-white">{p.full_name}</div>
-                                  <div className="flex items-center gap-1 text-[10px] text-navy-500">
-                                    <span>
-                                      {p.team_name} · {p.position}
-                                    </span>
-                                    <FixturePill fixture={p.nextFixture} />
+                                  <div className="text-[10px] text-navy-500">
+                                    {p.team_name} · {p.position}
                                   </div>
                                 </div>
                               </div>
                             </td>
                             <td className="py-1.5 pr-2 text-sky-400">{p.score != null ? p.score.toFixed(1) : "-"}</td>
+                            {p.fixtures.slice(0, 6).map((f, i) => (
+                              <td key={i} className="px-1 py-1.5 text-center">
+                                {f ? (
+                                  <span className={`inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(f.difficulty)}`}>
+                                    {f.isHome ? f.opponentAbbr : f.opponentAbbr.toLowerCase()}
+                                  </span>
+                                ) : (
+                                  <span className="text-navy-700">-</span>
+                                )}
+                              </td>
+                            ))}
                           </tr>
                         );
                       })}
@@ -613,6 +701,11 @@ export default function EFLFantasyBoard({
                       <tr className="text-navy-500">
                         <th className="pb-2 pr-2 font-medium">Club</th>
                         <th className="pb-2 pr-2 font-medium">Pts</th>
+                        {Array.from({ length: 6 }, (_, i) => (
+                          <th key={i} className="px-1 pb-2 text-center font-medium">
+                            GW{viewedGameweek + i}
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
@@ -646,14 +739,24 @@ export default function EFLFantasyBoard({
                                 <Kit teamName={c.club_name} size="sm" />
                                 <div>
                                   <div className="font-medium text-white">{c.club_name}</div>
-                                  <div className="flex items-center gap-1 text-[10px] text-navy-500">
-                                    {c.lastSeasonAvgPoints != null && <span>{c.lastSeasonAvgPoints.toFixed(1)} pts/GW last season</span>}
-                                    <FixturePill fixture={c.nextFixture} />
-                                  </div>
+                                  {c.lastSeasonAvgPoints != null && (
+                                    <div className="text-[10px] text-navy-500">{c.lastSeasonAvgPoints.toFixed(1)} pts/GW last season</div>
+                                  )}
                                 </div>
                               </div>
                             </td>
                             <td className="py-1.5 pr-2 text-sky-400">{c.score != null ? c.score.toFixed(1) : "-"}</td>
+                            {c.fixtures.slice(0, 6).map((f, i) => (
+                              <td key={i} className="px-1 py-1.5 text-center">
+                                {f ? (
+                                  <span className={`inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(f.difficulty)}`}>
+                                    {f.isHome ? f.opponentAbbr : f.opponentAbbr.toLowerCase()}
+                                  </span>
+                                ) : (
+                                  <span className="text-navy-700">-</span>
+                                )}
+                              </td>
+                            ))}
                           </tr>
                         );
                       })}

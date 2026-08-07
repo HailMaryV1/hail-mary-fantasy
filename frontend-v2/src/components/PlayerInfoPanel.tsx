@@ -26,10 +26,15 @@ export default function PlayerInfoPanel({
   gameSlug,
   gamePlayerId,
   onBack,
+  fixtures,
 }: {
   gameSlug: string;
   gamePlayerId: number;
   onBack: () => void;
+  // Optional colour-coded upcoming-fixture pills (EFL Fantasy today - see
+  // EFLFantasyBoard.tsx's fixtureTilesFor). Omitted by games that don't
+  // pass it, so this stays a no-op change for them.
+  fixtures?: { label: string; colorClass: string }[];
 }) {
   // undefined = loading, null = no projection exists yet for this player
   const [data, setData] = useState<EngineExplanation | null | undefined>(undefined);
@@ -61,6 +66,16 @@ export default function PlayerInfoPanel({
             <p className="text-xs text-navy-400">
               {data.position} · {data.teamName} · £{data.price.toFixed(1)}m{data.gameweek != null ? ` · GW${data.gameweek}` : ""}
             </p>
+            {fixtures && fixtures.length > 0 && (
+              <div className="mt-1.5 flex items-center gap-1">
+                <span className="text-[10px] uppercase tracking-wide text-navy-500">Upcoming</span>
+                {fixtures.map((f, i) => (
+                  <span key={i} className={`rounded px-1 py-0.5 text-[9px] font-bold text-white ${f.colorClass}`}>
+                    {f.label}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-between rounded-lg bg-navy-950 px-3 py-2">
