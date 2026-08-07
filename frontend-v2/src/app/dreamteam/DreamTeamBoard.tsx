@@ -446,15 +446,6 @@ export default function DreamTeamBoard({
   const budget = bank + teamValue;
   const optimisticTeamValue = optimisticSquad.reduce((sum, p) => sum + p.price, 0);
   const optimisticBank = budget - optimisticTeamValue;
-  // What the Bank stat box shows: real bank plus every pending sale's own
-  // price - genuinely spendable now, since poolBudget below (not any
-  // single sale in isolation) is what gates every tentative pick.
-  const displayBank = optimisticBank + pendingOutPlayers.reduce((sum, p) => sum + p.price, 0);
-  // No bench - every squad member always starts and always counts, so
-  // this is a flat sum (same "no formation search needed" reasoning as
-  // askMaryEngine.ts's optimalXITotal).
-  const optimisticTotalPoints = optimisticSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
-
   // Every pending sale's price is one shared pot: real bank, plus every
   // sold player's price, minus whatever's already tentatively spent on
   // picks staged so far. Nothing is sent to the server until Confirm -
@@ -464,24 +455,30 @@ export default function DreamTeamBoard({
     optimisticBank +
     pendingOutPlayers.reduce((sum, p) => sum + p.price, 0) -
     Array.from(pendingSwaps.values()).reduce((sum, p) => sum + p.price, 0);
+  // What the Bank stat box shows: the real remaining spendable pot, which
+  // should visibly count down as picks land - poolBudget itself, not the
+  // flat total pot (a static number here reads as "the bank isn't
+  // updating" even though nothing about the pooling is wrong).
+  const displayBank = poolBudget;
+  // No bench - every squad member always starts and always counts, so
+  // this is a flat sum (same "no formation search needed" reasoning as
+  // askMaryEngine.ts's optimalXITotal).
+  const optimisticTotalPoints = optimisticSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
 
-  // Which sold slot clicking `p` would fill: an unassigned same-position
-  // slot first, or - once every matching slot already has a tentative
-  // pick - the first matching slot, replacing its pick (that pick's price
-  // flows straight back into the shared pot, so the affordability check
-  // below already accounts for it).
+  // Which sold slot clicking `p` would fill: only a genuinely unassigned
+  // same-position slot. Deliberately NOT falling back to silently
+  // replacing an already-assigned slot's pick here - that produced
+  // exactly the "it just keeps swapping" confusion once every matching
+  // slot already had a pick, with no visible reason why. Changing a pick
+  // is the pitch-tap-to-unassign flow below, not a second pool click.
   function pickSlotFor(p: PoolPlayer): BoardPlayer | null {
     // Already staged into another slot - must be unassigned (tap its
     // pitch slot) before it can be picked again, so one player can never
     // land in two slots at once.
     if (Array.from(pendingSwaps.values()).some((v) => v.game_player_id === p.game_player_id)) return null;
-    const candidates = pendingOutPlayers.filter((o) => o.position === p.position);
-    if (candidates.length === 0) return null;
-    const unassigned = candidates.find((o) => !pendingSwaps.has(o.game_player_id));
-    if (unassigned) return poolBudget >= p.price ? unassigned : null;
-    const toReplace = candidates[0];
-    const replacedPrice = pendingSwaps.get(toReplace.game_player_id)!.price;
-    return poolBudget + replacedPrice >= p.price ? toReplace : null;
+    const unassigned = pendingOutPlayers.find((o) => o.position === p.position && !pendingSwaps.has(o.game_player_id));
+    if (!unassigned) return null;
+    return poolBudget >= p.price ? unassigned : null;
   }
   const legalPoolIds = new Set(canTransfer ? pagedPool.filter((p) => pickSlotFor(p) !== null).map((p) => p.game_player_id) : []);
 

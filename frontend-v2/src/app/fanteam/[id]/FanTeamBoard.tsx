@@ -684,23 +684,19 @@ export default function FanTeamBoard({
     pendingOutPlayers.reduce((sum, p) => sum + p.price, 0) -
     Array.from(pendingSwaps.values()).reduce((sum, p) => sum + p.price, 0);
 
-  // Which sold slot clicking `p` would fill: an unassigned same-position
-  // slot first, or - once every matching slot already has a pick - the
-  // first matching slot, replacing its pick (that pick's price and club
-  // slot both flow back for the affordability/club-count checks below).
+  // Which sold slot clicking `p` would fill: only a genuinely unassigned
+  // same-position slot. Deliberately NOT falling back to silently
+  // replacing an already-assigned slot's pick here - that produced
+  // exactly the "it just keeps swapping" confusion once every matching
+  // slot already had a pick, with no visible reason why. Changing a pick
+  // is the pitch-tap-to-unassign flow, not a second pool click.
   function pickSlotFor(p: PoolPlayer): BoardPlayer | null {
     if (Array.from(pendingSwaps.values()).some((v) => v.game_player_id === p.game_player_id)) return null;
-    const candidates = pendingOutPlayers.filter((o) => o.position === p.position);
-    if (candidates.length === 0) return null;
-    function clubOk(slotId: number): boolean {
-      const counts = finalClubCounts(slotId);
-      return (counts.get(p.team_id) ?? 0) + 1 <= maxPerClub;
-    }
-    const unassigned = candidates.find((o) => !pendingSwaps.has(o.game_player_id));
-    if (unassigned) return poolBudget >= p.price && clubOk(unassigned.game_player_id) ? unassigned : null;
-    const toReplace = candidates[0];
-    const replacedPrice = pendingSwaps.get(toReplace.game_player_id)!.price;
-    return poolBudget + replacedPrice >= p.price && clubOk(toReplace.game_player_id) ? toReplace : null;
+    const unassigned = pendingOutPlayers.find((o) => o.position === p.position && !pendingSwaps.has(o.game_player_id));
+    if (!unassigned) return null;
+    const counts = finalClubCounts(unassigned.game_player_id);
+    const clubOk = (counts.get(p.team_id) ?? 0) + 1 <= maxPerClub;
+    return poolBudget >= p.price && clubOk ? unassigned : null;
   }
   const legalPoolIds = new Set(pagedPool.filter((p) => pickSlotFor(p) !== null).map((p) => p.game_player_id));
 
@@ -768,7 +764,9 @@ export default function FanTeamBoard({
   // Captains score double - a simple sum, not the more elaborate
   // auto-sub-probability-weighted total used elsewhere.
   const projectedPoints = optimisticSquad.filter((p) => p.isStarting).reduce((sum, p) => sum + (p.score ?? 0) * (p.isCaptain ? 2 : 1), 0);
-  const displayBank = optimisticBank + pendingOutPlayers.reduce((sum, p) => sum + p.price, 0);
+  // The real remaining spendable pot - poolBudget itself, not the flat
+  // total pot, so the Bank stat box visibly counts down as picks land.
+  const displayBank = poolBudget;
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
