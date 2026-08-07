@@ -36,15 +36,23 @@ import { makeFanteamTransfer } from "../../actions";
 export async function applyRecommendation({
   squadId,
   legs,
+  useWildcard = false,
 }: {
   squadId: number;
   legs: { outGamePlayerId: number; inGamePlayerId: number; outPrice: number; inPrice: number }[];
+  // Ask Mary's own call site never passes this (defaults false, matching
+  // the old hardcoded behavior this docstring above describes) - only the
+  // manual builder's pooled-transfer Confirm button passes the user's own
+  // wildcard toggle through, so a bundle they intend to cover with a
+  // wildcard actually activates it rather than eating a real -4pt hit per
+  // leg beyond their free allowance.
+  useWildcard?: boolean;
 }) {
   const applied: { outGamePlayerId: number; inGamePlayerId: number }[] = [];
   const orderedLegs = legs.slice().sort((a, b) => a.inPrice - a.outPrice - (b.inPrice - b.outPrice));
 
   for (const leg of orderedLegs) {
-    const result = await makeFanteamTransfer({ squadId, outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId, useWildcard: false });
+    const result = await makeFanteamTransfer({ squadId, outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId, useWildcard });
     if (result.error) {
       for (const done of applied.reverse()) {
         await revertFanteamTransfer(squadId, done.outGamePlayerId, done.inGamePlayerId);
