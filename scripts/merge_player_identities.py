@@ -168,6 +168,37 @@ PHASE3_PAIRS = [
     (3999, 589, "Romain Esse - cloudff's abbreviated 'R. Esse' row, both at Crystal Palace (team_id=8)"),
 ]
 
+# --phase 4 : the mononym-vs-full-name splits Phase 2's own docstring
+# named and explicitly deferred ("worth a dedicated follow-up, not
+# bundled into this fix") - confirmed live 2026-08-08 these are the SAME
+# live-scoring bug as merge_duplicate_game_players.py just fixed for 32
+# FanTeam players: real per-gameweek stats sitting on one players.id row
+# while the OTHER row (the one actually active/selectable right now in
+# at least one game) has none, so compute_projections.py's historical-
+# shrinkage component silently scores that player near-zero regardless
+# of price. Confirmed same real person both ways: identical position AND
+# team on both rows, plus - for every pair except Reinildo - the
+# canonical id already carries real stats on 2 of 3 games, missing only
+# the one this merge repoints. Canonical is whichever id is the more
+# complete identity today (active + real stats on more games), NOT
+# whichever has the fuller display name - "Gabriel" (Arsenal's own
+# single-name branding for Gabriel Magalhães) is canonical over "Gabriel
+# Magalhaes" here, the opposite direction from Kepa Arrizabalaga being
+# canonical over bare "Kepa" just below it.
+#
+# After this merge, re-run merge_duplicate_game_players.py (now scoped
+# to every game, not just FanTeam) to migrate the real stats this merge
+# strands on the deactivated same-game collision consolidate_post_
+# merge_collisions() below creates - the exact mechanism, on a different
+# root cause, that produced the FanTeam bug in the first place.
+PHASE4_PAIRS = [
+    (1345, 305, "Gabriel / Gabriel Magalhaes - mononym is Arsenal's own branding for him, already the active/complete identity on fanteam+cloudff"),
+    (645, 546, "Kepa Arrizabalaga / Kepa - full name already the active/complete identity on fanteam+cloudff"),
+    (1346, 86, "Junior Kroupi / Eli Junior Kroupi - name-order variant, separate from the already-merged 'Eli Kroupi' pair (Phase 2)"),
+    (624, 493, "Jair Cunha / Jair - full name already the active/complete identity on fanteam+cloudff"),
+    (655, 562, "Reinildo Mandava / Reinildo - both sides currently active with real stats (dreamteam+fanteam vs cloudff); keeping the wider 2-game anchor as canonical"),
+]
+
 
 def load_env():
     env_path = ROOT / ".env"
@@ -281,10 +312,10 @@ def consolidate_post_merge_collisions(cur, pairs, apply_changes, log):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", type=int, choices=[1, 2, 3], required=True)
+    parser.add_argument("--phase", type=int, choices=[1, 2, 3, 4], required=True)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
-    pairs = {1: PHASE1_PAIRS, 2: PHASE2_PAIRS, 3: PHASE3_PAIRS}[args.phase]
+    pairs = {1: PHASE1_PAIRS, 2: PHASE2_PAIRS, 3: PHASE3_PAIRS, 4: PHASE4_PAIRS}[args.phase]
 
     load_env()
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
