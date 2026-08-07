@@ -139,6 +139,35 @@ PHASE2_PAIRS = [
     # before this gets touched at all.
 ]
 
+# --phase 3 : abbreviated-name (cloudff) vs full-name (dreamteam+fanteam)
+# splits for the SAME real Premier League player, confirmed live
+# 2026-08-07 - a different root cause than phases 1/2 (nothing to do with
+# Unicode): import_cloudff.py never got the abbreviated "A. Patterson"-
+# style live name it was fed to match against the already-fuller
+# "Anthony Patterson" row dreamteam/fanteam's own imports had already
+# created, so it created its own new row instead. Confirmed same person,
+# same real club by BOTH rows sharing the identical team_id (see each
+# pair's reason) - that's what makes this safe to merge outright, unlike
+# the cross-league case immediately below.
+#
+# Each of these 4 real players ALSO has a completely separate players.id
+# row created by EFL Fantasy's import, at a DIFFERENT club (a Championship/
+# League One/League Two side) - e.g. Patterson's PL-scoped rows all say
+# Sunderland, EFL Fantasy's own row says Millwall. Deliberately NOT
+# touched: could be the same real person out on loan, or could be two
+# different real people who happen to share a name (same open question as
+# the Bueno/Fletcher/Gomes/Johnson exclusions above) - and this project's
+# own rule is that every game keeps its own independent identity/squad
+# list, never a shared one, so merging across that boundary needs real
+# confirmation, not inference from a matching numeric id that could just
+# as easily be coincidental.
+PHASE3_PAIRS = [
+    (2454, 551, "Anthony Patterson - cloudff's abbreviated 'A. Patterson' row, both at Sunderland (team_id=18)"),
+    (3025, 568, "Leo Hjelde - cloudff's abbreviated 'L. Hjelde' row, both at Sunderland (team_id=18)"),
+    (1946, 574, "Matt Targett - cloudff's abbreviated 'M. Targett' row, both at Hull City (team_id=89)"),
+    (3999, 589, "Romain Esse - cloudff's abbreviated 'R. Esse' row, both at Crystal Palace (team_id=8)"),
+]
+
 
 def load_env():
     env_path = ROOT / ".env"
@@ -252,10 +281,10 @@ def consolidate_post_merge_collisions(cur, pairs, apply_changes, log):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", type=int, choices=[1, 2], required=True)
+    parser.add_argument("--phase", type=int, choices=[1, 2, 3], required=True)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
-    pairs = PHASE1_PAIRS if args.phase == 1 else PHASE2_PAIRS
+    pairs = {1: PHASE1_PAIRS, 2: PHASE2_PAIRS, 3: PHASE3_PAIRS}[args.phase]
 
     load_env()
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
