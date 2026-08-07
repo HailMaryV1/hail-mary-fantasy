@@ -41,7 +41,7 @@ type FixtureRow = {
   } | null;
 };
 
-type DifficultyRow = { fixture_id: number; team_id: number; attack_score: number };
+type DifficultyRow = { fixture_id: number; team_id: number; attack_score: number; source: "real_odds" | "fdr" };
 
 const LEAGUE_LABELS: Record<string, string> = {
   efl_championship: "Championship",
@@ -149,7 +149,15 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   // this project's fixture-difficulty memory) - this display picks up
   // that real-vs-fallback distinction automatically, no separate query
   // needed.
-  const [{ data: gwFixtureRows }, { data: difficultyRows }] = await Promise.all([
+  // team_fixture_difficulty spans every gameweek of all 3 EFL competitions
+  // at once (3,000+ rows for this game_id) - well past PostgREST's default
+  // 1000-row cap, which silently truncated this query and left later
+  // fixture/team combos missing from the map entirely. A missing entry
+  // fell back to the neutral 0.5 default below, which - being just inside
+  // the "easy fixture" emerald band - could paint a genuinely hard
+  // fixture green instead of merely blank. fetchAllPaginated (already
+  // used a few lines up for the pool) pages past that cap.
+  const [{ data: gwFixtureRows }, difficultyRows] = await Promise.all([
     supabase
       .from("game_fixture_gameweeks")
       .select("gameweek, fixtures(id, home_team_id, away_team_id, home:teams!fixtures_home_team_id_fkey(name), away:teams!fixtures_away_team_id_fkey(name))")
@@ -157,10 +165,20 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       .gte("gameweek", viewedGameweek)
       .lte("gameweek", viewedGameweek + 5)
       .returns<FixtureRow[]>(),
-    supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id).returns<DifficultyRow[]>(),
+    fetchAllPaginated<DifficultyRow>(async (from, to) => {
+      const { data } = await supabase
+        .from("team_fixture_difficulty")
+        .select("fixture_id, team_id, attack_score, source")
+        .eq("game_id", game.id)
+        .range(from, to)
+        .returns<DifficultyRow[]>();
+      return data;
+    }),
   ]);
 
-  const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
+  const difficultyByFixtureTeam = new Map(
+    difficultyRows.map((d) => [`${d.fixture_id}:${d.team_id}`, { attackScore: Number(d.attack_score), source: d.source }])
+  );
   const tilesByTeamGw = new Map<string, FixtureTile>();
   // Full (non-abbreviated) opponent name for just the viewed gameweek -
   // only used by the "Why These Clubs" panel's prose line, which reads
@@ -174,8 +192,13 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       [f.away_team_id, f.home.name, false],
     ] as [number, string, boolean][]) {
       const key = `${teamId}:${row.gameweek}`;
-      const difficulty = difficultyByFixtureTeam.get(`${f.id}:${teamId}`) ?? 0.5;
-      tilesByTeamGw.set(key, { opponentAbbr: abbreviate(oppName), isHome, difficulty });
+      const entry = difficultyByFixtureTeam.get(`${f.id}:${teamId}`);
+      tilesByTeamGw.set(key, {
+        opponentAbbr: abbreviate(oppName),
+        isHome,
+        difficulty: entry?.attackScore ?? 0.5,
+        source: entry?.source ?? "fdr",
+      });
       if (row.gameweek === viewedGameweek) {
         nextFixtureLabelByTeamId.set(teamId, `next ${isHome ? "vs" : "away to"} ${oppName} (GW${row.gameweek})`);
       }
