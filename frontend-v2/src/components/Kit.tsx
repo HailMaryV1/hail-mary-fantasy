@@ -20,6 +20,10 @@ export default function Kit({ teamName, size = "lg" }: { teamName: string; size?
         src={realKit}
         alt=""
         aria-hidden="true"
+        width={40}
+        height={40}
+        loading="lazy"
+        decoding="async"
         className={`shrink-0 object-contain ${SIZE_CLASSES[size]}`}
       />
     );
