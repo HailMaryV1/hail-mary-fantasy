@@ -33,6 +33,19 @@ type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 // fixed calendar gameweeks (see buildGameweekPlan).
 const GAMEWEEK_PLAN_LENGTH = 3;
 
+// How many gameweeks a transfer candidate is judged over, starting at
+// whichever step is being decided - the fix for a real reported failure
+// mode (2026-08-07): picking whoever's the single best score THIS week
+// alone routinely loads a squad with one-week fixture spikes, leaving no
+// budget to react when a DIFFERENT team's good run starts the following
+// week. Deliberately separate from scoreMapForStep (still 1 gameweek,
+// used only for the number actually shown as "projected points this
+// gameweek") - this one only steers WHICH transfer gets made, not what
+// gets displayed. 2 matches the two ends of the ask ("the next gameweek
+// or the next 2") without diluting this step's own fixture too far into
+// a 3-week blend.
+const PLANNING_LOOKAHEAD_GAMEWEEKS = 2;
+
 // A single gameweek step can recommend more than one transfer (e.g. using
 // 2 banked free transfers at once) - this is a generous safety bound on
 // the search loop, not a real business rule. The real limit is "does the
@@ -275,6 +288,17 @@ export async function runAskMaryAnalysis(
     return new Map(((data ?? []) as HorizonRow[]).map((r) => [r.game_player_id, Number(r.avg_score)]));
   }
 
+  /** Same shape as getStepScoreMap, but averaged over PLANNING_LOOKAHEAD_GAMEWEEKS starting at `gameweek` - see that constant's comment. */
+  async function getStepPlanningScoreMap(gameweek: number): Promise<Map<number, number>> {
+    if (!hasCalendar) return new Map();
+    const { data } = await supabase.rpc("player_score_by_horizon_from", {
+      p_game_slug: game.slug,
+      p_start_gameweek: gameweek,
+      p_num_gameweeks: PLANNING_LOOKAHEAD_GAMEWEEKS,
+    });
+    return new Map(((data ?? []) as HorizonRow[]).map((r) => [r.game_player_id, Number(r.avg_score)]));
+  }
+
   async function getHorizonMap(gameweeks: number): Promise<Map<number, number>> {
     if (hasCalendar && !seasonStarted) {
       const { data } = await supabase.rpc("player_score_by_horizon", { p_game_slug: game.slug, p_num_gameweeks: gameweeks });
@@ -288,7 +312,11 @@ export async function runAskMaryAnalysis(
   }
 
   const stepGameweeks = planningGameweek != null ? [0, 1, 2].map((offset) => planningGameweek + offset) : [];
-  const [stepScoreMaps, captainScoreMap] = await Promise.all([Promise.all(stepGameweeks.map((gw) => getStepScoreMap(gw))), getHorizonMap(captainHorizonGameweeks)]);
+  const [stepScoreMaps, stepPlanningScoreMaps, captainScoreMap] = await Promise.all([
+    Promise.all(stepGameweeks.map((gw) => getStepScoreMap(gw))),
+    Promise.all(stepGameweeks.map((gw) => getStepPlanningScoreMap(gw))),
+    getHorizonMap(captainHorizonGameweeks),
+  ]);
 
   function avgFor(map: Map<number, number>, gamePlayerId: number): number {
     if (map.size > 0) return map.get(gamePlayerId) ?? 0;
@@ -625,6 +653,11 @@ export async function runAskMaryAnalysis(
     const freeBefore = state.freeRemaining;
     const gameweek = planningGameweek! + offset - 1;
     const scoreMapForStep = stepScoreMaps[offset - 1] ?? new Map();
+    // Which transfer gets made is decided on the wider PLANNING_LOOKAHEAD_
+    // GAMEWEEKS-week view (see that constant) - scoreMapForStep above stays
+    // 1-week and is only used below for the number actually displayed as
+    // this step's projected points.
+    const planningScoreMap = stepPlanningScoreMaps[offset - 1] ?? new Map();
 
     function buildStep(result: { transfers: BundleTransfer[] } & SearchState): GameweekPlanStep {
       const resultingSquadExpectedPoints = optimalXITotal(result.workingSquad, scoreMapForStep);
@@ -645,7 +678,7 @@ export async function runAskMaryAnalysis(
 
     const greedySoldIds = new Set(incomingSoldIds);
     const greedyBoughtIds = new Set(incomingBoughtIds);
-    const greedyResult = searchBestMoves(state, scoreMapForStep, greedySoldIds, greedyBoughtIds);
+    const greedyResult = searchBestMoves(state, planningScoreMap, greedySoldIds, greedyBoughtIds);
     const greedyStep = buildStep(greedyResult);
     const greedyState: SearchState = { workingSquad: greedyResult.workingSquad, workingSquadIds: greedyResult.workingSquadIds, workingBudget: greedyResult.workingBudget, workingClubCounts: greedyResult.workingClubCounts, freeRemaining: greedyResult.freeRemaining };
     const greedy: StepBranch = { step: greedyStep, state: greedyState, soldIds: greedySoldIds, boughtIds: greedyBoughtIds };
