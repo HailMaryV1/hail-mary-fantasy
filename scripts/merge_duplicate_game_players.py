@@ -4,15 +4,15 @@ merge_duplicate_game_players.py
 One-time backfill for a self-inflicted side effect of
 merge_player_identities.py's consolidate_post_merge_collisions() step:
 when two players.id rows for the same real person got merged (Phase 1,
-2026-08-07), and each already had its own game_players row for FanTeam,
-that step correctly deactivated the older of the two colliding rows (so
-only one is ever "the" live listing) - but, true to its own docstring
-("never deletes"), it left the deactivated row's real historical
-game_player_stats permanently stranded there, orphaned from the now-live
-active row. That active row then has ZERO stats of its own, so
-compute_projections.py's historical-shrinkage component has nothing to
-shrink from and silently produces a near-zero score for what's often a
-real, expensive, good player.
+2026-08-07), and each already had its own game_players row for a given
+game, that step correctly deactivated the older of the two colliding
+rows (so only one is ever "the" live listing) - but, true to its own
+docstring ("never deletes"), it left the deactivated row's real
+historical game_player_stats permanently stranded there, orphaned from
+the now-live active row. That active row then has ZERO stats of its
+own, so compute_projections.py's historical-shrinkage component has
+nothing to shrink from and silently produces a near-zero score for
+what's often a real, expensive, good player.
 
 Confirmed live 2026-08-08 - the user's own FanTeam bench: Viktor
 Gyokeres, £9.0m, projecting 1.8 pts. His real season total (131.2 pts,
@@ -22,14 +22,22 @@ Gyokeres, £9.0m, projecting 1.8 pts. His real season total (131.2 pts,
 matched exactly against PHASE1_PAIRS in merge_player_identities.py (same
 players, same root cause).
 
-Scope: game_id=2 (FanTeam) only. EFL Fantasy has a separate, smaller
-handful of duplicate game_players rows (4 pairs, mostly Trialist
-placeholder names) that do NOT fit this pattern - both sides already
-have their own real stat rows there, so blindly merging risks
-conflating two different real trialists. Deliberately left untouched;
-needs its own look.
+Scope: runs across every game_id present in game_players, not just
+FanTeam - Phase 4 of merge_player_identities.py (2026-08-08, mononym-
+vs-full-name splits: Gabriel/Gabriel Magalhaes, Kepa/Kepa Arrizabalaga,
+Junior Kroupi/Eli Junior Kroupi, Jair/Jair Cunha, Reinildo/Reinildo
+Mandava) creates the exact same same-game collision pattern in
+dreamteam (game_id=1) and cloudff (game_id=5). EFL Fantasy had a
+separate, smaller handful of duplicate game_players rows (4 pairs,
+mostly Trialist placeholder names) that do NOT fit this pattern - both
+sides already have their own real stat rows there, so blindly merging
+risks conflating two different real trialists - find_duplicate_groups
+still surfaces them per-game like any other group, and merge_group's
+per-row collision-safe [SKIP]/[KEEP] logic already leaves a donor row
+in place (never force-deletes) whenever both sides have real data for
+the same gameweek, so running this broadly is safe for that case too.
 
-For every (player_id, game_id=2) group with more than one game_players
+For every (player_id, game_id) group with more than one game_players
 row, keeps the row with the HIGHEST id as canonical (created most
 recently - matches consolidate_post_merge_collisions's own "deactivate
 the older one" choice) and, for every other row in the group:
@@ -46,13 +54,14 @@ the older one" choice) and, for every other row in the group:
   - deletes the now-empty donor row
 
 Dry-run by default - prints exactly what would change; only writes with
---apply. Recompute FanTeam projections after applying - the whole point
-is to give the historical-shrinkage component real data to work with
-again.
+--apply. Recompute affected games' projections after applying - the
+whole point is to give the historical-shrinkage component real data to
+work with again.
 
 RUN:
-    python3 scripts/merge_duplicate_game_players.py            # dry run
+    python3 scripts/merge_duplicate_game_players.py            # dry run, all games
     python3 scripts/merge_duplicate_game_players.py --apply
+    python3 scripts/merge_duplicate_game_players.py --game 1 --apply   # single game only
 """
 import argparse
 import io
@@ -68,8 +77,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from activity_log import log_event  # noqa: E402
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
-GAME_ID_FANTEAM = 2
 
 # Tables with a unique key of the form (game_player_id, <per-gameweek dimension>) -
 # repointing has to go row-by-row so a real collision (both donor and
@@ -129,7 +136,12 @@ def find_duplicate_groups(cur, game_id):
     return cur.fetchall()
 
 
-def merge_group(cur, player_id, ids, game_player_fks, apply_changes, log):
+def find_game_ids(cur):
+    cur.execute("select id, slug, display_name from fantasy_games order by id")
+    return cur.fetchall()
+
+
+def merge_group(cur, game_id, player_id, ids, game_player_fks, apply_changes, log):
     canonical_id = ids[-1]
     donor_ids = ids[:-1]
 
@@ -205,8 +217,8 @@ def merge_group(cur, player_id, ids, game_player_fks, apply_changes, log):
             cur.execute("delete from game_players where id = %s", (donor_id,))
             log_event(
                 cur, "player_identity_merged",
-                f"Merged stranded FanTeam game_players row for {name!r} (id={donor_id}) into the live listing (id={canonical_id})",
-                game_id=GAME_ID_FANTEAM,
+                f"Merged stranded game_players row for {name!r} (id={donor_id}) into the live listing (id={canonical_id})",
+                game_id=game_id,
                 details={"player_id": player_id, "canonical_game_player_id": canonical_id, "donor_game_player_id": donor_id},
             )
 
@@ -214,6 +226,7 @@ def merge_group(cur, player_id, ids, game_player_fks, apply_changes, log):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--game", type=int, help="Limit to a single game_id (default: all games)")
     args = parser.parse_args()
 
     load_env()
@@ -223,14 +236,24 @@ def main():
     def log(msg):
         print(msg)
 
-    log(f"{'APPLYING' if args.apply else 'DRY RUN'} - merge_duplicate_game_players.py (FanTeam only)")
+    log(f"{'APPLYING' if args.apply else 'DRY RUN'} - merge_duplicate_game_players.py")
 
     game_player_fks = find_fk_columns(cur, "game_players")
-    groups = find_duplicate_groups(cur, GAME_ID_FANTEAM)
-    log(f"\nFound {len(groups)} duplicate (player_id, game_id=fanteam) groups.\n")
+    games = find_game_ids(cur)
+    if args.game is not None:
+        games = [g for g in games if g["id"] == args.game]
 
-    for g in groups:
-        merge_group(cur, g["player_id"], g["ids"], game_player_fks, args.apply, log)
+    total_groups = 0
+    for game in games:
+        groups = find_duplicate_groups(cur, game["id"])
+        if not groups:
+            continue
+        total_groups += len(groups)
+        log(f"\n=== {game['display_name']} (game_id={game['id']}): {len(groups)} duplicate (player_id) group(s) ===")
+        for g in groups:
+            merge_group(cur, game["id"], g["player_id"], g["ids"], game_player_fks, args.apply, log)
+
+    log(f"\nTotal duplicate groups across {len(games)} game(s): {total_groups}")
 
     if args.apply:
         conn.commit()
