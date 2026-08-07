@@ -11,7 +11,10 @@ import { makeTransfer } from "./actions";
 
 export const POOL_PAGE_SIZE = 15;
 
-export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number };
+// source: which team_fixture_difficulty COALESCE branch (migration 0017/
+// 0103) produced this fixture's difficulty - real bookmaker match odds
+// once posted, Mary's own FDR ratings as the fallback before that.
+export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number; source: "real_odds" | "fdr" };
 
 export type BoardPlayer = {
   game_player_id: number;
@@ -586,8 +589,14 @@ export default function CloudFFBoard({
                           {p.fixtures.slice(0, 6).map((f, i) => (
                             <td key={i} className="px-1 py-1.5 text-center">
                               {f ? (
-                                <span className={`inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(f.difficulty)}`}>
+                                <span
+                                  className={`relative inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(f.difficulty)}`}
+                                  title={f.source === "real_odds" ? "Live bookmaker odds" : "Estimated - Mary's FDR ratings (no live odds posted yet)"}
+                                >
                                   {f.isHome ? f.opponentAbbr : f.opponentAbbr.toLowerCase()}
+                                  {f.source === "real_odds" && (
+                                    <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-sky-400 ring-1 ring-navy-950" />
+                                  )}
                                 </span>
                               ) : (
                                 <span className="text-navy-700">-</span>

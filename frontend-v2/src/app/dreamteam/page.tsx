@@ -122,12 +122,14 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       .eq("game_id", game.id)
       .gte("gameweek", viewedGameweek)
       .lte("gameweek", viewedGameweek + 5),
-    supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score").eq("game_id", game.id),
+    supabase.from("team_fixture_difficulty").select("fixture_id, team_id, attack_score, source").eq("game_id", game.id),
     isPastView
       ? Promise.resolve<GameweekProjectionRow<ProjectionInputs>[]>([])
       : getProjectionsForPlayerIds<ProjectionInputs>(supabase, viewedGameweek, squadIds),
   ]);
-  const difficultyByFixtureTeam = new Map((difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, Number(d.attack_score)]));
+  const difficultyByFixtureTeam = new Map(
+    (difficultyRows ?? []).map((d) => [`${d.fixture_id}:${d.team_id}`, { difficulty: Number(d.attack_score), source: d.source as "real_odds" | "fdr" }])
+  );
   type GwFixtureRow = {
     gameweek: number;
     fixtures: { id: number; home_team_id: number; away_team_id: number; teams_home: { name: string }; teams_away: { name: string } };
@@ -140,8 +142,8 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       [f.away_team_id, f.teams_home.name, false],
     ] as [number, string, boolean][]) {
       const key = `${teamId}:${row.gameweek}`;
-      const difficulty = difficultyByFixtureTeam.get(`${f.id}:${teamId}`) ?? 0.5;
-      tilesByTeamGw.set(key, { opponentAbbr: abbreviate(oppName), isHome, difficulty });
+      const { difficulty, source } = difficultyByFixtureTeam.get(`${f.id}:${teamId}`) ?? { difficulty: 0.5, source: "fdr" as const };
+      tilesByTeamGw.set(key, { opponentAbbr: abbreviate(oppName), isHome, difficulty, source });
     }
   }
   // Plain-object mirror of tilesByTeamGw - a Map can't cross the server/
