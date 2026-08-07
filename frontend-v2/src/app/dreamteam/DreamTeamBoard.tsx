@@ -7,7 +7,8 @@ import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMe
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import { searchPool } from "@/lib/poolSearch";
-import { setBooster, makeTransfer, setCaptain } from "./actions";
+import { setBooster, setCaptain } from "./actions";
+import { applyRecommendation } from "./ask-mary/actions";
 
 export const POOL_PAGE_SIZE = 15;
 
@@ -177,12 +178,17 @@ export default function DreamTeamBoard({
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
   // Multiple squad members can be marked for sale at once - each becomes
-  // an empty placeholder on the pitch and its price joins a shared pot, so
-  // a player unaffordable on any single sale (e.g. Haaland) can become
-  // affordable once two or three sales are combined. Each slot still gets
-  // filled one at a time via the same real makeTransfer pair-call as
-  // before - this only changes when that call fires, not what it does.
+  // an empty placeholder on the pitch and its price genuinely joins a
+  // shared pot (see poolBudget below), so a player unaffordable on any
+  // single sale (e.g. Haaland) can become affordable once two or three
+  // sales are combined, picked in whatever order the user wants. Picks
+  // are staged client-side in pendingSwaps and only sent to the server
+  // as one cash-freeing-first-ordered bundle (applyRecommendation) once
+  // every sold slot has a replacement and the user hits Confirm - see
+  // the user's explicit instruction that drove this: "its my planner
+  // and i can do it the way i want."
   const [pendingOutIds, setPendingOutIds] = useState<Set<number>>(new Set());
+  const [pendingSwaps, setPendingSwaps] = useState<Map<number, PoolPlayer>>(new Map());
   const [isBoosterPending, startBoosterTransition] = useTransition();
   const [isTransferPending, startTransferTransition] = useTransition();
   const [isCaptainPending, startCaptainTransition] = useTransition();
@@ -327,21 +333,42 @@ export default function DreamTeamBoard({
 
   const fixtureModeCount: Record<string, number> = { next1: 1, next2: 2, next3: 3 };
 
-  const pitchPlayers: PitchPlayer[] = optimisticSquad.map((p) => ({
-    game_player_id: p.game_player_id,
-    full_name: p.full_name,
-    position: p.position,
-    team_name: p.team_name,
-    is_starting: true,
-    price: p.price,
-    score: p.score,
-    isCaptain: p.isCaptain,
-    isViceCaptain: p.isViceCaptain,
-    statText: displayMode in fixtureModeCount ? undefined : statTextFor(p),
-    statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(p.fixtures, fixtureModeCount[displayMode]) : undefined,
-    isEmpty: pendingOutIds.has(p.game_player_id),
-    emptyLabel: `Sold ${p.full_name}`,
-  }));
+  const pitchPlayers: PitchPlayer[] = optimisticSquad.map((p) => {
+    const swap = pendingSwaps.get(p.game_player_id);
+    if (pendingOutIds.has(p.game_player_id) && !swap) {
+      return {
+        game_player_id: p.game_player_id,
+        full_name: p.full_name,
+        position: p.position,
+        team_name: p.team_name,
+        is_starting: true,
+        price: p.price,
+        score: p.score,
+        isCaptain: p.isCaptain,
+        isViceCaptain: p.isViceCaptain,
+        isEmpty: true,
+        emptyLabel: `Sold ${p.full_name}`,
+      };
+    }
+    // Tentative incoming pick (not yet submitted) shows in place of the
+    // sold player - same id (the ORIGINAL squad member's) so PitchView's
+    // onSelect below can still tell which sale/pick this slot belongs to.
+    const display = swap ?? p;
+    return {
+      game_player_id: p.game_player_id,
+      full_name: display.full_name,
+      position: p.position,
+      team_name: display.team_name,
+      is_starting: true,
+      price: display.price,
+      score: display.score,
+      isCaptain: p.isCaptain,
+      isViceCaptain: p.isViceCaptain,
+      statText: displayMode in fixtureModeCount ? undefined : statTextFor(display),
+      statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(display.fixtures, fixtureModeCount[displayMode]) : undefined,
+      isEmpty: false,
+    };
+  });
 
   function handleBooster(booster: Booster | null) {
     setBoosterError(null);
@@ -420,50 +447,74 @@ export default function DreamTeamBoard({
   const optimisticTeamValue = optimisticSquad.reduce((sum, p) => sum + p.price, 0);
   const optimisticBank = budget - optimisticTeamValue;
   // What the Bank stat box shows: real bank plus every pending sale's own
-  // price, since that's genuinely what lands once each empty slot gets
-  // filled at-or-under its own outgoing price. This is a display figure
-  // only - legalOutgoingFor below still gates any single incoming pick to
-  // real optimisticBank + that ONE slot's price, matching exactly what
-  // makeTransfer itself will validate (a second pending sale's cash isn't
-  // real until that swap actually lands).
+  // price - genuinely spendable now, since poolBudget below (not any
+  // single sale in isolation) is what gates every tentative pick.
   const displayBank = optimisticBank + pendingOutPlayers.reduce((sum, p) => sum + p.price, 0);
   // No bench - every squad member always starts and always counts, so
   // this is a flat sum (same "no formation search needed" reasoning as
   // askMaryEngine.ts's optimalXITotal).
   const optimisticTotalPoints = optimisticSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
 
-  // Real legality, matching exactly what a single makeTransfer call will
-  // itself validate server-side: each empty slot only has its OWN sale's
-  // price to spend, plus whatever's already really in the bank - a second
-  // pending sale's cash isn't real until that swap actually lands, since
-  // makeTransfer is an atomic 1-for-1 swap with no concept of a shared
-  // pot. Selling a slot cheap (rather than like-for-like) genuinely grows
-  // optimisticBank once that swap completes, which is what unlocks a
-  // pricier pick for the remaining slot(s) - not a fictional pooled
-  // total. Helper used both to render legality and to pick which slot a
-  // click actually fills.
-  function legalOutgoingFor(p: PoolPlayer): BoardPlayer[] {
-    return pendingOutPlayers.filter((o) => o.position === p.position && optimisticBank + o.price >= p.price);
-  }
-  const legalPoolIds = new Set(
-    canTransfer ? pagedPool.filter((p) => legalOutgoingFor(p).length > 0).map((p) => p.game_player_id) : []
-  );
+  // Every pending sale's price is one shared pot: real bank, plus every
+  // sold player's price, minus whatever's already tentatively spent on
+  // picks staged so far. Nothing is sent to the server until Confirm -
+  // see handleConfirmTransfers below - so there's no makeTransfer-per-
+  // click ordering constraint to work around here at all.
+  const poolBudget =
+    optimisticBank +
+    pendingOutPlayers.reduce((sum, p) => sum + p.price, 0) -
+    Array.from(pendingSwaps.values()).reduce((sum, p) => sum + p.price, 0);
 
-  function handleTransfer(inGamePlayerId: number) {
-    const incomingPoolPlayer = pagedPool.find((p) => p.game_player_id === inGamePlayerId);
-    if (!incomingPoolPlayer) return;
-    // Of the empty slots this player can actually afford, fill the
-    // cheapest-outgoing one first - that leaves the more valuable pending
-    // sale(s) still available to help fund a pricier pick later.
-    const outgoing = legalOutgoingFor(incomingPoolPlayer).sort((a, b) => a.price - b.price)[0];
-    if (!outgoing) return;
+  // Which sold slot clicking `p` would fill: an unassigned same-position
+  // slot first, or - once every matching slot already has a tentative
+  // pick - the first matching slot, replacing its pick (that pick's price
+  // flows straight back into the shared pot, so the affordability check
+  // below already accounts for it).
+  function pickSlotFor(p: PoolPlayer): BoardPlayer | null {
+    // Already staged into another slot - must be unassigned (tap its
+    // pitch slot) before it can be picked again, so one player can never
+    // land in two slots at once.
+    if (Array.from(pendingSwaps.values()).some((v) => v.game_player_id === p.game_player_id)) return null;
+    const candidates = pendingOutPlayers.filter((o) => o.position === p.position);
+    if (candidates.length === 0) return null;
+    const unassigned = candidates.find((o) => !pendingSwaps.has(o.game_player_id));
+    if (unassigned) return poolBudget >= p.price ? unassigned : null;
+    const toReplace = candidates[0];
+    const replacedPrice = pendingSwaps.get(toReplace.game_player_id)!.price;
+    return poolBudget + replacedPrice >= p.price ? toReplace : null;
+  }
+  const legalPoolIds = new Set(canTransfer ? pagedPool.filter((p) => pickSlotFor(p) !== null).map((p) => p.game_player_id) : []);
+
+  // Stages a tentative pick only - no server call. The pitch/pool re-
+  // render instantly off this local state; nothing is real until Confirm.
+  function handlePoolClick(inPlayer: PoolPlayer) {
+    const slot = pickSlotFor(inPlayer);
+    if (!slot) return;
+    setPendingSwaps((prev) => {
+      const next = new Map(prev);
+      next.set(slot.game_player_id, inPlayer);
+      return next;
+    });
+  }
+
+  function handleConfirmTransfers() {
+    const legs = Array.from(pendingSwaps.entries()).map(([outGamePlayerId, inPlayer]) => {
+      const outPlayer = pendingOutPlayers.find((o) => o.game_player_id === outGamePlayerId)!;
+      return { outGamePlayerId, inGamePlayerId: inPlayer.game_player_id, outPrice: outPlayer.price, inPrice: inPlayer.price };
+    });
+    if (legs.length === 0) return;
     setTransferError(null);
     startTransferTransition(async () => {
-      applyOptimisticSquad(optimisticTransfer(optimisticSquad, outgoing.game_player_id, incomingPoolPlayer));
-      const result = await makeTransfer({ squadId, outGamePlayerId: outgoing.game_player_id, inGamePlayerId });
+      const newSquad = legs.reduce(
+        (sq, leg) => optimisticTransfer(sq, leg.outGamePlayerId, pendingSwaps.get(leg.outGamePlayerId)!),
+        optimisticSquad
+      );
+      applyOptimisticSquad(newSquad);
+      const result = await applyRecommendation({ squadId, legs });
       if (result?.error) setTransferError(result.error);
       else {
-        setPendingOutIds((prev) => { const next = new Set(prev); next.delete(outgoing.game_player_id); return next; });
+        setPendingOutIds(new Set());
+        setPendingSwaps(new Map());
         setRefreshKey((k) => k + 1);
       }
     });
@@ -526,18 +577,35 @@ export default function DreamTeamBoard({
             <p className="text-sm text-sky-200">
               {canTransfer ? (
                 <>
-                  Selling <span className="font-semibold text-white">{pendingOutPlayers.map((p) => p.full_name).join(", ")}</span>. Fill each empty
-                  slot with a same-position replacement - picking a cheaper one for one slot frees real budget for a pricier pick in another, so a
-                  player you couldn&apos;t afford alone can become affordable once you&apos;ve banked a saving elsewhere. Tap an empty slot on the
-                  pitch to cancel that sale.
+                  Selling <span className="font-semibold text-white">{pendingOutPlayers.map((p) => p.full_name).join(", ")}</span>. Their combined
+                  £{pendingOutPlayers.reduce((sum, p) => sum + p.price, 0).toFixed(1)}m is one shared pot - pick replacements for each slot in any
+                  order, any combination. Tap a filled slot on the pitch to change that pick, an empty one to cancel that sale, then Confirm once
+                  every slot has a pick.
                 </>
               ) : (
                 <>No transfers left this gameweek - Dream Team has a hard cap, no points-hit option.</>
               )}
             </p>
-            <button onClick={() => setPendingOutIds(new Set())} className="text-xs font-medium text-sky-400 hover:text-sky-300">
-              Cancel all
-            </button>
+            <div className="flex items-center gap-3">
+              {canTransfer && (
+                <button
+                  onClick={handleConfirmTransfers}
+                  disabled={pendingSwaps.size !== pendingOutPlayers.length || isTransferPending}
+                  className="rounded-full bg-sky-500 px-3 py-1.5 text-xs font-semibold text-navy-950 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {isTransferPending ? "Confirming…" : `Confirm ${pendingOutPlayers.length} transfer${pendingOutPlayers.length === 1 ? "" : "s"}`}
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setPendingOutIds(new Set());
+                  setPendingSwaps(new Map());
+                }}
+                className="text-xs font-medium text-sky-400 hover:text-sky-300"
+              >
+                Cancel all
+              </button>
+            </div>
           </div>
         )}
         {transferError && <p className="mt-2 text-xs text-red-400">{transferError}</p>}
@@ -606,6 +674,17 @@ export default function DreamTeamBoard({
               onSelect={(p) => {
                 if (isTransferPending || isCaptainPending) return;
                 if (pendingOutIds.has(p.game_player_id)) {
+                  if (pendingSwaps.has(p.game_player_id)) {
+                    // A tentative pick is already staged here - unassign
+                    // just the pick, keep the sale itself pending so the
+                    // user can choose a different replacement.
+                    setPendingSwaps((prev) => {
+                      const next = new Map(prev);
+                      next.delete(p.game_player_id);
+                      return next;
+                    });
+                    return;
+                  }
                   setPendingOutIds((prev) => {
                     const next = new Set(prev);
                     next.delete(p.game_player_id);
@@ -712,7 +791,7 @@ export default function DreamTeamBoard({
                         key={p.game_player_id}
                         onClick={() => {
                           if (rowClickable) {
-                            handleTransfer(p.game_player_id);
+                            handlePoolClick(p);
                             return;
                           }
                           if (pendingOutPlayers.length === 0) {
