@@ -31,7 +31,7 @@ export default function GameweekPlanRow({ step, squadId }: { step: GameweekPlanS
     startTransition(async () => {
       const result = await applyRecommendation({
         squadId,
-        legs: step.transfers.map((t) => ({ outGamePlayerId: t.outGamePlayerId, inGamePlayerId: t.inGamePlayerId })),
+        legs: step.transfers.map((t) => ({ outGamePlayerId: t.outGamePlayerId, inGamePlayerId: t.inGamePlayerId, outPrice: t.outPrice, inPrice: t.inPrice })),
       });
       if (result?.error) setError(result.error);
       else setApplied(true);

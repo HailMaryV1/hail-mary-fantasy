@@ -11,6 +11,19 @@ import { makeTransfer } from "../actions";
  * cap, no points-hit, no wildcard) - deliberately not re-deriving
  * transfer execution here.
  *
+ * A "paired" bundle (see dreamteamAskMaryEngine.ts's findBestPairBundle)
+ * is validated as budget-POOLED - e.g. sell A + sell B jointly funds
+ * buy A' + buy B', even if buy A' alone would overspend before B is
+ * sold. makeTransfer only ever sees one leg at a time though, so legs
+ * are executed cash-freeing-first (ascending net price delta) rather
+ * than in the engine's display/pairing order - a classic bank-balance-
+ * sequencing result: if any execution order keeps the running bank
+ * non-negative throughout, sorting ascending by delta is guaranteed to
+ * be one (it minimizes every prefix sum simultaneously). Previously
+ * this looped in display order, so a bundle Mary had already confirmed
+ * was affordable in aggregate could still fail on leg 1 and roll back
+ * to 0 applied, purely because the funding sale hadn't landed yet.
+ *
  * If a later leg in a multi-transfer bundle fails, every leg already
  * applied is rolled back via revertTransfer below rather than a second
  * makeTransfer call in reverse - reversing through makeTransfer would
@@ -19,10 +32,17 @@ import { makeTransfer } from "../actions";
  * means free_transfers just hit 0). A revert isn't a new transfer the
  * user is spending, it's undoing one that shouldn't have gone through.
  */
-export async function applyRecommendation({ squadId, legs }: { squadId: number; legs: { outGamePlayerId: number; inGamePlayerId: number }[] }) {
+export async function applyRecommendation({
+  squadId,
+  legs,
+}: {
+  squadId: number;
+  legs: { outGamePlayerId: number; inGamePlayerId: number; outPrice: number; inPrice: number }[];
+}) {
   const applied: { outGamePlayerId: number; inGamePlayerId: number }[] = [];
+  const orderedLegs = legs.slice().sort((a, b) => a.inPrice - a.outPrice - (b.inPrice - b.outPrice));
 
-  for (const leg of legs) {
+  for (const leg of orderedLegs) {
     const result = await makeTransfer({ squadId, outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId });
     if (result.error) {
       for (const done of applied.reverse()) {

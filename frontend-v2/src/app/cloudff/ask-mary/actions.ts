@@ -9,6 +9,16 @@ import { makeTransfer } from "../actions";
  * already-correct makeTransfer (Cloud FF's real economy: always free, no
  * club limit) - deliberately not re-deriving transfer execution here.
  *
+ * A "paired" bundle (see cloudffAskMaryEngine.ts's findBestPairBundle) is
+ * validated as budget-POOLED - selling both funds buying both, even if
+ * one buy alone would overspend before its partner is sold. makeTransfer
+ * only ever sees one leg at a time, so legs execute cash-freeing-first
+ * (ascending net price delta) rather than in display order - see
+ * dreamteam/ask-mary/actions.ts's applyRecommendation for the full
+ * reasoning (same fix, same underlying bug, same bank-balance-sequencing
+ * argument for why ascending order is always sufficient when the bundle
+ * is affordable in aggregate).
+ *
  * If a later leg in a multi-transfer bundle fails, every leg already
  * applied is rolled back via revertTransfer below. Simpler than Dream
  * Team/FanTeam's equivalent: Cloud FF transfers never touch
@@ -17,10 +27,17 @@ import { makeTransfer } from "../actions";
  * ever written), so reverting is just swapping the player back and
  * removing the log row - no state-restoration branch needed.
  */
-export async function applyRecommendation({ squadId, legs }: { squadId: number; legs: { outGamePlayerId: number; inGamePlayerId: number }[] }) {
+export async function applyRecommendation({
+  squadId,
+  legs,
+}: {
+  squadId: number;
+  legs: { outGamePlayerId: number; inGamePlayerId: number; outPrice: number; inPrice: number }[];
+}) {
   const applied: { outGamePlayerId: number; inGamePlayerId: number }[] = [];
+  const orderedLegs = legs.slice().sort((a, b) => a.inPrice - a.outPrice - (b.inPrice - b.outPrice));
 
-  for (const leg of legs) {
+  for (const leg of orderedLegs) {
     const result = await makeTransfer({ squadId, outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId });
     if (result.error) {
       for (const done of applied.reverse()) {

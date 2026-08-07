@@ -22,11 +22,28 @@ import { makeFanteamTransfer } from "../../actions";
  * hit per leg (and could hit the very budget/club-limit constraint the
  * rollback exists to recover from). A revert isn't a new transfer the
  * user is spending, it's undoing one that shouldn't have gone through.
+ *
+ * A "paired" bundle (see fanteamAskMaryEngine.ts's findBestPairBundle) is
+ * validated as budget-POOLED - selling both funds buying both, even if
+ * one buy alone would overspend before its partner is sold.
+ * makeFanteamTransfer only ever sees one leg at a time, so legs execute
+ * cash-freeing-first (ascending net price delta) rather than in display
+ * order - see dreamteam/ask-mary/actions.ts's applyRecommendation for the
+ * full reasoning (same fix, same underlying bug, same bank-balance-
+ * sequencing argument for why ascending order is always sufficient when
+ * the bundle is affordable in aggregate).
  */
-export async function applyRecommendation({ squadId, legs }: { squadId: number; legs: { outGamePlayerId: number; inGamePlayerId: number }[] }) {
+export async function applyRecommendation({
+  squadId,
+  legs,
+}: {
+  squadId: number;
+  legs: { outGamePlayerId: number; inGamePlayerId: number; outPrice: number; inPrice: number }[];
+}) {
   const applied: { outGamePlayerId: number; inGamePlayerId: number }[] = [];
+  const orderedLegs = legs.slice().sort((a, b) => a.inPrice - a.outPrice - (b.inPrice - b.outPrice));
 
-  for (const leg of legs) {
+  for (const leg of orderedLegs) {
     const result = await makeFanteamTransfer({ squadId, outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId, useWildcard: false });
     if (result.error) {
       for (const done of applied.reverse()) {
