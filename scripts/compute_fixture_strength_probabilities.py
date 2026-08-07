@@ -13,6 +13,11 @@ scalar per competitor into pairwise win probabilities):
     away_strength = exp(STEEPNESS * strength_away)
     win_ratio_home = home_strength / (home_strength + away_strength)
 
+strength_home/strength_away come from team_season_strength's home_strength/
+away_strength columns when a source rates a team differently by venue
+(migration 0102 - EFL Fantasy's own real fdrHome/fdrAway), falling back
+to the single `strength` column otherwise (every other game).
+
 win_ratio_home is a binary (no-draw) home-win probability. A fixed
 league-average draw rate is then carved out, and the remainder split
 proportionally:
@@ -65,9 +70,24 @@ def main():
     cur = conn.cursor()
 
     try:
-        cur.execute("select team_id, strength from team_season_strength where season = %s", (SEASON,))
-        strength_by_team = {team_id: float(strength) for team_id, strength in cur.fetchall()}
-        if not strength_by_team:
+        # home_strength/away_strength (migration 0102) let a source that
+        # genuinely rates a team differently by venue - EFL Fantasy's own
+        # real fdrHome/fdrAway, see import_eflfantasy.py's seed_team_strength -
+        # express that, instead of forcing one flat `strength` onto both
+        # sides of the fixture. Falls back to `strength` per-team whenever
+        # its context-specific column is null (every other game, which
+        # only ever sets `strength`), so this is zero-drift for them.
+        cur.execute(
+            "select team_id, strength, home_strength, away_strength from team_season_strength where season = %s",
+            (SEASON,),
+        )
+        home_strength_by_team = {}
+        away_strength_by_team = {}
+        for team_id, strength, home_strength, away_strength in cur.fetchall():
+            strength = float(strength)
+            home_strength_by_team[team_id] = float(home_strength) if home_strength is not None else strength
+            away_strength_by_team[team_id] = float(away_strength) if away_strength is not None else strength
+        if not home_strength_by_team:
             raise SystemExit("No team_season_strength rows found - run compute_team_strength.py first.")
 
         cur.execute("select id, home_team_id, away_team_id from fixtures")
@@ -75,11 +95,11 @@ def main():
 
         written, skipped = 0, 0
         for fixture_id, home_team_id, away_team_id in fixtures:
-            if home_team_id not in strength_by_team or away_team_id not in strength_by_team:
+            if home_team_id not in home_strength_by_team or away_team_id not in away_strength_by_team:
                 skipped += 1  # non-PL opponent (cup fixture vs lower-league side, etc.) - no rating for them
                 continue
 
-            ratio = win_ratio(strength_by_team[home_team_id], strength_by_team[away_team_id])
+            ratio = win_ratio(home_strength_by_team[home_team_id], away_strength_by_team[away_team_id])
             draw_prob = BASE_DRAW_RATE
             home_win_prob = ratio * (1 - draw_prob)
             away_win_prob = (1 - ratio) * (1 - draw_prob)

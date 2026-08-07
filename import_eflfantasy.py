@@ -374,37 +374,60 @@ def import_club_game_players(cur, game_id, squads_data, club_player_id_by_squad_
 
 
 def seed_team_strength(cur, squads_data, team_id_by_squad_id):
-    """Real fixture data has no bookmaker odds for these 3 divisions yet
-    (SportMonks/Odds API coverage unconfirmed for L1/L2 - see migration
-    0088's docstring), so team_fixture_difficulty (the view every game's
-    projection pipeline reads fixture strength from) would have zero rows
-    for EFL Fantasy without this - compute_projections.py's
-    resolve_neutral_attack would crash on a real NULL avg(attack_score)
-    (the same failure mode Cloud FF hit once, see migration 0074).
+    """team_fixture_difficulty's real-odds-first COALESCE (migration 0017)
+    always prefers real bookmaker match odds (import_sportmonks_match_
+    odds.py, confirmed live 2026-08-06 that all 3 EFL divisions are
+    entitled) the moment they're posted for a given fixture - but those
+    only appear ~8 days out from kickoff, so every fixture further out
+    still needs a fallback rating, or team_fixture_difficulty would have
+    zero rows for EFL Fantasy this far ahead (compute_projections.py's
+    resolve_neutral_attack would crash on a real NULL avg(attack_score),
+    the same failure mode Cloud FF hit once, see migration 0074).
 
-    team_season_strength already has a real, working, game-agnostic
-    fallback path for exactly this (migration 0017 + compute_fixture_
-    strength_probabilities.py) - normally seeded from real bookmaker
-    top5/relegation odds (compute_team_strength.py), which don't exist
-    for these divisions. Real last-season averagePoints (squads.json) is
-    used instead: z-scored within each competition (Championship/L1/L2
-    ranked separately - cross-division comparison doesn't matter, EFL
-    Fantasy fixtures are always within-division) and clipped to roughly
-    the same -0.9..0.9 range the real Premier League ratings already
-    occupy (confirmed live: -0.70..0.85), so the Bradley-Terry formula's
-    STEEPNESS constant behaves sensibly against them.
+    This fallback is fantasy.efl.com's own real fdrHome/fdrAway rating
+    per club (squads.json - confirmed present for every club, including
+    zero-history ones), not a last-season-averagePoints proxy derived
+    from this project's own data (the prior approach here, reverted
+    2026-08-06): confirmed live, EFL's own rating already correctly
+    identifies a relegated Premier League side as a hard opponent even
+    with zero fantasy history in this division (West Ham/Wolves/Burnley -
+    all fdrHome/fdrAway 4-5 despite averagePoints=0), which a same-
+    division-only z-score structurally cannot see. This was the exact
+    blind spot behind the real Notts County case (see import_sportmonks_
+    match_odds.py's docstring): a promoted club showing an inflated
+    projection purely off strong lower-league form, before real odds or
+    this fix existed to catch it.
+
+    fdrHome/fdrAway are two DIFFERENT ratings per club (a team can be a
+    harder home fixture than away fixture, or vice versa) - written into
+    team_season_strength's home_strength/away_strength columns (migration
+    0102) rather than forced into one flat `strength`, so compute_
+    fixture_strength_probabilities.py can rate each side of a fixture on
+    its own real, venue-specific number. `strength` (their average) is
+    still filled for any other code path that only reads the flat column.
+
+    Rescale: FDR's real 1..5 scale (1=easiest, 5=hardest, confirmed from
+    the in-app legend) to roughly the same -0.9..0.9 range the real
+    Premier League bookmaker-derived ratings already occupy, via a
+    direct linear map (1->-0.9, 3->0, 5->0.9) - no z-scoring needed,
+    FDR is already a bounded, calibrated scale.
 
     top5_prob/relegation_prob are NOT NULL columns but aren't actually
     read by compute_fixture_strength_probabilities.py (confirmed by
-    reading it - only `strength` is) - a simple top-5/bottom-3-by-
-    averagePoints step function fills them, honestly labelled as a proxy
-    (not real odds) via the `source` column, rather than left as
-    unexplained numbers."""
+    reading it - only strength/home_strength/away_strength are) - a
+    simple top-5/bottom-3-by-averagePoints step function fills them,
+    honestly labelled as a proxy (not real odds) via the `source`
+    column, rather than left as unexplained numbers."""
     import statistics
 
     by_competition: dict[int, list] = {}
     for s in squads_data:
         by_competition.setdefault(s["competitionId"], []).append(s)
+
+    def fdr_to_strength(fdr) -> float:
+        # 1..5 -> -0.9..0.9, clipped defensively in case a future export
+        # ever returns something outside the documented range.
+        return max(-0.9, min(0.9, ((float(fdr) - 3.0) / 2.0) * 0.9))
 
     written = 0
     for comp_id, clubs in by_competition.items():
@@ -417,23 +440,27 @@ def seed_team_strength(cur, squads_data, team_id_by_squad_id):
 
         for c in clubs:
             team_id = team_id_by_squad_id[c["id"]]
-            z = (float(c.get("averagePoints", 0)) - mean) / stdev
-            strength = max(-0.9, min(0.9, z * 0.3))
             top5_prob = 1.0 if c["id"] in top5_ids else 0.0
             relegation_prob = 1.0 if c["id"] in bottom3_ids else 0.0
+            home_strength = fdr_to_strength(c.get("fdrHome", 3))
+            away_strength = fdr_to_strength(c.get("fdrAway", 3))
+            strength = round((home_strength + away_strength) / 2, 4)
             cur.execute(
                 """
-                insert into team_season_strength (team_id, season, top5_prob, relegation_prob, strength, source)
-                values (%s, %s, %s, %s, %s, %s)
+                insert into team_season_strength
+                    (team_id, season, top5_prob, relegation_prob, strength, home_strength, away_strength, source)
+                values (%s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (team_id, season) do update set
                     top5_prob = excluded.top5_prob, relegation_prob = excluded.relegation_prob,
-                    strength = excluded.strength, source = excluded.source
+                    strength = excluded.strength, home_strength = excluded.home_strength,
+                    away_strength = excluded.away_strength, source = excluded.source
                 """,
-                (team_id, FIXTURE_SEASON, top5_prob, relegation_prob, round(strength, 4),
-                 "eflfantasy_avgpoints_proxy_2026-08-05"),
+                (team_id, FIXTURE_SEASON, top5_prob, relegation_prob, strength,
+                 round(home_strength, 4), round(away_strength, 4),
+                 "eflfantasy_real_fdr_2026-08-06"),
             )
             written += 1
-    print(f"Team strength: {written} EFL club ratings seeded from real last-season averagePoints (proxy, not real odds).")
+    print(f"Team strength: {written} EFL club ratings seeded from fantasy.efl.com's own real fdrHome/fdrAway.")
 
 
 def main():
