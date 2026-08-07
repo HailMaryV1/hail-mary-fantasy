@@ -53,7 +53,7 @@ import psycopg2.extras
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from activity_log import log_event  # noqa: E402
-from name_matching import compact, surname_key  # noqa: E402
+from name_matching import compact, surname_variants  # noqa: E402
 
 # Real player names legitimately contain non-ASCII characters - Windows'
 # console codepage can't print those directly.
@@ -198,42 +198,40 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
             live_full_name = f"{real_player['firstName']} {real_player['lastName']}".strip()
         live_compact = compact(live_full_name)
 
-        # Normal case: live name ends with the candidate's surname (handles
-        # "E. Haaland" vs "Erling Haaland" - different first-name formats,
-        # same surname). A bare mononym like "Gabriel" can't end with a
-        # surname it doesn't contain, so for that case also accept the
-        # candidate's full name simply starting with the mononym - catches
-        # "Gabriel" matching stored "Gabriel Magalhaes".
+        # Real surname match: live and candidate share at least one whole
+        # hyphen-bounded surname component (see surname_variants() in
+        # name_matching.py) - handles "E. Haaland" vs "Erling Haaland"
+        # (different first-name formats, same surname) in both directions,
+        # AND a canonical row stored with a compound surname ("Jamie
+        # Bynoe-Gittens") matching FanTeam's live feed sending the
+        # shortened form ("Jamie Gittens") - a real case, confirmed live,
+        # that used to need its own explicit reverse-direction endswith
+        # check. That raw endswith approach is exactly what let "M. Lewis-
+        # Skelly" (real surname "Lewis-Skelly") spuriously match 4
+        # unrelated players surnamed "Kelly" - confirmed live 2026-08-08 -
+        # because "lewisskelly" ends in the letters "kelly" purely by
+        # coincidence; matching on whole hyphen-bounded components instead
+        # of raw character suffixes tells those apart. A bare mononym like
+        # "Gabriel" shares no surname component with anything, so for that
+        # case a separate rule accepts the candidate's full name simply
+        # starting with the mononym - catches "Gabriel" matching stored
+        # "Gabriel Magalhaes".
         #
-        # The reverse direction (does the CANDIDATE's own name end with
-        # the LIVE name's surname_key) is also needed - confirmed live: a
-        # canonical row stored with a compound surname ("Jamie Bynoe-
-        # Gittens") never matched FanTeam's live feed sending the
-        # shortened form ("Jamie Gittens") under the forward rule alone,
-        # since "jamiegittens" can never end with the longer
-        # "bynoegittens" - the live import silently recreated a brand new
-        # duplicate player every run instead. One-directional endswith
-        # only catches a surname getting LONGER on the live side (initials
-        # expanding to full names); this catches it getting SHORTER too.
-        live_surname_key = surname_key(live_full_name)
-        # surname_key() can legitimately collapse to "" or a single letter
-        # for a placeholder name like "Trialist 111" or "Trialist A" (real
-        # rows - lower-league clubs list genuine unnamed trialists on
-        # their provisional squads, see EFL Fantasy's own import). "" or
-        # "a" is not a real surname, but str.endswith("") is
-        # unconditionally True and str.endswith("a") matches a huge
-        # fraction of real names, so an unguarded endswith check here
-        # would treat EVERY same-position player as an "ambiguous" match
+        # surname_variants() can legitimately include "" for a placeholder
+        # name like "Trialist 111" (real rows - lower-league clubs list
+        # genuine unnamed trialists on their provisional squads, see EFL
+        # Fantasy's own import) - "" is not a real surname, but
+        # str.endswith("") is unconditionally True, so treating that as a
+        # match used to make EVERY same-position player look "ambiguous"
         # against these rows - confirmed live 2026-08-07 for Dream Team's
         # own copy of this exact pattern (see import_dreamteam.py). A
-        # candidate surname_key shorter than this can never participate.
+        # surname variant shorter than this can never participate.
         MIN_SURNAME_KEY_LEN = 2
+        live_variants = {v for v in surname_variants(live_full_name) if len(v) >= MIN_SURNAME_KEY_LEN}
 
         def _surname_matches(candidate_name: str) -> bool:
-            candidate_key = surname_key(candidate_name)
-            if len(candidate_key) >= MIN_SURNAME_KEY_LEN and live_compact.endswith(candidate_key):
-                return True
-            if len(live_surname_key) >= MIN_SURNAME_KEY_LEN and compact(candidate_name).endswith(live_surname_key):
+            candidate_variants = {v for v in surname_variants(candidate_name) if len(v) >= MIN_SURNAME_KEY_LEN}
+            if live_variants & candidate_variants:
                 return True
             if is_mononym and compact(candidate_name).startswith(live_compact):
                 return True

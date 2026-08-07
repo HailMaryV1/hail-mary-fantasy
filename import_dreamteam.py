@@ -70,7 +70,7 @@ import psycopg2.extras
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
 from activity_log import log_event  # noqa: E402
-from name_matching import compact, surname_key  # noqa: E402
+from name_matching import compact, surname_variants  # noqa: E402
 
 # Dream Team's own display name -> canonical teams.name. Extracted live
 # from the real players endpoint (20/20 real 2026/27 EPL clubs, all
@@ -175,29 +175,37 @@ def import_players(cur, game_id, players_data):
         live_team_id = resolve_team_id(cur, team_id_cache, p["teamName"])
         live_full_name = f"{p['firstName']} {p['lastName']}".strip()
         live_compact = compact(live_full_name)
-        live_surname_key = surname_key(live_full_name)
-        # surname_key() can legitimately collapse to "" or a single letter
-        # for a placeholder name like "Trialist 111" or "Trialist A" (real
-        # rows - lower-league clubs list genuine unnamed trialists on
-        # their provisional squads, see EFL Fantasy's own import) - "" or
-        # "a" is not a real surname, but str.endswith("") is unconditionally
-        # True and str.endswith("a") matches a huge fraction of real names,
-        # so an unguarded endswith check here treated EVERY same-position
-        # player as an "ambiguous" match against these rows the moment any
-        # existed in the shared players table. Confirmed live 2026-08-07:
-        # silently broke re-matching for Cunha/Dorgu/Lewis-Skelly/Esse,
-        # which then made them look "gone" and get deactivated below even
-        # though they're still live in Dream Team's own feed. A candidate
-        # surname_key shorter than this can never participate in a match.
+        # surname_variants() can legitimately include "" for a placeholder
+        # name like "Trialist 111" (real rows - lower-league clubs list
+        # genuine unnamed trialists on their provisional squads, see EFL
+        # Fantasy's own import) - "" is not a real surname, but
+        # str.endswith("") is unconditionally True, so treating that as a
+        # match used to make EVERY same-position player look "ambiguous"
+        # against these rows the moment any existed in the shared players
+        # table. Confirmed live 2026-08-07: silently broke re-matching for
+        # Cunha/Dorgu/Esse, which then made them look "gone" and get
+        # deactivated below even though they're still live in Dream Team's
+        # own feed. A surname variant shorter than this can never
+        # participate in a match.
         MIN_SURNAME_KEY_LEN = 2
+        live_variants = {v for v in surname_variants(live_full_name) if len(v) >= MIN_SURNAME_KEY_LEN}
 
         def _surname_matches(candidate_name: str) -> bool:
-            candidate_key = surname_key(candidate_name)
-            if len(candidate_key) >= MIN_SURNAME_KEY_LEN and live_compact.endswith(candidate_key):
-                return True
-            if len(live_surname_key) >= MIN_SURNAME_KEY_LEN and compact(candidate_name).endswith(live_surname_key):
-                return True
-            return False
+            # Matching on whole hyphen-bounded surname components (via
+            # surname_variants(), shared with import_fanteam_live.py) - not
+            # a raw endswith() of the fully compacted strings, which can't
+            # tell a genuine shortened compound surname (a provider sending
+            # "Jamie Gittens" for canonical "Jamie Bynoe-Gittens" - a real
+            # case this must keep matching, see merge_player_identities.py's
+            # Phase 2) apart from two different real surnames that simply
+            # happen to share a coincidental tail. Confirmed live
+            # 2026-08-08: "M. Lewis-Skelly" (real surname "Lewis-Skelly")
+            # was matching 4 unrelated players surnamed "Kelly", because
+            # "lewisskelly" ends in the letters "kelly" purely by
+            # coincidence - a boundary-unaware endswith can't distinguish
+            # that from a real "Kelly".
+            candidate_variants = {v for v in surname_variants(candidate_name) if len(v) >= MIN_SURNAME_KEY_LEN}
+            return bool(live_variants & candidate_variants)
 
         candidates = [(pid, name, team_id) for pid, name, team_id in by_position.get(live_position, []) if _surname_matches(name)]
 
