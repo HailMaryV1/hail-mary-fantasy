@@ -1,10 +1,35 @@
 // Real kit renders (user-generated, see frontend-v2/public/kits/) covering
 // all 72 clubs across EFL Fantasy's three divisions (Championship, League
-// One, League Two). Kit.tsx falls back to the generic colour-based SVG
-// jersey for any team name not listed here (every other game's real clubs),
-// so adding more images later is just dropping a new PNG in public/kits/
-// and adding one line below.
+// One, League Two) plus the 20 Premier League clubs used by FanTeam, Dream
+// Team, and Cloud FF. Keys match teamColors.ts's existing team-name strings
+// exactly (e.g. "Brighton" not "Brighton & Hove Albion", "Bournemouth" not
+// "AFC Bournemouth") since that's the real team_name every game already
+// reads from the DB. Kit.tsx falls back to the generic colour-based SVG
+// jersey for any team name not listed here, so adding more images later is
+// just dropping a new PNG in public/kits/ and adding one line below.
 export const KIT_IMAGES: Record<string, string> = {
+  // Premier League (FanTeam / Dream Team / Cloud FF)
+  Bournemouth: "/kits/bournemouth.png",
+  Arsenal: "/kits/arsenal.png",
+  "Aston Villa": "/kits/aston-villa.png",
+  Brentford: "/kits/brentford.png",
+  Brighton: "/kits/brighton.png",
+  Chelsea: "/kits/chelsea.png",
+  "Coventry City": "/kits/coventry-city.png",
+  "Crystal Palace": "/kits/crystal-palace.png",
+  Everton: "/kits/everton.png",
+  Fulham: "/kits/fulham.png",
+  "Hull City": "/kits/hull-city.png",
+  "Ipswich Town": "/kits/ipswich-town.png",
+  "Leeds United": "/kits/leeds-united.png",
+  Liverpool: "/kits/liverpool.png",
+  "Manchester City": "/kits/manchester-city.png",
+  "Manchester United": "/kits/manchester-united.png",
+  "Newcastle United": "/kits/newcastle-united.png",
+  "Nottingham Forest": "/kits/nottingham-forest.png",
+  Sunderland: "/kits/sunderland.png",
+  "Tottenham Hotspur": "/kits/tottenham-hotspur.png",
+
   // Championship
   "Wolverhampton Wanderers": "/kits/wolverhampton-wanderers.png",
   "Blackburn Rovers": "/kits/blackburn-rovers.png",
