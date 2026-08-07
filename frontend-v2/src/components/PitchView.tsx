@@ -117,11 +117,11 @@ export default function PitchView({
         <button
           onClick={() => isClickable && onSelect(player)}
           disabled={!isClickable}
-          className={`relative flex w-14 flex-col items-center rounded-lg px-1 py-1.5 text-center transition-opacity sm:w-20 md:w-24 ${
+          className={`relative flex w-14 flex-col items-center rounded-lg px-1 py-1.5 text-center shadow-lg shadow-black/50 backdrop-blur-sm transition-all sm:w-20 md:w-24 ${
             isSelected
-              ? "bg-navy-900 ring-2 ring-sky-400"
+              ? "bg-navy-900/95 ring-2 ring-sky-400"
               : isClickable
-                ? "bg-navy-800 ring-1 ring-navy-600 hover:ring-sky-500"
+                ? "bg-navy-900/85 ring-1 ring-white/10 hover:-translate-y-0.5 hover:ring-sky-500"
                 : "cursor-not-allowed bg-navy-900/40 opacity-40"
           }`}
         >
@@ -193,11 +193,22 @@ export default function PitchView({
   }
 
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-emerald-900" style={{ background: "linear-gradient(180deg, #1b5e3a 0%, #164a2e 100%)" }}>
-      <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-white/15" />
-      <div className="pointer-events-none absolute left-1/2 top-1/2 h-20 w-20 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/15" />
-      <div className="pointer-events-none absolute inset-x-0 top-0 mx-auto h-10 w-32 rounded-b-lg border border-t-0 border-white/10" />
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 mx-auto h-10 w-32 rounded-t-lg border border-b-0 border-white/10" />
+    <div
+      className="relative overflow-hidden rounded-2xl border border-emerald-900/60 shadow-2xl shadow-black/40"
+      style={{ backgroundImage: "url(/pitch-bg.jpg)", backgroundSize: "cover", backgroundPosition: "center" }}
+    >
+      {/* A photo background (real stadium pitch, not the old hand-drawn
+          lines - see PITCH_BG memory/commit) already carries its own
+          markings and perspective. Player cards deliberately stay upright
+          and flat rather than skewed to match that perspective - matching
+          it would foreshorten the small print (name/price/pts) exactly
+          where legibility matters most. This vignette is the only added
+          layer: a bit of depth, and consistent text contrast regardless of
+          where a chip happens to land on the photo. */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{ background: "radial-gradient(120% 100% at 50% 15%, transparent 35%, rgba(0,0,0,0.45) 100%)" }}
+      />
 
       <div className="relative flex flex-col gap-3 px-1 py-6 sm:gap-6 sm:px-3">
         {rows.map(({ pos, players }) => (
@@ -208,14 +219,14 @@ export default function PitchView({
       </div>
 
       {bench !== undefined && bench.length > 0 && (
-        <div className="relative border-t border-white/10 bg-black/20 px-1 py-3 sm:px-3">
+        <div className="relative border-t border-white/10 bg-black/40 px-1 py-3 backdrop-blur-sm sm:px-3">
           <p className="mb-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white/50">Bench</p>
           <div className="flex justify-evenly gap-0.5 sm:gap-1">{bench.map((p) => chip(p, "bench"))}</div>
         </div>
       )}
 
       {clubs !== undefined && clubs.length > 0 && (
-        <div className="relative border-t border-white/10 bg-black/20 px-1 py-3 sm:px-3">
+        <div className="relative border-t border-white/10 bg-black/40 px-1 py-3 backdrop-blur-sm sm:px-3">
           <p className="mb-2 text-center text-[10px] font-semibold uppercase tracking-wide text-white/50">Clubs</p>
           <div className="flex justify-evenly gap-0.5 sm:gap-1">{clubs.map((p) => chip(p))}</div>
         </div>
