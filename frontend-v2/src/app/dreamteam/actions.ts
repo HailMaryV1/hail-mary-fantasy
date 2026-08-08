@@ -101,19 +101,21 @@ export async function makeTransfer({
 
   const { data: squadPlayerRow } = await supabase
     .from("squad_players")
-    .select("id, game_players(price, players(position))")
+    .select("id, game_players(price, position_code)")
     .eq("squad_id", squadId)
     .eq("game_player_id", outGamePlayerId)
-    .single<{ id: number; game_players: { price: number; players: { position: string } } }>();
+    .single<{ id: number; game_players: { price: number; position_code: string } }>();
   if (!squadPlayerRow) return { error: "That player isn't in your squad." };
 
   const { data: incoming } = await supabase
     .from("game_players")
-    .select("id, price, is_active, players(position)")
+    .select("id, price, is_active, position_code")
     .eq("id", inGamePlayerId)
-    .single<{ id: number; price: number; is_active: boolean; players: { position: string } }>();
+    .single<{ id: number; price: number; is_active: boolean; position_code: string }>();
   if (!incoming || !incoming.is_active) return { error: "That player isn't available." };
-  if (incoming.players.position !== squadPlayerRow.game_players.players.position) {
+  // Dream Team's OWN classification (position_code), not the shared
+  // players.position which can genuinely disagree between games (2026-08-08 fix).
+  if (incoming.position_code !== squadPlayerRow.game_players.position_code) {
     return { error: "Replacement must be the same position." };
   }
 

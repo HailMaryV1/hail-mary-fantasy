@@ -2224,7 +2224,7 @@ def main():
         dict_cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         dict_cur.execute(
             """
-            select gp.id as game_player_id, p.position, gp.player_id, p.full_name,
+            select gp.id as game_player_id, gp.position_code as position, gp.player_id, p.full_name,
                    coalesce(gps.total_points, 0) as total_points, coalesce(gps.minutes_played, 0) as minutes_played,
                    coalesce(gps.goals, 0) as goals, coalesce(gps.assists, 0) as assists,
                    coalesce(gps.clean_sheets, 0) as clean_sheets, coalesce(gps.saves, 0) as saves,
@@ -2248,7 +2248,7 @@ def main():
             -- needs real match results this pre-season doesn't have yet
             -- (see compute_club_scores() below) - deliberately not run
             -- through this per-player per-90-rate pipeline at all.
-            where gp.game_id = %s and gp.is_active = true and p.position != 'CLUB'
+            where gp.game_id = %s and gp.is_active = true and gp.position_code != 'CLUB'
             """,
             (HISTORICAL_SEASON, game_id),
         )

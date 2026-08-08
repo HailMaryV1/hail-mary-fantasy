@@ -27,7 +27,11 @@ type SquadPlayerRow = {
   is_starting: boolean;
   game_players: {
     price: number;
-    players: { full_name: string; position: "GK" | "DEF" | "MID" | "FWD"; team_id: number; teams: { name: string } };
+    // Dream Team's OWN classification (game_players.position_code) - not
+    // players.position, which is shared across games and can genuinely
+    // disagree with what this specific game calls a player (2026-08-08 fix).
+    position_code: "GK" | "DEF" | "MID" | "FWD";
+    players: { full_name: string; team_id: number; teams: { name: string } };
   };
 };
 
@@ -91,7 +95,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
     supabase.from("game_squad_rules").select("budget").eq("game_id", game.id).single(),
     supabase
       .from("squad_players")
-      .select("game_player_id, is_starting, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
+      .select("game_player_id, is_starting, game_players(price, position_code, players(full_name, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
     getGameweekInfo(supabase, game.id),
@@ -237,7 +241,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       is_starting: sp.is_starting,
       price: sp.game_players.price,
       full_name: sp.game_players.players.full_name,
-      position: sp.game_players.players.position,
+      position: sp.game_players.position_code,
       team_id: sp.game_players.players.team_id,
       team_name: sp.game_players.players.teams.name,
     }));

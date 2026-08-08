@@ -34,19 +34,21 @@ export async function makeTransfer({
 
   const { data: squadPlayerRow } = await supabase
     .from("squad_players")
-    .select("id, game_players(players(position))")
+    .select("id, game_players(position_code)")
     .eq("squad_id", squadId)
     .eq("game_player_id", outGamePlayerId)
-    .single<{ id: number; game_players: { players: { position: string } } }>();
+    .single<{ id: number; game_players: { position_code: string } }>();
   if (!squadPlayerRow) return { error: "That player isn't in your squad." };
 
   const { data: incoming } = await supabase
     .from("game_players")
-    .select("id, is_active, players(position)")
+    .select("id, is_active, position_code")
     .eq("id", inGamePlayerId)
-    .single<{ id: number; is_active: boolean; players: { position: string } }>();
+    .single<{ id: number; is_active: boolean; position_code: string }>();
   if (!incoming || !incoming.is_active) return { error: "That player isn't available." };
-  if (incoming.players.position !== squadPlayerRow.game_players.players.position) {
+  // EFL Fantasy's OWN classification (position_code), not the shared
+  // players.position which can genuinely disagree between games (2026-08-08 fix).
+  if (incoming.position_code !== squadPlayerRow.game_players.position_code) {
     return { error: "Replacement must be the same position." };
   }
 
@@ -95,20 +97,20 @@ export async function makeClubTransfer({
 
   const { data: squadPlayerRow } = await supabase
     .from("squad_players")
-    .select("id, game_players(players(position))")
+    .select("id, game_players(position_code)")
     .eq("squad_id", squadId)
     .eq("game_player_id", outGamePlayerId)
-    .single<{ id: number; game_players: { players: { position: string } } }>();
-  if (!squadPlayerRow || squadPlayerRow.game_players.players.position !== "CLUB") {
+    .single<{ id: number; game_players: { position_code: string } }>();
+  if (!squadPlayerRow || squadPlayerRow.game_players.position_code !== "CLUB") {
     return { error: "That club isn't in your squad." };
   }
 
   const { data: incoming } = await supabase
     .from("game_players")
-    .select("id, is_active, players(position)")
+    .select("id, is_active, position_code")
     .eq("id", inGamePlayerId)
-    .single<{ id: number; is_active: boolean; players: { position: string } }>();
-  if (!incoming || !incoming.is_active || incoming.players.position !== "CLUB") {
+    .single<{ id: number; is_active: boolean; position_code: string }>();
+  if (!incoming || !incoming.is_active || incoming.position_code !== "CLUB") {
     return { error: "That club isn't available." };
   }
 

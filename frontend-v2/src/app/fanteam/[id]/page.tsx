@@ -27,7 +27,10 @@ type FanteamSquadPlayerRow = {
   bench_order: number | null;
   game_players: {
     price: number;
-    players: { full_name: string; position: "GK" | "DEF" | "MID" | "FWD"; team_id: number; teams: { name: string } };
+    // FanTeam's OWN classification, not the shared players.position which
+    // can genuinely disagree with what this game calls a player (2026-08-08 fix).
+    position_code: "GK" | "DEF" | "MID" | "FWD";
+    players: { full_name: string; team_id: number; teams: { name: string } };
   };
 };
 
@@ -84,7 +87,7 @@ export default async function FanTeamSquadPage({
     supabase
       .from("squad_players")
       .select(
-        "game_player_id, is_starting, bench_order, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))"
+        "game_player_id, is_starting, bench_order, game_players(price, position_code, players(full_name, team_id, teams!players_team_id_fkey(name)))"
       )
       .eq("squad_id", squadId)
       .returns<FanteamSquadPlayerRow[]>(),
@@ -229,7 +232,7 @@ export default async function FanTeamSquadPage({
       bench_order: sp.bench_order,
       price: sp.game_players.price,
       full_name: sp.game_players.players.full_name,
-      position: sp.game_players.players.position,
+      position: sp.game_players.position_code,
       team_id: sp.game_players.players.team_id,
       team_name: sp.game_players.players.teams.name,
     }));

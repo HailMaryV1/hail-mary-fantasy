@@ -104,7 +104,11 @@ type PoolRow = {
 type SquadPlayerRow = {
   game_player_id: number;
   game_players: {
-    players: { full_name: string; position: "GK" | "DEF" | "MID" | "FWD" | "CLUB"; team_id: number; teams: { name: string } };
+    // EFL Fantasy's OWN classification, not the shared players.position
+    // which can genuinely disagree with what this game calls a player
+    // (2026-08-08 fix). CLUB rows are eflfantasy-only synthetic entities.
+    position_code: "GK" | "DEF" | "MID" | "FWD" | "CLUB";
+    players: { full_name: string; team_id: number; teams: { name: string } };
   };
 };
 
@@ -181,7 +185,7 @@ export async function runAskMaryAnalysis(
         .single(),
       supabase
         .from("squad_players")
-        .select("game_player_id, game_players(players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
+        .select("game_player_id, game_players(position_code, players(full_name, team_id, teams!players_team_id_fkey(name)))")
         .eq("squad_id", squad.id)
         .returns<SquadPlayerRow[]>(),
       supabase.from("game_player_pool").select("*").eq("game_slug", game.slug).returns<PoolRow[]>(),
@@ -219,7 +223,7 @@ export async function runAskMaryAnalysis(
     return {
       game_player_id: sp.game_player_id,
       full_name: sp.game_players.players.full_name,
-      position: sp.game_players.players.position,
+      position: sp.game_players.position_code,
       team_id: sp.game_players.players.team_id,
       team_name: sp.game_players.players.teams.name,
       lineup: poolRow?.lineup ?? null,

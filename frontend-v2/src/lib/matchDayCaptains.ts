@@ -51,10 +51,13 @@ export async function getMatchDaysForSquad(
   const [{ data: rows }, { data: fixtureRows }] = await Promise.all([
     supabase
       .from("squad_players")
-      .select("game_player_id, game_players(players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
+      .select("game_player_id, game_players(position_code, players(full_name, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<
-        { game_player_id: number; game_players: { players: { full_name: string; position: string; team_id: number; teams: { name: string } } } }[]
+        {
+          game_player_id: number;
+          game_players: { position_code: string; players: { full_name: string; team_id: number; teams: { name: string } } };
+        }[]
       >(),
     supabase
       .from("game_fixture_gameweeks")
@@ -69,7 +72,7 @@ export async function getMatchDaysForSquad(
     fullName: r.game_players.players.full_name,
     teamId: r.game_players.players.team_id,
     teamName: r.game_players.players.teams.name,
-    position: r.game_players.players.position,
+    position: r.game_players.position_code,
   }));
 
   // Every real match-date in the window (leaguewide, not squad-filtered),

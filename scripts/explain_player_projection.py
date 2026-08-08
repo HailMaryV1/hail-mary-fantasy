@@ -108,7 +108,7 @@ def main():
     if args.search:
         cur.execute(
             """
-            select gp.id, p.full_name, p.position, fg.slug
+            select gp.id, p.full_name, gp.position_code as position, fg.slug
             from game_players gp
             join players p on p.id = gp.player_id
             join fantasy_games fg on fg.id = gp.game_id
@@ -135,7 +135,7 @@ def main():
 
     cur.execute(
         """
-        select p.full_name, p.position, fg.slug as game_slug, gp.price
+        select p.full_name, gp.position_code as position, fg.slug as game_slug, gp.price
         from game_players gp
         join players p on p.id = gp.player_id
         join fantasy_games fg on fg.id = gp.game_id

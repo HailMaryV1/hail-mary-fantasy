@@ -124,7 +124,7 @@ def match_player(cur, game_id, provider_name, price, position=None):
     DB's other 6.5M "Gabriel" (Martinelli, MID) - position does."""
     cur.execute(
         """
-        select gp.id, p.full_name, gp.price, p.position
+        select gp.id, p.full_name, gp.price, gp.position_code as position
         from game_players gp
         join players p on p.id = gp.player_id
         where gp.game_id = %s and gp.is_active = true

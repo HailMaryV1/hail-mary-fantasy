@@ -127,7 +127,7 @@ def main():
 
         cur.execute(
             """
-            select gp.id as game_player_id, gp.external_id, p.position
+            select gp.id as game_player_id, gp.external_id, gp.position_code as position
             from game_players gp
             join players p on p.id = gp.player_id
             where gp.game_id = %s and gp.is_active = true

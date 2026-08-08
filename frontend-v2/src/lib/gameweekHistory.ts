@@ -94,16 +94,18 @@ export async function resolvePlayerIdentities(supabase: Supabase, gamePlayerIds:
   if (gamePlayerIds.length === 0) return new Map();
   const { data } = await supabase
     .from("game_players")
-    .select("id, price, players(full_name, position, team_id, teams!players_team_id_fkey(name))")
+    .select("id, price, position_code, players(full_name, team_id, teams!players_team_id_fkey(name))")
     .in("id", gamePlayerIds)
-    .returns<{ id: number; price: number; players: { full_name: string; position: string; team_id: number; teams: { name: string } } }[]>();
+    .returns<{ id: number; price: number; position_code: string; players: { full_name: string; team_id: number; teams: { name: string } } }[]>();
   return new Map(
     (data ?? []).map((r) => [
       r.id,
       {
         game_player_id: r.id,
         full_name: r.players.full_name,
-        position: r.players.position,
+        // This game's OWN classification - not the shared players.position,
+        // which can genuinely disagree between games (2026-08-08 fix).
+        position: r.position_code,
         team_id: r.players.team_id,
         team_name: r.players.teams.name,
         price: Number(r.price),

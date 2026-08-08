@@ -101,7 +101,10 @@ type SquadPlayerRow = {
   is_starting: boolean;
   game_players: {
     price: number;
-    players: { full_name: string; position: "GK" | "DEF" | "MID" | "FWD"; team_id: number; teams: { name: string } };
+    // Cloud FF's OWN classification, not the shared players.position which
+    // can genuinely disagree with what this game calls a player (2026-08-08 fix).
+    position_code: "GK" | "DEF" | "MID" | "FWD";
+    players: { full_name: string; team_id: number; teams: { name: string } };
   };
 };
 
@@ -170,7 +173,7 @@ export async function runAskMaryAnalysis(
       supabase.from("game_squad_rules").select("budget, max_per_club, squad_size, starting_size").eq("game_id", game.id).single(),
       supabase
         .from("squad_players")
-        .select("game_player_id, is_starting, game_players(price, players(full_name, position, team_id, teams!players_team_id_fkey(name)))")
+        .select("game_player_id, is_starting, game_players(price, position_code, players(full_name, team_id, teams!players_team_id_fkey(name)))")
         .eq("squad_id", squad.id)
         .returns<SquadPlayerRow[]>(),
       supabase.from("game_player_pool").select("*").eq("game_slug", game.slug).returns<PoolRow[]>(),
@@ -209,7 +212,7 @@ export async function runAskMaryAnalysis(
     return {
       game_player_id: sp.game_player_id,
       full_name: sp.game_players.players.full_name,
-      position: sp.game_players.players.position,
+      position: sp.game_players.position_code,
       team_id: sp.game_players.players.team_id,
       team_name: sp.game_players.players.teams.name,
       price: Number(sp.game_players.price),

@@ -418,7 +418,7 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
             game_player_id = row[0]
             cur.execute(
                 "update game_players set external_id = %s, position_code = %s, price = %s, is_active = true, updated_at = now() where id = %s",
-                (external_id, pc["position"], pc["price"], game_player_id),
+                (external_id, live_position, pc["price"], game_player_id),
             )
         else:
             live_team_name = team_name_by_id.get(live_team_id, "an unknown club")
@@ -438,7 +438,7 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
                         is_active = true, updated_at = now()
                 returning id
                 """,
-                (game_id, player_id, external_id, pc["position"], pc["price"]),
+                (game_id, player_id, external_id, live_position, pc["price"]),
             )
             game_player_id = cur.fetchone()[0]
 

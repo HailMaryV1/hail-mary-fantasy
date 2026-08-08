@@ -30,7 +30,9 @@ type FanteamSquadPlayerRow = {
   id: number;
   game_player_id: number;
   is_starting: boolean;
-  game_players: { price: number; players: { position: string; team_id: number } };
+  // FanTeam's OWN classification (position_code), not the shared
+  // players.position which can genuinely disagree between games (2026-08-08 fix).
+  game_players: { price: number; position_code: string; players: { team_id: number } };
 };
 
 /**
@@ -76,7 +78,7 @@ export async function makeFanteamTransfer({
 
   const { data: squadPlayers } = await supabase
     .from("squad_players")
-    .select("id, game_player_id, is_starting, game_players(price, players(position, team_id))")
+    .select("id, game_player_id, is_starting, game_players(price, position_code, players(team_id))")
     .eq("squad_id", squadId)
     .returns<FanteamSquadPlayerRow[]>();
   if (!squadPlayers) return { error: "Couldn't load squad." };
@@ -87,11 +89,13 @@ export async function makeFanteamTransfer({
 
   const { data: incoming } = await supabase
     .from("game_players")
-    .select("id, price, is_active, players(position, team_id)")
+    .select("id, price, is_active, position_code, players(team_id)")
     .eq("id", inGamePlayerId)
-    .single<{ id: number; price: number; is_active: boolean; players: { position: string; team_id: number } }>();
+    .single<{ id: number; price: number; is_active: boolean; position_code: string; players: { team_id: number } }>();
   if (!incoming || !incoming.is_active) return { error: "That player isn't available." };
-  if (incoming.players.position !== outgoing.game_players.players.position) {
+  // FanTeam's OWN classification (position_code), not the shared
+  // players.position which can genuinely disagree between games (2026-08-08 fix).
+  if (incoming.position_code !== outgoing.game_players.position_code) {
     return { error: "Replacement must be the same position." };
   }
 
@@ -205,13 +209,13 @@ export async function reorderFanteamBench({
 
   const { data: benchRows } = await supabase
     .from("squad_players")
-    .select("id, game_player_id, bench_order, game_players(players(position))")
+    .select("id, game_player_id, bench_order, game_players(position_code)")
     .eq("squad_id", squadId)
     .eq("is_starting", false)
-    .returns<{ id: number; game_player_id: number; bench_order: number | null; game_players: { players: { position: string } } }[]>();
+    .returns<{ id: number; game_player_id: number; bench_order: number | null; game_players: { position_code: string } }[]>();
   if (!benchRows) return { error: "Couldn't load squad." };
 
-  const outfield = benchRows.filter((r) => r.game_players.players.position !== "GK");
+  const outfield = benchRows.filter((r) => r.game_players.position_code !== "GK");
   const orders = outfield.map((r) => r.bench_order);
   const needsNormalizing = orders.some((o) => o == null) || new Set(orders).size !== orders.length;
 
@@ -281,9 +285,9 @@ export async function setFanteamFormation({ squadId, formationCode }: { squadId:
 
   const { data: squadPlayers } = await supabase
     .from("squad_players")
-    .select("id, game_player_id, game_players(players(position))")
+    .select("id, game_player_id, game_players(position_code)")
     .eq("squad_id", squadId)
-    .returns<{ id: number; game_player_id: number; game_players: { players: { position: "GK" | "DEF" | "MID" | "FWD" } } }[]>();
+    .returns<{ id: number; game_player_id: number; game_players: { position_code: "GK" | "DEF" | "MID" | "FWD" } }[]>();
   if (!squadPlayers || squadPlayers.length === 0) return { error: "Couldn't load squad." };
 
   const { data: scoreRows } = await supabase.from("player_projection_summary").select("game_player_id, hail_mary_score").eq("game_slug", "fanteam");
@@ -302,7 +306,7 @@ export async function setFanteamFormation({ squadId, formationCode }: { squadId:
     FWD: [],
   };
   for (const sp of squadPlayers) {
-    const pos = sp.game_players.players.position;
+    const pos = sp.game_players.position_code;
     byPosition[pos].push({ id: sp.id, game_player_id: sp.game_player_id, score: scoreByGamePlayerId.get(sp.game_player_id) ?? 0 });
   }
   for (const pos of ["GK", "DEF", "MID", "FWD"] as const) {
@@ -433,9 +437,9 @@ export async function swapFanteamLineup({ squadId, playerAId, playerBId }: { squ
 
   const { data: rows } = await supabase
     .from("squad_players")
-    .select("id, game_player_id, is_starting, bench_order, game_players(players(position))")
+    .select("id, game_player_id, is_starting, bench_order, game_players(position_code)")
     .eq("squad_id", squadId)
-    .returns<{ id: number; game_player_id: number; is_starting: boolean; bench_order: number | null; game_players: { players: { position: "GK" | "DEF" | "MID" | "FWD" } } }[]>();
+    .returns<{ id: number; game_player_id: number; is_starting: boolean; bench_order: number | null; game_players: { position_code: "GK" | "DEF" | "MID" | "FWD" } }[]>();
   if (!rows) return { error: "Couldn't load squad." };
 
   const a = rows.find((r) => r.game_player_id === playerAId);
@@ -445,11 +449,11 @@ export async function swapFanteamLineup({ squadId, playerAId, playerBId }: { squ
     return { error: "One player must be starting and the other on the bench." };
   }
 
-  const posA = a.game_players.players.position;
-  const posB = b.game_players.players.position;
+  const posA = a.game_players.position_code;
+  const posB = b.game_players.position_code;
   if (posA !== posB) {
     const counts: Record<"GK" | "DEF" | "MID" | "FWD", number> = { GK: 0, DEF: 0, MID: 0, FWD: 0 };
-    for (const r of rows) if (r.is_starting) counts[r.game_players.players.position] += 1;
+    for (const r of rows) if (r.is_starting) counts[r.game_players.position_code] += 1;
     const outgoingPos = a.is_starting ? posA : posB;
     const incomingPos = a.is_starting ? posB : posA;
     counts[outgoingPos] -= 1;

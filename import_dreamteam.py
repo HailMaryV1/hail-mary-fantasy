@@ -19,10 +19,14 @@ confirmed to already exist in `teams`) to the canonical name.
 
 Position resolution: the live API's "STR" maps to this shared schema's
 "FWD" (confirmed live: `players.position` has zero "STR" rows, 107
-"FWD" - Dream Team's OWN game_players.position_code historically uses
-"STR" though, so that native code is still what gets written there,
-only the canonical `players.position` bucket lookup below is
-translated). GK/DEF/MID need no translation.
+"FWD"). Both `players.position` AND `game_players.position_code` get
+the translated canonical value (2026-08-08 fix - `position_code` used
+to keep Dream Team's raw native code, but every game-specific reader
+(pool filters, scoring, transfer eligibility) reads that column, and
+different real platforms can genuinely disagree on a player's position
+(e.g. Matheus Cunha: MID here, FWD on FanTeam) - each game needs its
+own canonical value, not a shared bucket string. GK/DEF/MID need no
+translation either way.
 
 Player matching: bucketed by position only, NOT team - confirmed live
 that `players.team_id` for several real Dream Team players (Alejandro
@@ -329,12 +333,14 @@ def import_players(cur, game_id, players_data):
         row = cur.fetchone()
         external_id = p["id"]
         seen_external_ids.add(external_id)
-        # Dream Team's own native position code (e.g. "STR"), not the
-        # canonical-translated one used only for matching above - this
-        # column feeds the rest of the existing Dream Team pipeline
-        # (game_scoring_rules, compute_projections.py), which already
-        # expects "STR".
-        native_position = p["position"]
+        # Canonical GK/DEF/MID/FWD, not Dream Team's raw native code
+        # ("STR") - every game-specific reader (pool display, scoring,
+        # transfer eligibility) reads this column, and disagreements
+        # between games' own real classification of a player (e.g.
+        # Matheus Cunha: MID here, FWD on FanTeam) are real and expected,
+        # so each game must store its own canonical value rather than one
+        # shared players.position clobbered by whichever importer ran last.
+        native_position = canonical_position(p["position"])
         if row:
             game_player_id, old_price = row
             cur.execute(
