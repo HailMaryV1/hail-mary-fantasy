@@ -210,6 +210,7 @@ def import_players(cur, game_id, players_data, team_id_by_squad_id):
     matched, created, stats_written = 0, 0, 0
     seen_external_ids = set()
 
+    eliminated = 0
     for p in players_data:
         team_id = team_id_by_squad_id.get(p["squadId"])
         if team_id is None:
@@ -217,6 +218,22 @@ def import_players(cur, game_id, players_data, team_id_by_squad_id):
         position = p["position"]
         if position not in ("GK", "DEF", "MID", "FWD"):
             continue  # unexpected position code - skip rather than guess
+        # fantasy.efl.com's own real-time selectability signal - "eliminated"
+        # means the platform itself no longer lists this player as pickable
+        # (real cases confirmed live 2026-08-08: Ivor Pandur, a Rochdale GK
+        # who no longer exists as a selectable option on the real site;
+        # Abdul Fatawu still shown here at his OLD club, Leicester City,
+        # despite having since signed for Ipswich Town - now a Premier
+        # League club, out of EFL Fantasy's Championship/L1/L2 scope
+        # entirely). Skipping the row here (not seen_external_ids) lets the
+        # existing "vanished from the feed" stale-sweep below deactivate it
+        # the same way it already handles a player disappearing outright -
+        # one mechanism for both cases instead of a second one. "playing"/
+        # "injured"/"suspended" are all real, still-in-scope players and
+        # stay active exactly as before.
+        if p.get("status") == "eliminated":
+            eliminated += 1
+            continue
         full_name = f"{p['firstName']} {p['lastName']}".strip()
         key = compact(full_name)
 
@@ -305,7 +322,7 @@ def import_players(cur, game_id, players_data, team_id_by_squad_id):
         upsert_stats(cur, game_player_id, raw, typed)
         stats_written += 1
 
-    print(f"Players: {matched} matched to existing rows, {created} new player rows created, {stats_written} stat snapshots written.")
+    print(f"Players: {matched} matched to existing rows, {created} new player rows created, {stats_written} stat snapshots written, {eliminated} eliminated (skipped, will be deactivated below).")
 
     # Scoped to position_code != 'CLUB' - CLUB rows are a completely
     # separate set written by import_club_game_players, never present in
