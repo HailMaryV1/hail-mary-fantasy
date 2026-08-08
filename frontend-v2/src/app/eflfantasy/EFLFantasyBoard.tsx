@@ -7,6 +7,7 @@ import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMe
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import Kit from "@/components/Kit";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
+import OddsRefreshButton from "@/components/OddsRefreshButton";
 import { searchPool } from "@/lib/poolSearch";
 import { makeTransfer, makeClubTransfer } from "./actions";
 
@@ -502,6 +503,7 @@ export default function EFLFantasyBoard({
                 />
               </div>
               <div className="flex items-center justify-end gap-2">
+                <OddsRefreshButton gameSlug="eflfantasy" />
                 <Link
                   href="/eflfantasy/ask-mary"
                   className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
