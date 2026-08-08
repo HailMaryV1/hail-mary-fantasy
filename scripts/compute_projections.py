@@ -1281,11 +1281,13 @@ def fetch_scoring_rules(cur, game_id):
     return {(applies_to, stat): float(points) for applies_to, stat, points in cur.fetchall()}
 
 
-def fetch_player_status(cur, game_id, gameweek):
+def fetch_fanteam_player_status(cur, game_id, gameweek):
     """{game_player_id: (lineup, status)} for one gameweek - empty dict if
     gameweek is None (period-mode, e.g. Dream Team, which has no live
     status source at all) or nothing captured yet - the natural no-op
-    default that leaves every score unmultiplied."""
+    default that leaves every score unmultiplied. FanTeam's own live-
+    lineup feed (import_fanteam_live.py owns fanteam_player_status) -
+    never queried for any other game, see fetch_live_status below."""
     if gameweek is None:
         return {}
     cur.execute(
@@ -1298,6 +1300,43 @@ def fetch_player_status(cur, game_id, gameweek):
         (game_id, gameweek),
     )
     return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+
+
+def fetch_eflfantasy_player_status(cur, game_id, gameweek):
+    """{game_player_id: (lineup, status)} for one gameweek, from EFL
+    Fantasy's OWN status table (migration 0104) - never fanteam_player_
+    status, this game's live source is fantasy.efl.com's own real status
+    field (scripts/capture_eflfantasy_player_status.py owns this table),
+    a completely different feed to FanTeam's. lineup is always None -
+    this feed has no predicted-lineup granularity, only a coarser
+    playing/injured/suspended/eliminated status ("eliminated" is handled
+    separately at the game_players.is_active level, so never appears
+    here). "injured"/"suspended" are real, direct matches for
+    OPPORTUNITY_HARD_OUT_STATUSES below - no translation table needed."""
+    if gameweek is None:
+        return {}
+    cur.execute(
+        """
+        select gp.id, s.status
+        from eflfantasy_player_status s
+        join game_players gp on gp.id = s.game_player_id
+        where gp.game_id = %s and s.gameweek = %s
+        """,
+        (game_id, gameweek),
+    )
+    return {row[0]: (None, row[1]) for row in cur.fetchall()}
+
+
+def fetch_live_status(cur, game_id, gameweek, game_slug):
+    """Dispatches to the right game's OWN live-status source - see this
+    app's per-game independent identity rule. Every other game (Dream
+    Team, Cloud FF) has no live-status source at all yet, same as before
+    this dispatcher existed - empty dict, the natural no-op default."""
+    if game_slug == "fanteam":
+        return fetch_fanteam_player_status(cur, game_id, gameweek)
+    if game_slug == "eflfantasy":
+        return fetch_eflfantasy_player_status(cur, game_id, gameweek)
+    return {}
 
 
 def compute_shrunk_rates(players, historical_rows):
@@ -2353,7 +2392,7 @@ def main():
         else:
             rows = fetch_fixtures_by_period(cur, game_id, period_start, period_end)
 
-        player_status = fetch_player_status(cur, game_id, gameweek)
+        player_status = fetch_live_status(cur, game_id, gameweek, game_slug)
 
         fixtures_by_player = {}
         all_kickoffs = []
