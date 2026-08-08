@@ -269,6 +269,20 @@ export default function EFLFantasyBoard({
   const pendingOutPlayers = optimisticSquad.filter((p) => pendingOutIds.has(p.game_player_id));
   const pendingOutClubs = optimisticClubs.filter((c) => pendingOutClubIds.has(c.game_player_id));
 
+  // Real squad shape, derived from the actual squad rather than a fixed
+  // "1 GK/2 DEF/2 MID/2 FWD" assumption - fantasy.efl.com's own team-
+  // builder offers 3 real formations (2-2-2/2-3-1/3-2-1, confirmed live
+  // 2026-08-08 via a screenshot of their UI), and migration 0089's claim
+  // that formation was fixed turned out to be wrong. Transfers are same-
+  // position swaps only (see actions.ts), so whatever split the squad
+  // already has stays intact - this just labels it honestly instead of
+  // always showing "2-2-2" regardless of the real shape.
+  const positionCounts = optimisticSquad.reduce(
+    (acc, p) => ({ ...acc, [p.position]: (acc[p.position] ?? 0) + 1 }),
+    {} as Record<BoardPlayer["position"], number>
+  );
+  const squadShapeLabel = `${positionCounts.GK ?? 0} GK · ${positionCounts.DEF ?? 0} DEF · ${positionCounts.MID ?? 0} MID · ${positionCounts.FWD ?? 0} FWD · 2 CLUB`;
+
   // Pitch chips always show both points and next fixture together now -
   // unlimited free transfers every gameweek (see gameConfig.ts's
   // hasBudget/transfer rules) means looking more than one week ahead
@@ -448,7 +462,7 @@ export default function EFLFantasyBoard({
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
           <StatBox label="Transfers" value="Unlimited" />
           <StatBox label="Gameweek" value={`GW${viewedGameweek}`} />
-          <StatBox label="Squad" value="1 GK · 2 DEF · 2 MID · 2 FWD · 2 CLUB" />
+          <StatBox label="Squad" value={squadShapeLabel} />
         </div>
 
         {(pendingOutPlayers.length > 0 || pendingOutClubs.length > 0) && (

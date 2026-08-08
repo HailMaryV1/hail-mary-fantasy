@@ -13,11 +13,18 @@ import { toPredictionRow, type PredictionRecord } from "./predictionArchive";
 // EFL Fantasy only, for now - its own dedicated file per this app's
 // per-game independent identity rule, not a branch on Cloud FF's.
 //
-// EFL Fantasy's real rules (traced from migrations 0087-0091 and live
-// fantasy.efl.com state): 9 fixed picks, no bench (1 GK/2 DEF/2 MID/2
-// FWD + 2 CLUB), NO budget at all, and no per-gameweek captain concept -
-// captaincy only ever exists via the Max Captain booster (retroactive,
-// twice/season). That absence of a budget is the key simplification over
+// EFL Fantasy's real rules (traced from migrations 0087-0091/0106 and
+// live fantasy.efl.com state): 9 picks, no bench - 1 GK + 6 outfield
+// split across one of 3 real formations (2-2-2/2-3-1/3-2-1, confirmed
+// live 2026-08-08 - migration 0089's original "formation is fixed"
+// claim was wrong) + 2 CLUB, NO budget at all, and no per-gameweek
+// captain concept - captaincy only ever exists via the Max Captain
+// booster (retroactive, twice/season). Formation flexibility needs no
+// code change here: the search below is purely same-position swaps
+// (see findLegalReplacementsForOutgoing) and squadPlayers.length === 7
+// is the only shape check (below), so whatever DEF/MID/FWD split the
+// squad already has is preserved automatically, never assumed to be
+// 2-2-2. That absence of a budget is the key simplification over
 // cloudffAskMaryEngine.ts: with nothing to pool, the 2-leg
 // findBestPairBundle search that file needs has no reason to exist here -
 // a plain greedy single-slot search is already globally optimal. Club
