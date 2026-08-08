@@ -1597,7 +1597,23 @@ def compute_opportunity(historical_row, position, pos_inv, weights, lineup, stat
     # raw_pt1 * 0 contributes no weight regardless of how large raw_pt1
     # is. Caught by testing this against a real player before wiring this
     # in - see the Phase A risk log.
-    appearance_rate = (raw_pt1 + k_effective * pos_inv["appearance"]) / (season_games + k_effective)
+    # raw_pt1 <= 0 (zero real observations in this dataset, the same
+    # zero-signal criterion compute_shrunk_rates uses elsewhere in this
+    # file) is handled as a special case, not folded into the general
+    # formula below: shrinking (0 + k*prior) against season_games (a
+    # fixed ~38-46, regardless of how long this player has actually been
+    # eligible in this competition) crushes a brand-new-to-competition
+    # signing's appearance_rate to roughly k/(season_games+k) of the
+    # position average, not AT it - confirmed live 2026-08-08, Kieran
+    # Trippier (newly signed to a Wolves side pundits expect to start
+    # every week, zero EFL Fantasy history) projected an 11% appearance
+    # probability off this. start_given_appeared right below is fine as-
+    # is - it already shrinks against pt1 (floored at 1.0), not
+    # season_games, landing close to its own prior for exactly this case.
+    if raw_pt1 <= 0:
+        appearance_rate = pos_inv["appearance"]
+    else:
+        appearance_rate = (raw_pt1 + k_effective * pos_inv["appearance"]) / (season_games + k_effective)
     start_given_appeared = (raw_pt1 * start_share + k_effective * pos_inv["start_given_appeared"]) / (pt1 + k_effective)
     p_start_historical = appearance_rate * start_given_appeared
 
