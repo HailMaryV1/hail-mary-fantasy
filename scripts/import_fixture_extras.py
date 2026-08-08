@@ -142,12 +142,25 @@ def main():
     cur = conn.cursor()
 
     try:
+        # Real bug found live 2026-08-08: no kickoff_at filter meant this
+        # always ordered from the EARLIEST fixture in the whole table,
+        # not the earliest UPCOMING one - fixtures table holds historical
+        # rows too (last season's baselines etc.), so every real run
+        # since this script existed fed already-played fixtures (one
+        # case: 18 days past kickoff) to the Odds API and got a 404
+        # "Event not found" - not the "too far out, bookmakers haven't
+        # posted yet" case the old comment below assumed. That silently
+        # meant fixture_team_totals/fixture_clean_sheet_probabilities
+        # never got a single real row, and every clean-sheet number
+        # across every game has been running on the win/draw-derived
+        # approximation this whole time, unconditionally.
         cur.execute(
             """
             select f.id, f.external_id, f.competition, ht.name, at.name
             from fixtures f
             join teams ht on ht.id = f.home_team_id
             join teams at on at.id = f.away_team_id
+            where f.kickoff_at >= now()
             order by f.kickoff_at
             """
         )
