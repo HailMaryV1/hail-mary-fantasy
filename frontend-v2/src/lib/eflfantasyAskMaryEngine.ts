@@ -351,8 +351,18 @@ export async function runAskMaryAnalysis(
     }
 
     for (let slot = 0; slot < MAX_PLAYER_TRANSFERS_PER_STEP; slot++) {
+      // Hard exclusion, not just a score penalty - an injured/suspended
+      // player must never be a buy candidate at all, confirmed live
+      // 2026-08-08 (Jack Tucker showing "injured" on the real site while
+      // still fully pickable/recommendable here). INJURY_AVAILABILITY_
+      // SCORES[status] is 0.0 for exactly "injured"/"suspended"/
+      // "not_available"/"gameweek_off" and DEFAULT_SECURITY_SCORE (1.0)
+      // for anything else (including null/unconfirmed) - same fail-open
+      // philosophy as everywhere else this map is used, so an unconfirmed
+      // status never wrongly excludes a fine player.
       const poolCandidates: TransferCandidate[] = playerPool
         .filter((p) => !soldIds.has(p.game_player_id))
+        .filter((p) => (INJURY_AVAILABILITY_SCORES[p.status ?? ""] ?? DEFAULT_SECURITY_SCORE) > 0)
         .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: 0, score: avgFor(scoreMapForStep, p.game_player_id), position: p.position, formStatus: p.formStatus }));
 
       const currentTotal = playersTotal(workingSquad, scoreMapForStep);
