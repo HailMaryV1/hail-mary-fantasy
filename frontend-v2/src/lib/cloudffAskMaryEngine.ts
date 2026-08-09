@@ -1,6 +1,7 @@
 import type { createAuthServerClient } from "./supabaseServerClient";
 import { getSeasonTiming } from "./gameweek";
 import { findLegalReplacementsForOutgoing, type TransferCandidate } from "./transferMatching";
+import { fetchRotationRiskByPlayerIds, buildContestedGamePlayerPairs } from "./rotationRisk";
 import { type FixtureDifficultyRow } from "./fixtureRuns";
 import { deriveTeamFixtureRatings } from "./fixtureSwing";
 import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "./playerStatus";
@@ -84,6 +85,7 @@ export type MatchDayCaptainPick = {
 
 type PoolRow = {
   game_player_id: number;
+  player_id: number;
   full_name: string;
   position: "GK" | "DEF" | "MID" | "FWD";
   team_id: number;
@@ -206,6 +208,16 @@ export async function runAskMaryAnalysis(
   const formByGamePlayerId = buildFormByGamePlayerId(formRows ?? []);
   const pool: PoolRow[] = (poolRaw ?? []).map((p) => ({ ...p, formStatus: formByGamePlayerId.get(p.game_player_id)?.status ?? null }));
   const poolByGamePlayerId = new Map(pool.map((p) => [p.game_player_id, p]));
+
+  // Rotation risk (migration 0111/0112) - real Premier League data, in
+  // scope for Cloud FF (see feedback_data_source_scope_correlation for why
+  // EFL Fantasy never gets this). contestedPairs maps a game_player_id to
+  // the OTHER game_player_id it has a real rotation battle with.
+  const riskByPlayerId = await fetchRotationRiskByPlayerIds(supabase, pool.map((p) => p.player_id));
+  const contestedPairs = buildContestedGamePlayerPairs(
+    pool.map((p) => ({ game_player_id: p.game_player_id, player_id: p.player_id })),
+    riskByPlayerId
+  );
 
   const squadPlayers = (squadPlayersRaw ?? []).map((sp) => {
     const poolRow = poolByGamePlayerId.get(sp.game_player_id);
@@ -352,12 +364,17 @@ export async function runAskMaryAnalysis(
         const freedBudget = workingBudget + outA.price + outB.price;
         const candA = shortlistByPosition.get(outA.position) ?? [];
         const candB = shortlistByPosition.get(outB.position) ?? [];
+        const remainingSquadIds = new Set([...workingSquadIds].filter((id) => id !== outA.game_player_id && id !== outB.game_player_id));
 
         let bestCombo: { inA: TransferCandidate; inB: TransferCandidate; combinedScore: number } | null = null;
         for (const inA of candA) {
           for (const inB of candB) {
             if (inA.gamePlayerId === inB.gamePlayerId) continue;
             if (inA.price + inB.price > freedBudget) continue;
+            const contenderOfA = contestedPairs.get(inA.gamePlayerId);
+            if (contenderOfA != null && (contenderOfA === inB.gamePlayerId || remainingSquadIds.has(contenderOfA))) continue;
+            const contenderOfB = contestedPairs.get(inB.gamePlayerId);
+            if (contenderOfB != null && remainingSquadIds.has(contenderOfB)) continue;
             const combinedScore = inA.score + inB.score;
             if (!bestCombo || combinedScore > bestCombo.combinedScore) bestCombo = { inA, inB, combinedScore };
           }
@@ -441,7 +458,8 @@ export async function runAskMaryAnalysis(
           workingSquadIds,
           workingBudget,
           new Map(), // no club-limit map needed - max_per_club is null for Cloud FF
-          null
+          null,
+          contestedPairs
         );
         let bestCandidate: TransferCandidate | null = null;
         let bestGain = 0;

@@ -9,6 +9,7 @@ export type RotationRiskInfo = {
   ownProbability: number;
   contenderName: string | null;
   contenderProbability: number | null;
+  contenderPlayerId: number | null;
 };
 
 export type RotationRiskBadgeInfo = { code: string; label: string; tone: "green" | "amber" | "red" | "gray" };
@@ -42,7 +43,7 @@ export async function fetchRotationRiskByPlayerIds(supabase: Supabase, playerIds
   if (ids.length === 0) return map;
   const { data } = await supabase
     .from("player_rotation_risk")
-    .select("player_id, start_probability, contender_name, contender_probability, risk_level")
+    .select("player_id, start_probability, contender_name, contender_probability, risk_level, contender_player_id")
     .in("player_id", ids);
   for (const row of data ?? []) {
     map.set(row.player_id as number, {
@@ -50,7 +51,32 @@ export async function fetchRotationRiskByPlayerIds(supabase: Supabase, playerIds
       ownProbability: Number(row.start_probability),
       contenderName: (row.contender_name as string | null) ?? null,
       contenderProbability: row.contender_probability != null ? Number(row.contender_probability) : null,
+      contenderPlayerId: (row.contender_player_id as number | null) ?? null,
     });
   }
   return map;
+}
+
+/**
+ * Turns the player_id-keyed risk map above into a game_player_id-keyed
+ * "who else can't be bought/kept alongside this player" map, scoped to one
+ * game's pool - Ask Mary's transfer search only ever deals in
+ * game_player_id, never the game-independent players.id. Only real
+ * contests (risk_level !== 'nailed') produce an entry; a player with no
+ * lineup-probability coverage or a comfortably-ahead starter is never
+ * flagged, same "absence of data is never risk" rule as the badge.
+ */
+export function buildContestedGamePlayerPairs(
+  pool: { game_player_id: number; player_id: number }[],
+  riskByPlayerId: Map<number, RotationRiskInfo>
+): Map<number, number> {
+  const gamePlayerIdByPlayerId = new Map(pool.map((p) => [p.player_id, p.game_player_id]));
+  const pairs = new Map<number, number>();
+  for (const p of pool) {
+    const risk = riskByPlayerId.get(p.player_id);
+    if (!risk || risk.level === "nailed" || risk.contenderPlayerId == null) continue;
+    const contenderGamePlayerId = gamePlayerIdByPlayerId.get(risk.contenderPlayerId);
+    if (contenderGamePlayerId != null) pairs.set(p.game_player_id, contenderGamePlayerId);
+  }
+  return pairs;
 }

@@ -53,6 +53,16 @@ export function findBuyCandidatesForOutgoing(
  * is deliberately upgrade-only because it drives Mary's automated
  * recommendations, which should never suggest a lateral or worse move.
  * This one drives a human picking from the pool themselves.
+ *
+ * `contestedPairs` (game_player_id -> game_player_id, both directions - see
+ * rotationRisk.ts's buildContestedGamePlayerPairs) is optional and only
+ * ever passed by the 3 real-Premier-League games (dreamteam/fanteam/
+ * cloudff - see feedback_data_source_scope_correlation, the lineup-
+ * probability data has zero EFL coverage). When present, a candidate whose
+ * real rotation-battle rival is already elsewhere in the squad is filtered
+ * out - the fix for a real reported case (2026-08-09): Mary kept
+ * recommending both Cherki and Foden, who by the source data's own model
+ * are competing for the same slot and can't both start.
  */
 export function findLegalReplacementsForOutgoing(
   pool: TransferCandidate[],
@@ -60,7 +70,8 @@ export function findLegalReplacementsForOutgoing(
   squadIds: Set<number>,
   budgetRemaining: number,
   clubCounts: Map<number, number>,
-  maxPerClub: number | null
+  maxPerClub: number | null,
+  contestedPairs?: Map<number, number>
 ): MatchResult<TransferCandidate>[] {
   const affordableBudget = budgetRemaining + outgoing.price;
 
@@ -71,6 +82,10 @@ export function findLegalReplacementsForOutgoing(
     if (maxPerClub) {
       const clubCountWithoutOut = (clubCounts.get(p.teamId) ?? 0) - (p.teamId === outgoing.teamId ? 1 : 0);
       if (clubCountWithoutOut + 1 > maxPerClub) return false;
+    }
+    if (contestedPairs) {
+      const contenderId = contestedPairs.get(p.gamePlayerId);
+      if (contenderId != null && contenderId !== outgoing.gamePlayerId && squadIds.has(contenderId)) return false;
     }
     return true;
   });
