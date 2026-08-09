@@ -6,6 +6,7 @@ import { deriveTeamFixtureRatings } from "./fixtureSwing";
 import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "./playerStatus";
 import { buildFormByGamePlayerId, type FormStatus } from "./hailMaryForm";
 import { getClubPickCounts, CLUB_CAP } from "./eflClubCapCheck";
+import { fetchTeamOutlookByTeamIds, buildRelegationRiskTeamIds } from "./eflSeasonOutlook";
 import { scoreMoveCandidates, STRATEGY_WEIGHTS, type Strategy, type MoveCandidateInput, type MoveScore, type MoveReason } from "./recommendationScoring";
 import { assessSquadHealth, type SquadHealthPlayer, type SquadHealthReport } from "./squadHealth";
 import { toPredictionRow, type PredictionRecord } from "./predictionArchive";
@@ -218,6 +219,20 @@ export async function runAskMaryAnalysis(
   const playerPool = pool.filter((p): p is PoolRow & { position: "GK" | "DEF" | "MID" | "FWD" } => p.position !== "CLUB");
   const clubPool = pool.filter((p) => p.position === "CLUB");
 
+  // Season outlook (migration 0113) - the bookmakers' promotion/
+  // relegation markets, EFL Fantasy's only real proxy for club strength
+  // before a ball is kicked. seasonTiming is already resolved above (used
+  // for seasonStarted below too), so this can gate on it directly rather
+  // than waiting for the later destructure. relegationRiskTeamIds is used
+  // to hard-exclude both a relegation favourite's players AND the club
+  // itself as a CLUB pick - see eflSeasonOutlook.ts's docstring.
+  const outlookByTeamId = await fetchTeamOutlookByTeamIds(
+    supabase,
+    pool.map((p) => p.team_id),
+    seasonTiming.seasonStarted
+  );
+  const relegationRiskTeamIds = buildRelegationRiskTeamIds(outlookByTeamId);
+
   const allSquadPicks = (squadPlayersRaw ?? []).map((sp) => {
     const poolRow = poolByGamePlayerId.get(sp.game_player_id);
     return {
@@ -374,6 +389,9 @@ export async function runAskMaryAnalysis(
       const poolCandidates: TransferCandidate[] = playerPool
         .filter((p) => !soldIds.has(p.game_player_id))
         .filter((p) => (INJURY_AVAILABILITY_SCORES[p.status ?? ""] ?? DEFAULT_SECURITY_SCORE) > 0)
+        // Pre-season only (see eflSeasonOutlook.ts) - never buy into a
+        // club the bookmakers rate a genuine relegation favourite.
+        .filter((p) => !relegationRiskTeamIds.has(p.team_id))
         .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: 0, score: avgFor(scoreMapForStep, p.game_player_id), position: p.position, formStatus: p.formStatus }));
 
       const currentTotal = playersTotal(workingSquad, scoreMapForStep);
@@ -505,6 +523,10 @@ export async function runAskMaryAnalysis(
       for (const cand of clubPool) {
         if (squadClubIds.has(cand.game_player_id) || usedIncoming.has(cand.game_player_id)) continue;
         if ((pickCounts.get(cand.game_player_id) ?? 0) >= CLUB_CAP) continue;
+        // Pre-season only (see eflSeasonOutlook.ts) - never recommend a
+        // club the bookmakers rate a genuine relegation favourite as a
+        // CLUB pick.
+        if (relegationRiskTeamIds.has(cand.team_id)) continue;
         const s = avgFor(scoreMap, cand.game_player_id);
         if (s > bestScore) {
           bestScore = s;
