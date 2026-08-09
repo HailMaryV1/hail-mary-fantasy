@@ -242,7 +242,8 @@ export default async function FanTeamSquadPage({
     bank = Number(rules.budget) - teamValue;
     const rotationRiskByPlayerId = await fetchRotationRiskByPlayerIds(
       supabase,
-      squadPlayers.map((p) => p.player_id)
+      squadPlayers.map((p) => p.player_id),
+      gwInfo.seasonStarted
     );
 
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));

@@ -1,7 +1,7 @@
 import type { createAuthServerClient } from "./supabaseServerClient";
 import { getSeasonTiming } from "./gameweek";
 import { findLegalReplacementsForOutgoing, type TransferCandidate } from "./transferMatching";
-import { fetchRotationRiskByPlayerIds, buildContestedGamePlayerPairs } from "./rotationRisk";
+import { fetchRotationRiskByPlayerIds, buildContestedGamePlayerPairs, buildHighRiskGamePlayerIds } from "./rotationRisk";
 import { suggestBestXI, type Formation } from "./squadOptimizer";
 import { computeAutoSubAwareTotal, type AutoSubPlayer } from "./benchAutoSub";
 import { type FixtureDifficultyRow } from "./fixtureRuns";
@@ -261,10 +261,17 @@ export async function runAskMaryAnalysis(
 
   // Rotation risk (migration 0111/0112) - real Premier League data, in
   // scope for FanTeam (see feedback_data_source_scope_correlation for why
-  // EFL Fantasy never gets this). contestedPairs maps a game_player_id to
-  // the OTHER game_player_id it has a real rotation battle with.
-  const riskByPlayerId = await fetchRotationRiskByPlayerIds(supabase, pool.map((p) => p.player_id));
+  // EFL Fantasy never gets this), but ONLY pre-season - see
+  // fetchRotationRiskByPlayerIds's docstring. contestedPairs maps a
+  // game_player_id to the OTHER game_player_id it has a real rotation
+  // battle with; highRiskGamePlayerIds is the stricter standalone check -
+  // a player genuinely unlikely to start is never a fresh buy.
+  const riskByPlayerId = await fetchRotationRiskByPlayerIds(supabase, pool.map((p) => p.player_id), seasonTiming.seasonStarted);
   const contestedPairs = buildContestedGamePlayerPairs(
+    pool.map((p) => ({ game_player_id: p.game_player_id, player_id: p.player_id })),
+    riskByPlayerId
+  );
+  const highRiskGamePlayerIds = buildHighRiskGamePlayerIds(
     pool.map((p) => ({ game_player_id: p.game_player_id, player_id: p.player_id })),
     riskByPlayerId
   );
@@ -457,7 +464,14 @@ export async function runAskMaryAnalysis(
     const shortlistByPosition = new Map<string, TransferCandidate[]>();
     for (const position of ["GK", "DEF", "MID", "FWD"]) {
       const shortlist = (pool ?? [])
-        .filter((p) => p.position === position && !workingSquadIds.has(p.game_player_id) && !soldIds.has(p.game_player_id) && !boughtIds.has(p.game_player_id))
+        .filter(
+          (p) =>
+            p.position === position &&
+            !workingSquadIds.has(p.game_player_id) &&
+            !soldIds.has(p.game_player_id) &&
+            !boughtIds.has(p.game_player_id) &&
+            !highRiskGamePlayerIds.has(p.game_player_id)
+        )
         .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: Number(p.price), score: avgFor(scoreMapForStep, p.game_player_id), position: p.position }))
         .sort((a, b) => b.score - a.score)
         .slice(0, 15);
@@ -593,7 +607,8 @@ export async function runAskMaryAnalysis(
           workingBudget,
           workingClubCounts,
           rules.max_per_club,
-          contestedPairs
+          contestedPairs,
+          highRiskGamePlayerIds
         );
         let bestCandidate: TransferCandidate | null = null;
         let bestGain = 0;

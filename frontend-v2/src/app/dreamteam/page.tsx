@@ -249,7 +249,8 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
     }));
     const rotationRiskByPlayerId = await fetchRotationRiskByPlayerIds(
       supabase,
-      squadPlayers.map((p) => p.player_id)
+      squadPlayers.map((p) => p.player_id),
+      gwInfo.seasonStarted
     );
     teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
     bank = Number(rules.budget) - teamValue;

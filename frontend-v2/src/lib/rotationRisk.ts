@@ -36,9 +36,19 @@ export function resolveRotationRiskBadge(risk: RotationRiskInfo | null | undefin
  * this week's screenshot batch yet) simply have no entry in the returned
  * map, which resolveRotationRiskBadge above treats the same as "nailed"
  * (no badge) - absence of data is never treated as risk.
+ *
+ * `seasonStarted` (2026-08-09 user request) short-circuits to an empty map
+ * once the real season kicks off: this whole signal is a pre-season
+ * stand-in built from a one-off screenshot batch (Solio Analytics/
+ * @FPL_Spaceman), not a live feed. Once real fixtures start, the existing
+ * live lineup/status data (fanteam_player_status.lineup, etc. - see
+ * game_player_pool's own docstring) is the authoritative, continuously
+ * refreshed signal for "will this player start" - this one would just go
+ * stale and should get out of the way rather than compete with it.
  */
-export async function fetchRotationRiskByPlayerIds(supabase: Supabase, playerIds: number[]): Promise<Map<number, RotationRiskInfo>> {
+export async function fetchRotationRiskByPlayerIds(supabase: Supabase, playerIds: number[], seasonStarted: boolean): Promise<Map<number, RotationRiskInfo>> {
   const map = new Map<number, RotationRiskInfo>();
+  if (seasonStarted) return map;
   const ids = [...new Set(playerIds)];
   if (ids.length === 0) return map;
   const { data } = await supabase
@@ -79,4 +89,21 @@ export function buildContestedGamePlayerPairs(
     if (contenderGamePlayerId != null) pairs.set(p.game_player_id, contenderGamePlayerId);
   }
   return pairs;
+}
+
+/**
+ * game_player_ids Mary should never BUY, regardless of whether the squad
+ * already owns their specific contender - a player genuinely unlikely to
+ * start (risk_level 'high_risk', e.g. Gusto at 20% to start behind Hato's
+ * 65%) shouldn't be a fresh recommendation even in isolation (2026-08-09
+ * user report: Mary kept holding/wasn't excluding a 20%-to-start player).
+ * 'some_risk' is deliberately left buyable - that tier is a real but
+ * lesser contest, not "won't play."
+ */
+export function buildHighRiskGamePlayerIds(pool: { game_player_id: number; player_id: number }[], riskByPlayerId: Map<number, RotationRiskInfo>): Set<number> {
+  const ids = new Set<number>();
+  for (const p of pool) {
+    if (riskByPlayerId.get(p.player_id)?.level === "high_risk") ids.add(p.game_player_id);
+  }
+  return ids;
 }

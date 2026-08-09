@@ -229,7 +229,8 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
     bank = Number(rules.budget) - teamValue;
     const rotationRiskByPlayerId = await fetchRotationRiskByPlayerIds(
       supabase,
-      squadPlayers.map((p) => p.player_id)
+      squadPlayers.map((p) => p.player_id),
+      gwInfo.seasonStarted
     );
 
     const formationCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 } as Record<string, number>;

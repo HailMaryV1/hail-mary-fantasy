@@ -63,6 +63,12 @@ export function findBuyCandidatesForOutgoing(
  * out - the fix for a real reported case (2026-08-09): Mary kept
  * recommending both Cherki and Foden, who by the source data's own model
  * are competing for the same slot and can't both start.
+ *
+ * `highRiskGamePlayerIds` (see rotationRisk.ts's buildHighRiskGamePlayerIds,
+ * same 3-game scope) excludes a candidate genuinely unlikely to start at
+ * all, independent of any specific contender already being owned - the fix
+ * for a second reported case the same day: a 20%-to-start player must never
+ * be a fresh Mary recommendation, contested pair or not.
  */
 export function findLegalReplacementsForOutgoing(
   pool: TransferCandidate[],
@@ -71,7 +77,8 @@ export function findLegalReplacementsForOutgoing(
   budgetRemaining: number,
   clubCounts: Map<number, number>,
   maxPerClub: number | null,
-  contestedPairs?: Map<number, number>
+  contestedPairs?: Map<number, number>,
+  highRiskGamePlayerIds?: Set<number>
 ): MatchResult<TransferCandidate>[] {
   const affordableBudget = budgetRemaining + outgoing.price;
 
@@ -87,6 +94,7 @@ export function findLegalReplacementsForOutgoing(
       const contenderId = contestedPairs.get(p.gamePlayerId);
       if (contenderId != null && contenderId !== outgoing.gamePlayerId && squadIds.has(contenderId)) return false;
     }
+    if (highRiskGamePlayerIds?.has(p.gamePlayerId)) return false;
     return true;
   });
 
