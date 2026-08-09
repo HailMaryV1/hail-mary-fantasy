@@ -3,6 +3,7 @@
 import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
+import type { RotationRiskInfo } from "@/lib/rotationRisk";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
@@ -24,6 +25,7 @@ export type BoardPlayer = {
   price: number;
   score: number | null;
   fixtures: (FixtureTile | null)[];
+  rotationRisk?: RotationRiskInfo | null;
   // Real per-gameweek projections from the same decomposed-scoring engine
   // that produces `score` - drives the pool's "Sort by" dropdown.
   goalProjected: number;
@@ -286,6 +288,7 @@ export default function CloudFFBoard({
     is_starting: true,
     price: p.price,
     score: p.score,
+    rotationRisk: p.rotationRisk,
     statText: displayMode in fixtureModeCount ? undefined : statTextFor(p),
     statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(p.fixtures, fixtureModeCount[displayMode]) : undefined,
     isEmpty: pendingOutIds.has(p.game_player_id),

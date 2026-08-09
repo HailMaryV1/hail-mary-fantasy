@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
+import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import FanTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./FanTeamBoard";
@@ -30,7 +31,7 @@ type FanteamSquadPlayerRow = {
     // FanTeam's OWN classification, not the shared players.position which
     // can genuinely disagree with what this game calls a player (2026-08-08 fix).
     position_code: "GK" | "DEF" | "MID" | "FWD";
-    players: { full_name: string; team_id: number; teams: { name: string } };
+    players: { id: number; full_name: string; team_id: number; teams: { name: string } };
   };
 };
 
@@ -87,7 +88,7 @@ export default async function FanTeamSquadPage({
     supabase
       .from("squad_players")
       .select(
-        "game_player_id, is_starting, bench_order, game_players(price, position_code, players(full_name, team_id, teams!players_team_id_fkey(name)))"
+        "game_player_id, is_starting, bench_order, game_players(price, position_code, players(id, full_name, team_id, teams!players_team_id_fkey(name)))"
       )
       .eq("squad_id", squadId)
       .returns<FanteamSquadPlayerRow[]>(),
@@ -231,6 +232,7 @@ export default async function FanTeamSquadPage({
       is_starting: sp.is_starting,
       bench_order: sp.bench_order,
       price: sp.game_players.price,
+      player_id: sp.game_players.players.id,
       full_name: sp.game_players.players.full_name,
       position: sp.game_players.position_code,
       team_id: sp.game_players.players.team_id,
@@ -238,6 +240,10 @@ export default async function FanTeamSquadPage({
     }));
     teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
     bank = Number(rules.budget) - teamValue;
+    const rotationRiskByPlayerId = await fetchRotationRiskByPlayerIds(
+      supabase,
+      squadPlayers.map((p) => p.player_id)
+    );
 
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
     const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
@@ -267,6 +273,7 @@ export default async function FanTeamSquadPage({
       isStarting: p.is_starting,
       benchOrder: p.bench_order,
       fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
+      rotationRisk: rotationRiskByPlayerId.get(p.player_id) ?? null,
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 

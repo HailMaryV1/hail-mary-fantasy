@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
+import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import DreamTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./DreamTeamBoard";
@@ -31,7 +32,7 @@ type SquadPlayerRow = {
     // players.position, which is shared across games and can genuinely
     // disagree with what this specific game calls a player (2026-08-08 fix).
     position_code: "GK" | "DEF" | "MID" | "FWD";
-    players: { full_name: string; team_id: number; teams: { name: string } };
+    players: { id: number; full_name: string; team_id: number; teams: { name: string } };
   };
 };
 
@@ -95,7 +96,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
     supabase.from("game_squad_rules").select("budget").eq("game_id", game.id).single(),
     supabase
       .from("squad_players")
-      .select("game_player_id, is_starting, game_players(price, position_code, players(full_name, team_id, teams!players_team_id_fkey(name)))")
+      .select("game_player_id, is_starting, game_players(price, position_code, players(id, full_name, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
     getGameweekInfo(supabase, game.id),
@@ -240,11 +241,16 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       game_player_id: sp.game_player_id,
       is_starting: sp.is_starting,
       price: sp.game_players.price,
+      player_id: sp.game_players.players.id,
       full_name: sp.game_players.players.full_name,
       position: sp.game_players.position_code,
       team_id: sp.game_players.players.team_id,
       team_name: sp.game_players.players.teams.name,
     }));
+    const rotationRiskByPlayerId = await fetchRotationRiskByPlayerIds(
+      supabase,
+      squadPlayers.map((p) => p.player_id)
+    );
     teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
     bank = Number(rules.budget) - teamValue;
 
@@ -277,6 +283,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       isCaptain: p.game_player_id === squad.captain_game_player_id,
       isViceCaptain: p.game_player_id === squad.vice_captain_game_player_id,
       fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
+      rotationRisk: rotationRiskByPlayerId.get(p.player_id) ?? null,
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 

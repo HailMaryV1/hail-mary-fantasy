@@ -3,6 +3,7 @@
 import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
+import type { RotationRiskInfo } from "@/lib/rotationRisk";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
@@ -33,6 +34,7 @@ export type BoardPlayer = {
   // one bench GK, so there's nothing to order there).
   benchOrder: number | null;
   fixtures: (FixtureTile | null)[];
+  rotationRisk?: RotationRiskInfo | null;
   goalProjected: number;
   assistProjected: number;
   bonusProjected: number;
@@ -462,6 +464,7 @@ export default function FanTeamBoard({
       isCaptain: p.isCaptain,
       isViceCaptain: p.isViceCaptain,
       benchOrder: p.benchOrder,
+      rotationRisk: p.rotationRisk,
       statText: displayMode in fixtureModeCount ? undefined : statTextFor(display),
       statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(display.fixtures, fixtureModeCount[displayMode]) : undefined,
       isEmpty: false,

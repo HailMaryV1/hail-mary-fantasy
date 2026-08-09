@@ -3,6 +3,7 @@
 import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
+import type { RotationRiskInfo } from "@/lib/rotationRisk";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
@@ -31,6 +32,7 @@ export type BoardPlayer = {
   isCaptain: boolean;
   isViceCaptain: boolean;
   fixtures: (FixtureTile | null)[];
+  rotationRisk?: RotationRiskInfo | null;
   // Real per-gameweek projections from the same decomposed-scoring engine
   // that produces `score` - drives the pool's "Sort by" dropdown.
   goalProjected: number;
@@ -364,6 +366,7 @@ export default function DreamTeamBoard({
       score: display.score,
       isCaptain: p.isCaptain,
       isViceCaptain: p.isViceCaptain,
+      rotationRisk: p.rotationRisk,
       statText: displayMode in fixtureModeCount ? undefined : statTextFor(display),
       statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(display.fixtures, fixtureModeCount[displayMode]) : undefined,
       isEmpty: false,

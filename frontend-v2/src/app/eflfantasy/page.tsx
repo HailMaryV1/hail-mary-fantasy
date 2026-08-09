@@ -19,7 +19,7 @@ type SquadPlayerRow = {
     // (2026-08-08 fix). CLUB rows are eflfantasy-only synthetic entities,
     // never cross-game, so no ambiguity risk there either way.
     position_code: "GK" | "DEF" | "MID" | "FWD" | "CLUB";
-    players: { full_name: string; team_id: number; teams: { name: string } };
+    players: { id: number; full_name: string; team_id: number; teams: { name: string } };
   };
 };
 
@@ -114,7 +114,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   const [{ data: squadPlayersRaw }, gwInfo, { data: clubHistoryRaw }] = await Promise.all([
     supabase
       .from("squad_players")
-      .select("game_player_id, game_players(position_code, players(full_name, team_id, teams!players_team_id_fkey(name)))")
+      .select("game_player_id, game_players(position_code, players(id, full_name, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
     getGameweekInfo(supabase, game.id),
@@ -130,6 +130,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
 
   const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
     game_player_id: sp.game_player_id,
+    player_id: sp.game_players.players.id,
     full_name: sp.game_players.players.full_name,
     position: sp.game_players.position_code,
     team_id: sp.game_players.players.team_id,

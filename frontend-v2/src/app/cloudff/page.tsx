@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
+import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import CloudFFBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./CloudFFBoard";
@@ -18,7 +19,7 @@ type SquadPlayerRow = {
     // Cloud FF's OWN classification, not the shared players.position which
     // can genuinely disagree with what this game calls a player (2026-08-08 fix).
     position_code: "GK" | "DEF" | "MID" | "FWD";
-    players: { full_name: string; team_id: number; teams: { name: string } };
+    players: { id: number; full_name: string; team_id: number; teams: { name: string } };
   };
 };
 
@@ -80,7 +81,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
     supabase.from("game_squad_rules").select("budget").eq("game_id", game.id).single(),
     supabase
       .from("squad_players")
-      .select("game_player_id, game_players(price, position_code, players(full_name, team_id, teams!players_team_id_fkey(name)))")
+      .select("game_player_id, game_players(price, position_code, players(id, full_name, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
     getGameweekInfo(supabase, game.id),
@@ -218,6 +219,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
     const squadPlayers = (squadPlayersRaw ?? []).map((sp) => ({
       game_player_id: sp.game_player_id,
       price: sp.game_players.price,
+      player_id: sp.game_players.players.id,
       full_name: sp.game_players.players.full_name,
       position: sp.game_players.position_code,
       team_id: sp.game_players.players.team_id,
@@ -225,6 +227,10 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
     }));
     teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
     bank = Number(rules.budget) - teamValue;
+    const rotationRiskByPlayerId = await fetchRotationRiskByPlayerIds(
+      supabase,
+      squadPlayers.map((p) => p.player_id)
+    );
 
     const formationCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 } as Record<string, number>;
     for (const p of squadPlayers) formationCounts[p.position] = (formationCounts[p.position] ?? 0) + 1;
@@ -256,6 +262,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       price: Number(p.price),
       score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
       fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
+      rotationRisk: rotationRiskByPlayerId.get(p.player_id) ?? null,
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 

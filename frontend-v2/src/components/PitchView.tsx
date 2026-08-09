@@ -3,8 +3,10 @@
 import Kit from "./Kit";
 import StatusPill from "./StatusPill";
 import FormPill from "./FormPill";
+import RotationRiskBadge from "./RotationRiskBadge";
 import { shortenPlayerName } from "@/lib/playerName";
 import type { FormStatus } from "@/lib/formStatus";
+import type { RotationRiskInfo } from "@/lib/rotationRisk";
 
 export type PitchPlayer = {
   game_player_id: number;
@@ -20,6 +22,10 @@ export type PitchPlayer = {
   lineup?: string | null;
   status?: string | null;
   formStatus?: FormStatus | null;
+  // Solio Analytics lineup-probability data (migration 0110/0111) - null/
+  // undefined whenever the player isn't covered by this week's screenshot
+  // batch yet, which renders no badge at all (never treated as risk).
+  rotationRisk?: RotationRiskInfo | null;
   isCaptain?: boolean;
   isViceCaptain?: boolean;
   // Real bench priority (1/2/3 for the 3 outfield reserves, null/undefined
@@ -142,6 +148,7 @@ export default function PitchView({
           <span className="flex items-center justify-center gap-0.5">
             <StatusPill lineup={player.lineup} status={player.status} />
             <FormPill status={player.formStatus} />
+            <RotationRiskBadge risk={player.rotationRisk} />
           </span>
           {player.price != null && <span className="text-[10px] text-navy-300">£{Number(player.price).toFixed(1)}m</span>}
           {/* statText (or the default score) is the primary line; statTiles
