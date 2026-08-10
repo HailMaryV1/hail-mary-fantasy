@@ -10,7 +10,7 @@ import GameweekSwitcher from "@/components/GameweekSwitcher";
 import OddsRefreshButton from "@/components/OddsRefreshButton";
 import { searchPool } from "@/lib/poolSearch";
 import { isLegalPositionSwap } from "@/lib/eflFormation";
-import { makeTransfer, makeClubTransfer } from "./actions";
+import { makeTransfer, makeClubTransfer, addReserve, removeReserve, setReservesForPosition } from "./actions";
 
 export const POOL_PAGE_SIZE = 15;
 
@@ -52,6 +52,20 @@ export type BoardClub = {
   competition?: string | null;
 };
 export type PoolClub = BoardClub;
+
+// The user's own researched backup shortlist per position (2026-08-11
+// request) - EFL Fantasy has no bench at all, so this is the only
+// fallback when a starter picks up last-minute bad news. GK is excluded
+// on purpose (the user doesn't rate GK reserves as worth tracking).
+export type ReservePosition = "DEF" | "MID" | "FWD";
+export type ReservePick = {
+  game_player_id: number;
+  full_name: string;
+  team_name: string;
+  score: number | null;
+  fixtures: (FixtureTile | null)[];
+};
+const RESERVE_POSITIONS: ReservePosition[] = ["DEF", "MID", "FWD"];
 
 type DisplayMode = "next1" | "next2" | "next3" | "pts";
 const FIXTURE_MODE_COUNT: Record<string, number> = { next1: 1, next2: 2, next3: 3 };
@@ -128,6 +142,7 @@ export default function EFLFantasyBoard({
   squadSummary,
   isPoolServerDriven,
   fixtureTiles,
+  reserves,
 }: {
   squadId: number;
   squadName: string;
@@ -156,6 +171,10 @@ export default function EFLFantasyBoard({
   // see FanTeamBoard.tsx's identical prop for why this is passed as a
   // plain object rather than recomputed per pool row.
   fixtureTiles: Record<string, FixtureTile>;
+  // Empty on a past-gameweek view (see page.tsx's docstring) - the
+  // shortlist is about backing up THIS week's live decisions, not a past
+  // one.
+  reserves: Record<ReservePosition, ReservePick[]>;
 }) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -182,6 +201,15 @@ export default function EFLFantasyBoard({
 
   const [optimisticSquad, applyOptimisticSquad] = useOptimistic(squad, (_current: BoardPlayer[], next: BoardPlayer[]) => next);
   const [optimisticClubs, applyOptimisticClubs] = useOptimistic(clubs, (_current: BoardClub[], next: BoardClub[]) => next);
+  const [optimisticReserves, applyOptimisticReserves] = useOptimistic(
+    reserves,
+    (_current: Record<ReservePosition, ReservePick[]>, next: Record<ReservePosition, ReservePick[]>) => next
+  );
+  const [isReservePending, startReserveTransition] = useTransition();
+  const [reserveError, setReserveError] = useState<string | null>(null);
+  // Which reserve row's "swap in for which starter?" chooser is open -
+  // only one at a time, keyed by the reserve's game_player_id.
+  const [swapPickerReserveId, setSwapPickerReserveId] = useState<number | null>(null);
 
   // Debounced search - typing shouldn't fire a fresh server request on
   // every keystroke.
@@ -408,7 +436,28 @@ export default function EFLFantasyBoard({
             },
             { label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) },
           ]
-        : [{ label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) }]
+        : [
+            { label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) },
+            // GK excluded - the user doesn't rate GK reserves as worth
+            // tracking (see ReservePosition's docstring).
+            ...(isPlanningView &&
+            menuPlayer.position !== "GK" &&
+            !optimisticReserves[menuPlayer.position as ReservePosition].some((r) => r.game_player_id === menuPlayer.game_player_id)
+              ? [
+                  {
+                    label: "Add as Reserve",
+                    onClick: () =>
+                      handleAddReserve(menuPlayer.position as ReservePosition, {
+                        game_player_id: menuPlayer.game_player_id,
+                        full_name: menuPlayer.full_name,
+                        team_name: menuPlayer.team_name,
+                        score: menuPlayer.score,
+                        fixtures: menuPlayer.fixtures,
+                      }),
+                  },
+                ]
+              : []),
+          ]
       : [];
 
   // No budget exists for this game (see gameConfig.ts's hasBudget), so
@@ -465,6 +514,67 @@ export default function EFLFantasyBoard({
         });
         setRefreshKey((k) => k + 1);
       }
+    });
+  }
+
+  // Which current squad starters a given reserve position could legally
+  // replace - same-position starters always qualify (formation
+  // unchanged); a different position only qualifies if that swap keeps
+  // the squad on a real formation (see eflFormation.ts, same rule as the
+  // main transfer flow's legalOutgoingFor above).
+  function legalSwapTargetsForReserve(reservePosition: ReservePosition): BoardPlayer[] {
+    const currentCounts = { DEF: positionCounts.DEF ?? 0, MID: positionCounts.MID ?? 0, FWD: positionCounts.FWD ?? 0 };
+    return optimisticSquad
+      .filter((p) => p.position !== "GK" && isLegalPositionSwap(p.position, reservePosition, currentCounts))
+      .sort((a, b) => (a.position === reservePosition ? 0 : 1) - (b.position === reservePosition ? 0 : 1));
+  }
+
+  function handleAddReserve(position: ReservePosition, pick: ReservePick) {
+    setReserveError(null);
+    startReserveTransition(async () => {
+      applyOptimisticReserves({ ...optimisticReserves, [position]: [...optimisticReserves[position], pick] });
+      const result = await addReserve({ squadId, position, gamePlayerId: pick.game_player_id });
+      if (result?.error) setReserveError(result.error);
+    });
+  }
+
+  function handleRemoveReserve(position: ReservePosition, gamePlayerId: number) {
+    setReserveError(null);
+    startReserveTransition(async () => {
+      applyOptimisticReserves({ ...optimisticReserves, [position]: optimisticReserves[position].filter((r) => r.game_player_id !== gamePlayerId) });
+      const result = await removeReserve({ squadId, position, gamePlayerId });
+      if (result?.error) setReserveError(result.error);
+    });
+  }
+
+  function handleMoveReserve(position: ReservePosition, gamePlayerId: number, direction: "up" | "down") {
+    const list = optimisticReserves[position];
+    const i = list.findIndex((r) => r.game_player_id === gamePlayerId);
+    const j = direction === "up" ? i - 1 : i + 1;
+    if (i === -1 || j < 0 || j >= list.length) return;
+    const reordered = [...list];
+    [reordered[i], reordered[j]] = [reordered[j], reordered[i]];
+    setReserveError(null);
+    startReserveTransition(async () => {
+      applyOptimisticReserves({ ...optimisticReserves, [position]: reordered });
+      const result = await setReservesForPosition({ squadId, position, gamePlayerIds: reordered.map((r) => r.game_player_id) });
+      if (result?.error) setReserveError(result.error);
+    });
+  }
+
+  function handleSwapInReserve(position: ReservePosition, pick: ReservePick, outGamePlayerId: number) {
+    setSwapPickerReserveId(null);
+    setTransferError(null);
+    startTransferTransition(async () => {
+      applyOptimisticSquad(optimisticSwap(optimisticSquad, outGamePlayerId, { ...pick, position, competition: null }));
+      applyOptimisticReserves({ ...optimisticReserves, [position]: optimisticReserves[position].filter((r) => r.game_player_id !== pick.game_player_id) });
+      const result = await makeTransfer({ squadId, outGamePlayerId, inGamePlayerId: pick.game_player_id });
+      if (result?.error) {
+        setTransferError(result.error);
+        return;
+      }
+      await removeReserve({ squadId, position, gamePlayerId: pick.game_player_id });
+      setRefreshKey((k) => k + 1);
     });
   }
 
@@ -624,6 +734,86 @@ export default function EFLFantasyBoard({
                         {c.lastSeasonAvgPoints != null ? `averaged ${c.lastSeasonAvgPoints.toFixed(1)} pts/GW last season` : "no last-season data"}
                         {c.nextFixtureLabel ? ` · ${c.nextFixtureLabel}` : ""}
                       </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {isPlanningView && (
+              <div className="mt-4 rounded-xl border border-navy-700 bg-navy-900 p-4">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Reserves</h2>
+                <p className="mt-1 text-xs text-navy-500">
+                  Your researched backups per position - if a starter gets bad news, swap in the next name on the list.
+                </p>
+                {reserveError && <p className="mt-2 text-xs text-red-400">{reserveError}</p>}
+                <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  {RESERVE_POSITIONS.map((position) => (
+                    <div key={position}>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-navy-500">{position}</p>
+                      <div className="mt-1.5 flex flex-col gap-1.5">
+                        {optimisticReserves[position].length === 0 && <p className="text-xs text-navy-600">No reserves yet - add from the pool.</p>}
+                        {optimisticReserves[position].map((pick, i) => (
+                          <div key={pick.game_player_id} className="rounded-lg border border-navy-800 bg-navy-950 p-2">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] font-semibold text-navy-500">{i + 1}</span>
+                              <button
+                                onClick={() => setInfoPlayerId(pick.game_player_id)}
+                                className="min-w-0 flex-1 truncate text-left text-xs font-medium text-white hover:text-sky-300"
+                              >
+                                {pick.full_name}
+                              </button>
+                              <span className="text-[10px] text-navy-500">{pick.score != null ? pick.score.toFixed(1) : "-"}</span>
+                            </div>
+                            <div className="mt-1 flex items-center gap-1.5">
+                              <button
+                                onClick={() => handleMoveReserve(position, pick.game_player_id, "up")}
+                                disabled={i === 0 || isReservePending}
+                                className="rounded px-1 text-xs text-navy-500 hover:text-white disabled:opacity-30"
+                                aria-label="Move up"
+                              >
+                                ↑
+                              </button>
+                              <button
+                                onClick={() => handleMoveReserve(position, pick.game_player_id, "down")}
+                                disabled={i === optimisticReserves[position].length - 1 || isReservePending}
+                                className="rounded px-1 text-xs text-navy-500 hover:text-white disabled:opacity-30"
+                                aria-label="Move down"
+                              >
+                                ↓
+                              </button>
+                              <button
+                                onClick={() => setSwapPickerReserveId(swapPickerReserveId === pick.game_player_id ? null : pick.game_player_id)}
+                                disabled={isTransferPending}
+                                className="ml-auto rounded-full bg-sky-500 px-2 py-0.5 text-[10px] font-medium text-navy-950 hover:bg-sky-400 disabled:opacity-50"
+                              >
+                                Swap In
+                              </button>
+                              <button
+                                onClick={() => handleRemoveReserve(position, pick.game_player_id)}
+                                disabled={isReservePending}
+                                className="rounded px-1 text-xs text-navy-500 hover:text-red-400"
+                                aria-label="Remove reserve"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                            {swapPickerReserveId === pick.game_player_id && (
+                              <div className="mt-1.5 flex flex-col gap-1 border-t border-navy-800 pt-1.5">
+                                <p className="text-[10px] text-navy-500">Swap in for:</p>
+                                {legalSwapTargetsForReserve(position).map((starter) => (
+                                  <button
+                                    key={starter.game_player_id}
+                                    onClick={() => handleSwapInReserve(position, pick, starter.game_player_id)}
+                                    className="rounded-lg border border-navy-700 bg-navy-900 px-2 py-1 text-left text-[11px] text-navy-200 hover:border-sky-500 hover:text-white"
+                                  >
+                                    {starter.full_name} <span className="text-navy-500">({starter.position})</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>

@@ -5,7 +5,16 @@ import { getGameweekInfo, getProjectionsForPlayerIds, fetchAllPaginated } from "
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
-import EFLFantasyBoard, { type BoardPlayer, type PoolPlayer, type BoardClub, type PoolClub, type FixtureTile, POOL_PAGE_SIZE } from "./EFLFantasyBoard";
+import EFLFantasyBoard, {
+  type BoardPlayer,
+  type PoolPlayer,
+  type BoardClub,
+  type PoolClub,
+  type FixtureTile,
+  type ReservePosition,
+  type ReservePick,
+  POOL_PAGE_SIZE,
+} from "./EFLFantasyBoard";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +33,13 @@ type SquadPlayerRow = {
 };
 
 type ClubHistoryRow = { game_player_id: number; total_points: number | null };
+
+type ReservePickRow = {
+  position: ReservePosition;
+  rank: number;
+  game_player_id: number;
+  game_players: { players: { id: number; full_name: string; team_id: number; teams: { name: string } } };
+};
 
 type PoolRow = {
   game_player_id: number;
@@ -235,6 +251,10 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   let clubPoolTotalCount = 0;
   let teams: string[] = [];
   let pastViewState: "not_locked" | "no_results_yet" | null = null;
+  // Reserve shortlist (2026-08-11 request) makes no sense on a past/locked
+  // gameweek - it's about backing up THIS week's live decisions - so it's
+  // only ever populated in the planning branch below.
+  let boardReserves: Record<ReservePosition, ReservePick[]> = { DEF: [], MID: [], FWD: [] };
 
   if (isPastView) {
     const [lock, poolRaw] = await Promise.all([getSquadGameweekLock(supabase, squadId, viewedGameweek), fetchAllPoolRows(supabase, "eflfantasy")]);
@@ -314,7 +334,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
     // pool's browse table gets its scores from search_game_player_pool
     // instead (via EFLFantasyBoard's own on-demand fetch), never a
     // whole-pool read here.
-    const [scoreRows, initialPool, initialClubPool, teamNames] = await Promise.all([
+    const [scoreRows, initialPool, initialClubPool, teamNames, { data: reserveRowsRaw }] = await Promise.all([
       getProjectionsForPlayerIds(supabase, viewedGameweek, squadIds),
       searchPool({
         gameSlug: "eflfantasy",
@@ -333,8 +353,33 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         pageSize: POOL_PAGE_SIZE,
       }),
       listPoolTeams("eflfantasy"),
+      supabase
+        .from("squad_reserve_picks")
+        .select("position, rank, game_player_id, game_players(players(id, full_name, team_id, teams!players_team_id_fkey(name)))")
+        .eq("squad_id", squadId)
+        .order("position")
+        .order("rank")
+        .returns<ReservePickRow[]>(),
     ]);
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+
+    // Reserve scores are a separate small fetch (not part of the squad's
+    // score call above) since the reserve player ids aren't known until
+    // the query above resolves - fine given the reserve list is only ever
+    // a handful of players.
+    const reserveGamePlayerIds = (reserveRowsRaw ?? []).map((r) => r.game_player_id);
+    const reserveScoreRows = reserveGamePlayerIds.length > 0 ? await getProjectionsForPlayerIds(supabase, viewedGameweek, reserveGamePlayerIds) : [];
+    const reserveScoreByGamePlayerId = new Map<number, number>(reserveScoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+    boardReserves = { DEF: [], MID: [], FWD: [] };
+    for (const r of reserveRowsRaw ?? []) {
+      boardReserves[r.position].push({
+        game_player_id: r.game_player_id,
+        full_name: r.game_players.players.full_name,
+        team_name: r.game_players.players.teams.name,
+        score: reserveScoreByGamePlayerId.get(r.game_player_id) ?? null,
+        fixtures: buildFixtures(r.game_players.players.team_id),
+      });
+    }
 
     boardSquad = squadPlayers
       .filter((p) => p.position !== "CLUB")
@@ -426,6 +471,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       squadSummary={squadSummary}
       isPoolServerDriven={!isPastView}
       fixtureTiles={fixtureTilesRecord}
+      reserves={boardReserves}
     />
   );
 }

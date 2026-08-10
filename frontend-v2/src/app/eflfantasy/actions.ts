@@ -6,6 +6,13 @@ import { getSeasonTiming } from "@/lib/gameweek";
 import { getClubPickCounts, CLUB_CAP } from "@/lib/eflClubCapCheck";
 import { isLegalPositionSwap, type OutfieldPosition, type SquadPosition } from "@/lib/eflFormation";
 
+type ReservePosition = OutfieldPosition;
+
+async function getOwnedSquad(supabase: Awaited<ReturnType<typeof createAuthServerClient>>, squadId: number, userId: string) {
+  const { data: squad } = await supabase.from("squads").select("id, user_id, game_id").eq("id", squadId).single();
+  return squad && squad.user_id === userId ? squad : null;
+}
+
 /**
  * EFL Fantasy's real transfer rules aren't published anywhere in the
  * public API (unlike its scoring/squad shape, which are - see migration
@@ -147,6 +154,98 @@ export async function makeClubTransfer({
     cost_points: 0,
     used_wildcard: false,
   });
+
+  revalidatePath("/eflfantasy");
+  return { success: true };
+}
+
+/**
+ * The user's own researched backup shortlist per position (2026-08-11
+ * request, see migration 0116's docstring) - EFL Fantasy has no bench, so
+ * this is the only fallback when a starter picks up last-minute bad news.
+ * Reorders/adds/removes all funnel through this one function: the client
+ * always sends the position's FULL desired order, and the whole list is
+ * replaced (delete + reinsert with sequential ranks) rather than patching
+ * individual rows - simplest way to keep ranks contiguous without a live
+ * uniqueness constraint fighting a multi-row reorder.
+ */
+export async function setReservesForPosition({
+  squadId,
+  position,
+  gamePlayerIds,
+}: {
+  squadId: number;
+  position: ReservePosition;
+  gamePlayerIds: number[];
+}) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+  if (!(await getOwnedSquad(supabase, squadId, user.id))) return { error: "Squad not found." };
+
+  const { error: deleteError } = await supabase.from("squad_reserve_picks").delete().eq("squad_id", squadId).eq("position", position);
+  if (deleteError) return { error: deleteError.message };
+
+  if (gamePlayerIds.length > 0) {
+    const { error: insertError } = await supabase.from("squad_reserve_picks").insert(
+      gamePlayerIds.map((gamePlayerId, i) => ({
+        squad_id: squadId,
+        position,
+        game_player_id: gamePlayerId,
+        rank: i + 1,
+      }))
+    );
+    if (insertError) return { error: insertError.message };
+  }
+
+  revalidatePath("/eflfantasy");
+  return { success: true };
+}
+
+/** Appends one player to the end of their position's reserve list -
+ * the "Add as Reserve" pool row action's convenience wrapper around
+ * setReservesForPosition above. */
+export async function addReserve({ squadId, position, gamePlayerId }: { squadId: number; position: ReservePosition; gamePlayerId: number }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+  if (!(await getOwnedSquad(supabase, squadId, user.id))) return { error: "Squad not found." };
+
+  const { data: existing } = await supabase
+    .from("squad_reserve_picks")
+    .select("game_player_id")
+    .eq("squad_id", squadId)
+    .eq("position", position)
+    .order("rank");
+  const ids = (existing ?? []).map((r) => r.game_player_id);
+  if (ids.includes(gamePlayerId)) return { error: "Already on your reserve list." };
+
+  return setReservesForPosition({ squadId, position, gamePlayerIds: [...ids, gamePlayerId] });
+}
+
+/** Drops one player from their position's reserve list - used both for a
+ * manual "Remove" click and to clean up automatically once a reserve gets
+ * promoted into the starting squad (see the client's swap-in handler,
+ * which calls this right after makeTransfer succeeds). */
+export async function removeReserve({ squadId, position, gamePlayerId }: { squadId: number; position: ReservePosition; gamePlayerId: number }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+  if (!(await getOwnedSquad(supabase, squadId, user.id))) return { error: "Squad not found." };
+
+  const { error } = await supabase
+    .from("squad_reserve_picks")
+    .delete()
+    .eq("squad_id", squadId)
+    .eq("position", position)
+    .eq("game_player_id", gamePlayerId);
+  if (error) return { error: error.message };
 
   revalidatePath("/eflfantasy");
   return { success: true };
