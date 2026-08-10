@@ -9,6 +9,7 @@ import Kit from "@/components/Kit";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import OddsRefreshButton from "@/components/OddsRefreshButton";
 import { searchPool } from "@/lib/poolSearch";
+import { isLegalPositionSwap } from "@/lib/eflFormation";
 import { makeTransfer, makeClubTransfer } from "./actions";
 
 export const POOL_PAGE_SIZE = 15;
@@ -289,10 +290,10 @@ export default function EFLFantasyBoard({
   // "1 GK/2 DEF/2 MID/2 FWD" assumption - fantasy.efl.com's own team-
   // builder offers 3 real formations (2-2-2/2-3-1/3-2-1, confirmed live
   // 2026-08-08 via a screenshot of their UI), and migration 0089's claim
-  // that formation was fixed turned out to be wrong. Transfers are same-
-  // position swaps only (see actions.ts), so whatever split the squad
-  // already has stays intact - this just labels it honestly instead of
-  // always showing "2-2-2" regardless of the real shape.
+  // that formation was fixed turned out to be wrong. Transfers can now
+  // change formation too (2026-08-10, see legalOutgoingFor below +
+  // eflFormation.ts), so this always reflects whatever the squad
+  // currently is, not a fixed default.
   const positionCounts = optimisticSquad.reduce(
     (acc, p) => ({ ...acc, [p.position]: (acc[p.position] ?? 0) + 1 }),
     {} as Record<BoardPlayer["position"], number>
@@ -410,12 +411,19 @@ export default function EFLFantasyBoard({
         : [{ label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) }]
       : [];
 
-  // Same-position legality only - no budget exists for this game (see
-  // gameConfig.ts's hasBudget), so unlike Dream Team/Cloud FF's "cheapest
-  // outgoing first" pooled-budget logic, any pending-out slot of the
-  // right position can fill any pool pick - first one found wins.
+  // No budget exists for this game (see gameConfig.ts's hasBudget), so
+  // unlike Dream Team/Cloud FF's "cheapest outgoing first" pooled-budget
+  // logic, legality here is purely positional. A same-position pending-out
+  // slot always matches (never changes formation); a different-position
+  // slot matches only if that swap keeps the squad on one of the 3 real
+  // formations (see eflFormation.ts). Same-position matches are ranked
+  // first so marking two players "Transfer Out" at once never accidentally
+  // spends the wrong slot on a formation change the user didn't ask for.
   function legalOutgoingFor(p: PoolPlayer): BoardPlayer[] {
-    return pendingOutPlayers.filter((o) => o.position === p.position);
+    const currentCounts = { DEF: positionCounts.DEF ?? 0, MID: positionCounts.MID ?? 0, FWD: positionCounts.FWD ?? 0 };
+    return pendingOutPlayers
+      .filter((o) => isLegalPositionSwap(o.position, p.position, currentCounts))
+      .sort((a, b) => (a.position === p.position ? 0 : 1) - (b.position === p.position ? 0 : 1));
   }
   const legalPoolIds = new Set(pagedPool.filter((p) => legalOutgoingFor(p).length > 0).map((p) => p.game_player_id));
 
@@ -481,6 +489,13 @@ export default function EFLFantasyBoard({
           <StatBox label="Squad" value={squadShapeLabel} />
         </div>
 
+        {isPlanningView && pendingOutPlayers.length === 0 && (
+          <p className="mt-2 text-xs text-navy-500">
+            Want a different formation? Transfer Out a player, then bring in one from a different position - 2-2-2, 2-3-1, and 3-2-1 are all real
+            formations.
+          </p>
+        )}
+
         {(pendingOutPlayers.length > 0 || pendingOutClubs.length > 0) && (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-700 bg-sky-950/40 px-4 py-2.5">
             <p className="text-sm text-sky-200">
@@ -488,8 +503,9 @@ export default function EFLFantasyBoard({
               <span className="font-semibold text-white">
                 {[...pendingOutPlayers.map((p) => p.full_name), ...pendingOutClubs.map((c) => c.club_name)].join(", ")}
               </span>
-              . Fill each empty slot with a same-type replacement (a player slot needs a same-position player, a club slot needs any other club)
-              from the pool on the right. Tap an empty slot on the pitch to cancel that sale.
+              . Fill each empty slot from the pool on the right - a club slot needs any other club; a player slot can take a same-position
+              replacement, or a different position if that keeps your squad on a real formation (2-2-2, 2-3-1, or 3-2-1). Tap an empty slot on the
+              pitch to cancel that sale.
             </p>
             <button
               onClick={() => {
