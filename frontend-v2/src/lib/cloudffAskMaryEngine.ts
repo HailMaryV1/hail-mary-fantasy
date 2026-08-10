@@ -1,6 +1,6 @@
 import type { createAuthServerClient } from "./supabaseServerClient";
 import { getSeasonTiming } from "./gameweek";
-import { findLegalReplacementsForOutgoing, type TransferCandidate } from "./transferMatching";
+import { findLegalReplacementsForOutgoing, pruneDominatedCandidates, type TransferCandidate } from "./transferMatching";
 import { fetchRotationRiskByPlayerIds, buildContestedGamePlayerPairs, buildHighRiskGamePlayerIds } from "./rotationRisk";
 import { type FixtureDifficultyRow } from "./fixtureRuns";
 import { deriveTeamFixtureRatings } from "./fixtureSwing";
@@ -28,6 +28,11 @@ type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
 const GAMEWEEK_PLAN_LENGTH = 3;
 const MAX_TRANSFERS_PER_STEP = 8;
+
+// Front-to-back build order (2026-08-10 user call) - see
+// dreamteamAskMaryEngine.ts's constant of the same name for the full
+// reasoning. Lower = built first.
+const BUILD_PRIORITY: Record<"GK" | "DEF" | "MID" | "FWD", number> = { FWD: 0, MID: 1, DEF: 2, GK: 3 };
 
 // How many gameweeks a transfer candidate is judged over, starting at
 // whichever step is being decided - see dreamteamAskMaryEngine.ts's
@@ -363,10 +368,13 @@ export async function runAskMaryAnalysis(
             !boughtIds.has(p.game_player_id) &&
             !highRiskGamePlayerIds.has(p.game_player_id)
         )
-        .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: Number(p.price), score: avgFor(scoreMapForStep, p.game_player_id), position: p.position }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 15);
-      shortlistByPosition.set(position, shortlist);
+        .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: Number(p.price), score: avgFor(scoreMapForStep, p.game_player_id), position: p.position }));
+      // Pareto-prune before capping to 15 - see transferMatching.ts's
+      // pruneDominatedCandidates. Without this, several near-identical
+      // low scorers could fill the whole top-15 at inflated prices,
+      // crowding out the one genuinely cheap option among them.
+      const pruned = pruneDominatedCandidates(shortlist).sort((a, b) => b.score - a.score).slice(0, 15);
+      shortlistByPosition.set(position, pruned);
     }
 
     let best: { outA: WorkingSquadPlayer; outB: WorkingSquadPlayer; inA: TransferCandidate; inB: TransferCandidate; netGain: number; gainA: number; gainB: number } | null = null;
@@ -401,10 +409,9 @@ export async function runAskMaryAnalysis(
         const xiTotalAfterBoth = optimalXITotal(squadAfterBoth, scoreMapForStep);
         const gainA = xiTotalAfterA - currentXITotal;
         const gainB = xiTotalAfterBoth - xiTotalAfterA;
-        // Both legs must individually be non-negative, not just the sum -
+        // Combined gain across both legs is the bar, not each leg alone -
         // see dreamteamAskMaryEngine.ts's findBestPairBundle for the full
-        // reasoning (2026-08-10 real user report, confirmed live).
-        if (gainA < 0 || gainB < 0) continue;
+        // reasoning (2026-08-10 user call).
         const netGain = gainA + gainB;
         if (netGain <= 0) continue;
 
@@ -497,6 +504,20 @@ export async function runAskMaryAnalysis(
       let bestSingleIdx = -1;
       for (let i = 0; i < slotMoves.length; i++) {
         if (bestSingleIdx === -1 || slotMoves[i].input.expectedPointsGain > slotMoves[bestSingleIdx].input.expectedPointsGain) bestSingleIdx = i;
+      }
+      // Front-to-back build order (2026-08-10 user call) - see
+      // dreamteamAskMaryEngine.ts's equivalent block for the full
+      // reasoning.
+      if (bestSingleIdx !== -1) {
+        const bestGain = slotMoves[bestSingleIdx].input.expectedPointsGain;
+        const frontTolerance = Math.max(0.3, bestGain * 0.1);
+        for (let i = 0; i < slotMoves.length; i++) {
+          if (i === bestSingleIdx) continue;
+          const gain = slotMoves[i].input.expectedPointsGain;
+          if (bestGain - gain <= frontTolerance && BUILD_PRIORITY[slotMoves[i].input.position] < BUILD_PRIORITY[slotMoves[bestSingleIdx].input.position]) {
+            bestSingleIdx = i;
+          }
+        }
       }
       const singleNetGain = bestSingleIdx !== -1 ? slotMoves[bestSingleIdx].input.expectedPointsGain : -Infinity;
 

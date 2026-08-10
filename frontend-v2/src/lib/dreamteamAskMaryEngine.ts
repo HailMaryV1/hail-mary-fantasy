@@ -1,6 +1,6 @@
 import type { createAuthServerClient } from "./supabaseServerClient";
 import { getSeasonTiming } from "./gameweek";
-import { findLegalReplacementsForOutgoing, type TransferCandidate } from "./transferMatching";
+import { findLegalReplacementsForOutgoing, pruneDominatedCandidates, type TransferCandidate } from "./transferMatching";
 import { fetchRotationRiskByPlayerIds, buildContestedGamePlayerPairs, buildHighRiskGamePlayerIds } from "./rotationRisk";
 import { type FixtureDifficultyRow } from "./fixtureRuns";
 import { deriveTeamFixtureRatings } from "./fixtureSwing";
@@ -46,6 +46,12 @@ const GAMEWEEK_PLAN_LENGTH = 3;
 // or the next 2") without diluting this step's own fixture too far into
 // a 3-week blend.
 const PLANNING_LOOKAHEAD_GAMEWEEKS = 2;
+
+// Front-to-back build order (2026-08-10 user call): a striker's ceiling
+// is much higher than a defender's, so among near-equal-value moves the
+// search should prefer upgrading further up the pitch. Lower = built
+// first.
+const BUILD_PRIORITY: Record<"GK" | "DEF" | "MID" | "FWD", number> = { FWD: 0, MID: 1, DEF: 2, GK: 3 };
 
 // A single gameweek step can recommend more than one transfer (e.g. using
 // 2 banked free transfers at once) - this is a generous safety bound on
@@ -450,10 +456,13 @@ export async function runAskMaryAnalysis(
             !boughtIds.has(p.game_player_id) &&
             !highRiskGamePlayerIds.has(p.game_player_id)
         )
-        .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: Number(p.price), score: avgFor(scoreMapForStep, p.game_player_id), position: p.position }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 15);
-      shortlistByPosition.set(position, shortlist);
+        .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: Number(p.price), score: avgFor(scoreMapForStep, p.game_player_id), position: p.position }));
+      // Pareto-prune before capping to 15 - see transferMatching.ts's
+      // pruneDominatedCandidates. Without this, several near-identical
+      // low scorers could fill the whole top-15 at inflated prices,
+      // crowding out the one genuinely cheap option among them.
+      const pruned = pruneDominatedCandidates(shortlist).sort((a, b) => b.score - a.score).slice(0, 15);
+      shortlistByPosition.set(position, pruned);
     }
 
     let best: { outA: WorkingSquadPlayer; outB: WorkingSquadPlayer; inA: TransferCandidate; inB: TransferCandidate; netGain: number; costA: number; costB: number; gainA: number; gainB: number } | null = null;
@@ -513,15 +522,14 @@ export async function runAskMaryAnalysis(
         const xiTotalAfterBoth = optimalXITotal(squadAfterBoth, scoreMapForStep);
         const gainA = xiTotalAfterA - currentXITotal;
         const gainB = xiTotalAfterBoth - xiTotalAfterA;
-        // Both legs must individually be non-negative, not just the sum
-        // (2026-08-10 real user report): the combined-only check let one
-        // leg quietly make the squad WORSE as long as the other leg's
-        // improvement covered it on paper - confirmed live, a real plan
-        // recommended a -0.2pt leg riding along on a +1.7pt leg elsewhere.
-        // A leg that provides zero value (frees budget for the other leg,
-        // no XI-total cost) is still fine - only a leg that actively
-        // loses ground is banned.
-        if (gainA < 0 || gainB < 0) continue;
+        // Combined gain across both legs is the bar, not each leg alone
+        // (2026-08-10 user call: a slightly negative leg is fine when the
+        // other leg's upgrade outweighs it - that's "most projected
+        // points," not a bug). What WAS a real bug is candidate selection
+        // upstream picking a worse-value candidate at a higher price for
+        // one of the legs - see the Pareto-dominance pruning in
+        // transferMatching.ts's findLegalReplacementsForOutgoing and the
+        // shortlist construction above, which fixes that directly.
         const netGain = gainA + gainB + costA + costB;
         if (netGain <= 0) continue;
 
@@ -620,6 +628,23 @@ export async function runAskMaryAnalysis(
       let bestSingleIdx = -1;
       for (let i = 0; i < slotMoves.length; i++) {
         if (bestSingleIdx === -1 || slotMoves[i].input.expectedPointsGain > slotMoves[bestSingleIdx].input.expectedPointsGain) bestSingleIdx = i;
+      }
+      // Front-to-back build order (2026-08-10 user call: a striker's
+      // ceiling is much higher than a defender's, so budget should flow
+      // forward first) - among moves within the same tolerance already
+      // used for "alternatives" below, prefer whichever is further up the
+      // pitch rather than treating a razor-thin raw-points edge as
+      // decisive. A genuinely bigger gain elsewhere still wins outright.
+      if (bestSingleIdx !== -1) {
+        const bestGain = slotMoves[bestSingleIdx].input.expectedPointsGain;
+        const frontTolerance = Math.max(0.3, bestGain * 0.1);
+        for (let i = 0; i < slotMoves.length; i++) {
+          if (i === bestSingleIdx) continue;
+          const gain = slotMoves[i].input.expectedPointsGain;
+          if (bestGain - gain <= frontTolerance && BUILD_PRIORITY[slotMoves[i].input.position] < BUILD_PRIORITY[slotMoves[bestSingleIdx].input.position]) {
+            bestSingleIdx = i;
+          }
+        }
       }
       const singleCost = dreamteamTransferCost(freeRemaining);
       const singleNetGain = bestSingleIdx !== -1 ? slotMoves[bestSingleIdx].input.expectedPointsGain + singleCost : -Infinity;

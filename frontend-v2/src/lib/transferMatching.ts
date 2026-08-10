@@ -16,6 +16,35 @@ export type SquadMember = TransferCandidate;
 export type MatchResult<T> = { candidate: T; delta: number };
 
 /**
+ * Drops every candidate that's Pareto-dominated by a cheaper-or-equal one
+ * that scores the same or better - a rational buyer never prefers the
+ * dominated option, so it should never win a search either. This is the
+ * actual fix for a real reported case (2026-08-10): several near-
+ * identical low-ceiling bench forwards (all ~2.1 projected pts) were
+ * candidates for the same slot, and the search picked one of the pricier
+ * ones purely because its raw score happened to round a hair higher -
+ * with nothing to show for the extra spend. Sorting by price ascending
+ * and keeping only strictly-improving scores as we go is the standard
+ * skyline/Pareto-frontier computation, and it collapses that whole tied
+ * cluster down to whichever is cheapest, while leaving genuine quality
+ * tiers (a real starter at a real premium) completely untouched - a
+ * higher-scoring candidate always survives regardless of price, this only
+ * removes candidates that are strictly worse value than another option.
+ */
+export function pruneDominatedCandidates<T extends { price: number; score: number }>(candidates: T[]): T[] {
+  const byPrice = [...candidates].sort((a, b) => a.price - b.price);
+  const kept: T[] = [];
+  let bestScoreSoFar = -Infinity;
+  for (const c of byPrice) {
+    if (c.score > bestScoreSoFar) {
+      kept.push(c);
+      bestScoreSoFar = c.score;
+    }
+  }
+  return kept;
+}
+
+/**
  * Given ONE fixed outgoing squad player, find every pool candidate that
  * could legally replace them (same position, budget/club-limit valid,
  * strictly better score), best-first.
@@ -98,6 +127,7 @@ export function findLegalReplacementsForOutgoing(
     return true;
   });
 
-  candidates.sort((a, b) => b.score - a.score);
-  return candidates.map((candidate) => ({ candidate, delta: candidate.score - outgoing.score }));
+  const pruned = pruneDominatedCandidates(candidates);
+  pruned.sort((a, b) => b.score - a.score);
+  return pruned.map((candidate) => ({ candidate, delta: candidate.score - outgoing.score }));
 }
