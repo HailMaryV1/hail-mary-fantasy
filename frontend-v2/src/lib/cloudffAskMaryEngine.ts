@@ -401,6 +401,10 @@ export async function runAskMaryAnalysis(
         const xiTotalAfterBoth = optimalXITotal(squadAfterBoth, scoreMapForStep);
         const gainA = xiTotalAfterA - currentXITotal;
         const gainB = xiTotalAfterBoth - xiTotalAfterA;
+        // Both legs must individually be non-negative, not just the sum -
+        // see dreamteamAskMaryEngine.ts's findBestPairBundle for the full
+        // reasoning (2026-08-10 real user report, confirmed live).
+        if (gainA < 0 || gainB < 0) continue;
         const netGain = gainA + gainB;
         if (netGain <= 0) continue;
 

@@ -529,6 +529,15 @@ export async function runAskMaryAnalysis(
         const xiTotalAfterBoth = optimalXITotal(squadAfterBoth, scoreMapForStep);
         const gainA = xiTotalAfterA - currentXITotal;
         const gainB = xiTotalAfterBoth - xiTotalAfterA;
+        // Both legs must individually be non-negative, not just the sum
+        // (2026-08-10 real user report): the combined-only check let one
+        // leg quietly make the squad WORSE as long as the other leg's
+        // improvement covered it on paper - confirmed live against squad
+        // 22, a real plan recommended -0.2pt and -0.1pt legs riding along
+        // on a +1.7pt leg elsewhere. A leg that provides zero value
+        // (frees budget for the other leg, no XI-total cost) is still
+        // fine - only a leg that actively loses ground is banned.
+        if (gainA < 0 || gainB < 0) continue;
         const netGain = gainA + gainB + costA + costB;
         if (netGain <= 0) continue;
 
