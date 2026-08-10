@@ -562,18 +562,33 @@ export default function EFLFantasyBoard({
     });
   }
 
-  function handleSwapInReserve(position: ReservePosition, pick: ReservePick, outGamePlayerId: number) {
+  // A subs-bench swap, not just a one-way promotion (2026-08-11 request) -
+  // the demoted starter goes onto ITS OWN position's reserve list (which
+  // may differ from `position` when the swap also changed formation - see
+  // eflFormation.ts), so the two players can keep trading places without
+  // ever needing to re-search the pool.
+  function handleSwapInReserve(position: ReservePosition, pick: ReservePick, outgoing: BoardPlayer) {
     setSwapPickerReserveId(null);
     setTransferError(null);
+    const outPos = outgoing.position as ReservePosition;
+    const demoted: ReservePick = {
+      game_player_id: outgoing.game_player_id,
+      full_name: outgoing.full_name,
+      team_name: outgoing.team_name,
+      score: outgoing.score,
+      fixtures: outgoing.fixtures,
+    };
     startTransferTransition(async () => {
-      applyOptimisticSquad(optimisticSwap(optimisticSquad, outGamePlayerId, { ...pick, position, competition: null }));
-      applyOptimisticReserves({ ...optimisticReserves, [position]: optimisticReserves[position].filter((r) => r.game_player_id !== pick.game_player_id) });
-      const result = await makeTransfer({ squadId, outGamePlayerId, inGamePlayerId: pick.game_player_id });
+      applyOptimisticSquad(optimisticSwap(optimisticSquad, outgoing.game_player_id, { ...pick, position, competition: null }));
+      const afterRemoval = { ...optimisticReserves, [position]: optimisticReserves[position].filter((r) => r.game_player_id !== pick.game_player_id) };
+      applyOptimisticReserves({ ...afterRemoval, [outPos]: [...afterRemoval[outPos], demoted] });
+      const result = await makeTransfer({ squadId, outGamePlayerId: outgoing.game_player_id, inGamePlayerId: pick.game_player_id });
       if (result?.error) {
         setTransferError(result.error);
         return;
       }
       await removeReserve({ squadId, position, gamePlayerId: pick.game_player_id });
+      await addReserve({ squadId, position: outPos, gamePlayerId: outgoing.game_player_id });
       setRefreshKey((k) => k + 1);
     });
   }
@@ -762,6 +777,15 @@ export default function EFLFantasyBoard({
                               >
                                 {pick.full_name}
                               </button>
+                              {pick.fixtures[0] ? (
+                                <span
+                                  className={`inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(pick.fixtures[0].difficulty)}`}
+                                >
+                                  {pick.fixtures[0].isHome ? pick.fixtures[0].opponentAbbr : pick.fixtures[0].opponentAbbr.toLowerCase()}
+                                </span>
+                              ) : (
+                                <span className="text-[9px] text-navy-700">-</span>
+                              )}
                               <span className="text-[10px] text-navy-500">{pick.score != null ? pick.score.toFixed(1) : "-"}</span>
                             </div>
                             <div className="mt-1 flex items-center gap-1.5">
@@ -803,7 +827,7 @@ export default function EFLFantasyBoard({
                                 {legalSwapTargetsForReserve(position).map((starter) => (
                                   <button
                                     key={starter.game_player_id}
-                                    onClick={() => handleSwapInReserve(position, pick, starter.game_player_id)}
+                                    onClick={() => handleSwapInReserve(position, pick, starter)}
                                     className="rounded-lg border border-navy-700 bg-navy-900 px-2 py-1 text-left text-[11px] text-navy-200 hover:border-sky-500 hover:text-white"
                                   >
                                     {starter.full_name} <span className="text-navy-500">({starter.position})</span>
