@@ -45,13 +45,17 @@ export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain" | "isSt
 export type Formation = { code: string; gk_count: number; def_count: number; mid_count: number; fwd_count: number };
 
 type DisplayMode = "next1" | "next2" | "next3" | "pts" | "pred";
-type SortBy = "pts" | "goals" | "assists" | "bonus";
+type SortBy = "pts" | "goals" | "assists" | "bonus" | "price";
 
+// % Owned isn't offered here - FanTeam's real feed has no such field
+// (confirmed - see swingOpportunity.ts), and this app never shows a
+// made-up number in place of one.
 const SORT_OPTIONS: [SortBy, string][] = [
   ["pts", "Pts"],
   ["goals", "Goals"],
   ["assists", "Assists"],
   ["bonus", "Bonus"],
+  ["price", "Price"],
 ];
 const VALUE_BANDS = [4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 9, 10, 12, 14];
 
@@ -63,6 +67,8 @@ function sortValue(p: PoolPlayer, sortBy: SortBy): number {
       return p.assistProjected;
     case "bonus":
       return p.bonusProjected;
+    case "price":
+      return p.price;
     case "pts":
     default:
       return p.score ?? -Infinity;

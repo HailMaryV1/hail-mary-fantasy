@@ -44,16 +44,17 @@ export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain">;
 
 type Booster = "goal_bonus" | "twelfth_man" | "max_captain";
 type DisplayMode = "next1" | "next2" | "next3" | "pts" | "pred";
-type SortBy = "pts" | "goals" | "assists" | "bonus";
+type SortBy = "pts" | "goals" | "assists" | "bonus" | "price";
 
-// Own %/Top 1k % (ownership) aren't offered here - Dream Team's live game
-// hasn't launched yet, so no real ownership data exists to sort by, and
-// this app never shows a made-up number in place of one.
+// % Owned isn't offered here - Dream Team's real feed has no such field
+// (confirmed live 2026-08-10), and this app never shows a made-up number
+// in place of one. Price is real (a genuine budget game), so that one is.
 const SORT_OPTIONS: [SortBy, string][] = [
   ["pts", "Pts"],
   ["goals", "Goals"],
   ["assists", "Assists"],
   ["bonus", "Bonus"],
+  ["price", "Price"],
 ];
 const VALUE_BANDS = [1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 7, 8.5];
 
@@ -65,6 +66,8 @@ function sortValue(p: PoolPlayer, sortBy: SortBy): number {
       return p.assistProjected;
     case "bonus":
       return p.bonusProjected;
+    case "price":
+      return p.price;
     case "pts":
     default:
       return p.score ?? -Infinity;

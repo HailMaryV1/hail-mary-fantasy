@@ -31,18 +31,28 @@ export type BoardPlayer = {
   goalProjected: number;
   assistProjected: number;
   bonusProjected: number;
+  // Live ownership % (2026-08-10 user request) - Cloud FF's own
+  // getPlayerStats endpoint has a real, confirmed-live "Ownership" field
+  // (e.g. Haaland at 92.8%), unlike Dream Team/FanTeam which have none.
+  // Optional (not just nullable) same as rotationRisk above - only ever
+  // populated for pool rows, never on squad members, so every squad-
+  // player construction site doesn't need to thread through a value that
+  // has no use there.
+  ownershipPct?: number | null;
 };
 
 export type PoolPlayer = BoardPlayer;
 
 type DisplayMode = "next1" | "next2" | "next3" | "pts" | "pred";
-type SortBy = "pts" | "goals" | "assists" | "bonus";
+type SortBy = "pts" | "goals" | "assists" | "bonus" | "price" | "owned";
 
 const SORT_OPTIONS: [SortBy, string][] = [
   ["pts", "Pts"],
   ["goals", "Goals"],
   ["assists", "Assists"],
   ["bonus", "Bonus"],
+  ["price", "Price"],
+  ["owned", "% Owned"],
 ];
 // Cloud FF runs on a higher price scale than Dream Team's original bands
 // (real squad-23 prices already top out above £13m) - matches FanTeam's
@@ -57,6 +67,10 @@ function sortValue(p: PoolPlayer, sortBy: SortBy): number {
       return p.assistProjected;
     case "bonus":
       return p.bonusProjected;
+    case "price":
+      return p.price;
+    case "owned":
+      return p.ownershipPct ?? -Infinity;
     case "pts":
     default:
       return p.score ?? -Infinity;
@@ -231,6 +245,7 @@ export default function CloudFFBoard({
           goalProjected: r.goalProjected,
           assistProjected: r.assistProjected,
           bonusProjected: r.bonusProjected,
+          ownershipPct: r.ownershipPct,
         }))
       );
       setPoolTotalCount(result.totalCount);

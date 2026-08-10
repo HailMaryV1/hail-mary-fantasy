@@ -256,16 +256,23 @@ def import_players(cur, game_id, players_data, team_id_by_squad_id):
         external_id = str(p["id"])
         seen_external_ids.add(external_id)
         competition = COMPETITION_BY_ID.get(p.get("competitionId"))
+        # percentSelected: fantasy.efl.com's own live ownership % (2026-08-10
+        # user request, confirmed live - e.g. K. Trippier at 55.6%, not a
+        # placeholder). None/0 both collapse to the same "not meaningfully
+        # selected yet" reading this early in the season, so no special
+        # null-handling needed beyond the usual coalesce-at-read pattern.
+        ownership_pct = p.get("percentSelected")
         cur.execute(
             """
-            insert into game_players (game_id, player_id, external_id, position_code, price, is_active, competition)
-            values (%s, %s, %s, %s, 0, true, %s)
+            insert into game_players (game_id, player_id, external_id, position_code, price, is_active, competition, ownership_pct)
+            values (%s, %s, %s, %s, 0, true, %s, %s)
             on conflict (game_id, external_id) do update
                 set player_id = excluded.player_id, position_code = excluded.position_code,
-                    is_active = true, updated_at = now(), competition = excluded.competition
+                    is_active = true, updated_at = now(), competition = excluded.competition,
+                    ownership_pct = excluded.ownership_pct
             returning id
             """,
-            (game_id, player_id, external_id, position, competition),
+            (game_id, player_id, external_id, position, competition, ownership_pct),
         )
         game_player_id = cur.fetchone()[0]
 

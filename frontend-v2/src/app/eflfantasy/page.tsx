@@ -33,6 +33,7 @@ type PoolRow = {
   team_name: string;
   hail_mary_score: number | null;
   competition: string | null;
+  ownership_pct: number | null;
 };
 
 type FixtureRow = {
@@ -68,7 +69,7 @@ async function fetchAllPoolRows(supabase: Supabase, gameSlug: string): Promise<P
   return fetchAllPaginated<PoolRow>(async (from, to) => {
     const { data } = await supabase
       .from("game_player_pool")
-      .select("game_player_id, full_name, position, team_id, team_name, hail_mary_score, competition")
+      .select("game_player_id, full_name, position, team_id, team_name, hail_mary_score, competition, ownership_pct")
       .eq("game_slug", gameSlug)
       .range(from, to)
       .returns<PoolRow[]>();
@@ -290,6 +291,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           score: actuals.get(p.game_player_id)?.points ?? null,
           competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
           fixtures: buildFixtures(p.team_id),
+          ownershipPct: p.ownership_pct,
         }))
         .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
       boardClubPool = poolRaw
@@ -367,6 +369,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       score: r.hail_mary_score,
       competition: r.competition ? (LEAGUE_LABELS[r.competition] ?? r.competition) : null,
       fixtures: buildFixtures(r.team_id),
+      ownershipPct: r.ownershipPct,
     }));
     boardClubPool = initialClubPool.rows.map((r) => ({
       game_player_id: r.game_player_id,

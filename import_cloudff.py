@@ -33,6 +33,7 @@ RUN:
 import json
 import os
 import sys
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -47,6 +48,14 @@ from name_matching import compact, surname_key  # noqa: E402
 SEASON = "2026/27"
 
 POSITION_MAP = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+
+# Same endpoint scraper_cloudff.py already documents as confirmed live -
+# startGW=1&endGW=1000 for season-cumulative totals, which is what its
+# own real "Ownership" field represents (confirmed live 2026-08-10, e.g.
+# Haaland at 92.8%) - a live snapshot, not something scoped to a specific
+# gameweek, so the wide range is just "give me everything," not a
+# season-total-vs-live distinction that matters here.
+CLOUDFF_PLAYER_STATS_URL = "https://europe-west2-cloudfantasy-449312.cloudfunctions.net/getPlayerStats?startGW=1&endGW=1000"
 
 # Cloud FF short code -> its own real display name -> canonical teams.name.
 # Extracted live from cloudfixtures/fixtures.json (20/20 real EPL clubs,
@@ -232,6 +241,28 @@ def import_players(cur, game_id, players_data, team_id_by_short):
         print(f"Deactivated {len(stale_ids)} players no longer in Cloud FF's live list.")
 
 
+def import_ownership(cur, game_id):
+    """Live ownership % (2026-08-10 user request) - keyed by the same
+    external_id getPlayerList already gave every game_players row, so this
+    only ever updates existing rows, never inserts."""
+    req = urllib.request.Request(CLOUDFF_PLAYER_STATS_URL, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        stats_data = json.loads(resp.read())
+
+    written = 0
+    for s in stats_data:
+        ownership = s.get("Ownership")
+        if ownership is None:
+            continue
+        cur.execute(
+            "update game_players set ownership_pct = %s where game_id = %s and external_id = %s",
+            (ownership, game_id, str(s["id"])),
+        )
+        written += cur.rowcount
+
+    print(f"Ownership: {written} game_players rows updated with live %.")
+
+
 def main():
     load_env()
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
@@ -252,6 +283,7 @@ def main():
 
         import_fixtures(cur, game_id, fixtures_data, team_id_by_short)
         import_players(cur, game_id, players_data, team_id_by_short)
+        import_ownership(cur, game_id)
 
         conn.commit()
         print("\nDone.")

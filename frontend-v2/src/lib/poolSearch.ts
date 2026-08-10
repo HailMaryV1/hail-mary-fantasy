@@ -2,7 +2,7 @@
 
 import { createAuthServerClient } from "./supabaseServerClient";
 
-export type PoolSortBy = "pts" | "goals" | "assists" | "bonus";
+export type PoolSortBy = "pts" | "goals" | "assists" | "bonus" | "price" | "owned";
 
 export type PoolSearchRow = {
   game_player_id: number;
@@ -16,6 +16,10 @@ export type PoolSearchRow = {
   goalProjected: number;
   assistProjected: number;
   bonusProjected: number;
+  /** Live ownership % (2026-08-10 user request) - only real for EFL
+   * Fantasy and Cloud FF (see migration 0114's docstring); null on
+   * Dream Team/FanTeam, whose real feeds have no such field. */
+  ownershipPct: number | null;
 };
 
 export type PoolSearchResult = { rows: PoolSearchRow[]; totalCount: number };
@@ -85,6 +89,7 @@ export async function searchPool(params: {
     goal_projected: number | string;
     assist_projected: number | string;
     bonus_projected: number | string;
+    ownership_pct: number | string | null;
     total_count: number | string;
   };
   const rpcRows = data as RpcRow[];
@@ -100,6 +105,7 @@ export async function searchPool(params: {
     goalProjected: Number(r.goal_projected),
     assistProjected: Number(r.assist_projected),
     bonusProjected: Number(r.bonus_projected),
+    ownershipPct: r.ownership_pct != null ? Number(r.ownership_pct) : null,
   }));
   const totalCount = rpcRows.length > 0 ? Number(rpcRows[0].total_count) : 0;
   return { rows, totalCount };

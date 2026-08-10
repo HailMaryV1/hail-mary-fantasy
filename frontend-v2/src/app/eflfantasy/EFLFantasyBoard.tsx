@@ -27,6 +27,12 @@ export type BoardPlayer = {
   score: number | null;
   fixtures: (FixtureTile | null)[];
   competition?: string | null;
+  // Live ownership % (2026-08-10 user request) - fantasy.efl.com's own
+  // players.json has a real, confirmed-live "percentSelected" field
+  // (e.g. K. Trippier at 55.6%). No price/budget exists in EFL Fantasy at
+  // all (see migration 0089's docstring), so ownership is the only real
+  // "Sort by" option this game gets beyond raw points.
+  ownershipPct?: number | null;
 };
 export type PoolPlayer = BoardPlayer;
 
@@ -48,6 +54,12 @@ export type PoolClub = BoardClub;
 
 type DisplayMode = "next1" | "next2" | "next3" | "pts";
 const FIXTURE_MODE_COUNT: Record<string, number> = { next1: 1, next2: 2, next3: 3 };
+
+type SortBy = "pts" | "owned";
+const SORT_OPTIONS: [SortBy, string][] = [
+  ["pts", "Pts"],
+  ["owned", "% Owned"],
+];
 // Off for now (2026-08-07, user request) - the pitch card always shows
 // pts + next fixture together instead, since unlimited weekly transfers
 // make planning several gameweeks ahead less useful here than on the
@@ -163,6 +175,7 @@ export default function EFLFantasyBoard({
   const [posFilter, setPosFilter] = useState<"ALL" | "GK" | "DEF" | "MID" | "FWD">("ALL");
   const [teamFilter, setTeamFilter] = useState<string>("ALL");
   const [leagueFilter, setLeagueFilter] = useState<string>("ALL");
+  const [sortBy, setSortBy] = useState<SortBy>("pts");
   const [poolTab, setPoolTab] = useState<"players" | "clubs">("players");
   const [poolPage, setPoolPage] = useState(1);
 
@@ -179,7 +192,7 @@ export default function EFLFantasyBoard({
 
   useEffect(() => {
     setPoolPage(1);
-  }, [posFilter, teamFilter, leagueFilter, debouncedSearch, poolTab]);
+  }, [posFilter, teamFilter, leagueFilter, debouncedSearch, poolTab, sortBy]);
 
   // Server-driven pool state - only the page actually on screen, fetched
   // fresh from search_game_player_pool whenever a filter/search/page/tab
@@ -214,6 +227,7 @@ export default function EFLFantasyBoard({
           // moment this refetch fires.
           excludeIds: optimisticSquad.map((p) => p.game_player_id),
           excludeClub: true,
+          sortBy,
           page: poolPage,
           pageSize: POOL_PAGE_SIZE,
         });
@@ -226,6 +240,7 @@ export default function EFLFantasyBoard({
             score: r.hail_mary_score,
             competition: r.competition,
             fixtures: buildFixtures(r.team_id),
+            ownershipPct: r.ownershipPct,
           }))
         );
         setPoolTotalCount(result.totalCount);
@@ -263,7 +278,7 @@ export default function EFLFantasyBoard({
     }
     refetchPool();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [posFilter, teamFilter, leagueFilter, debouncedSearch, poolTab, poolPage, viewedGameweek, refreshKey]);
+  }, [posFilter, teamFilter, leagueFilter, debouncedSearch, poolTab, poolPage, viewedGameweek, refreshKey, sortBy]);
 
   const teams = isPoolServerDriven ? teamsProp : Array.from(new Set(initialPool.map((p) => p.team_name))).sort();
 
@@ -660,6 +675,17 @@ export default function EFLFantasyBoard({
                     {teams.map((t) => (
                       <option key={t} value={t}>
                         {t}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value as SortBy)}
+                    className="mt-2 rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+                  >
+                    {SORT_OPTIONS.map(([value, label]) => (
+                      <option key={value} value={value}>
+                        Sort: {label}
                       </option>
                     ))}
                   </select>

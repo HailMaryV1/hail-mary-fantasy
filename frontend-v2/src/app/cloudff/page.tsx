@@ -31,6 +31,7 @@ type PoolRow = {
   team_name: string;
   price: number;
   hail_mary_score: number | null;
+  ownership_pct: number | null;
 };
 
 type FormationRow = { code: string; gk_count: number; def_count: number; mid_count: number; fwd_count: number };
@@ -288,6 +289,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       goalProjected: r.goalProjected,
       assistProjected: r.assistProjected,
       bonusProjected: r.bonusProjected,
+      ownershipPct: r.ownershipPct,
     }));
     poolTotalCount = initialPool.totalCount;
     teams = teamNames;
