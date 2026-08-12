@@ -112,6 +112,49 @@ value), dragging the shrinkage cohort prior down to ~0.22 and
 under-projecting most of the field. See made_cut_probability() below -
 raw values are rescaled to (x+1)/2 before being used as a rate anywhere.
 
+RECENT FORM (2026-08-12 fix - the real learning loop this engine was
+missing): everything above projects a golfer from SEASON-BLENDED
+avg_stats alone - static inputs that barely move week to week, with no
+awareness of how Mary's own past predictions for that golfer actually
+did. Confirmed live: after 4 real graded tournaments, compute_golf_
+projections.py had never once queried golf_tournament_predictions -
+the table holding every past prediction AND its real outcome - so
+"63% called it, mean error 26.9" sat on a report card nobody read back
+into the model, and the team optimiser kept converging on the exact
+same top-priced golfers every week regardless of whether they'd
+delivered.
+
+golf_tournament_predictions.points_difference (actual_points -
+expected_points, populated by attach_golf_tournament_results.py) is
+already the right signal: not "what's this golfer's true skill level"
+(the shrinkage projection above already estimates that) but "has Mary
+been under- or over-rating THIS golfer lately" - a genuine calibration/
+bias-correction layer, not a re-estimation of ability. fetch_recent_form_
+residuals() pulls each golfer's graded points_difference from their last
+RECENT_FORM_LOOKBACK_EVENTS starts (same season only - event_number
+resets each PGA Tour season, so raw arithmetic across a season boundary
+would wrongly treat a new season's event 3 as "close to" last season's
+event 45). compute_recent_form_adjustment() decays older tournaments
+(RECENT_FORM_DECAY=0.85, identical constant and reasoning to
+compute_projections.py's football Recent Form - a result 4 events old
+contributes ~52% of one from last week) and shrinks the decayed average
+residual toward a neutral 0 (not toward a rate - there's no "field
+average bias" to shrink toward, an ungraded golfer means literally no
+adjustment) using RECENT_FORM_K=3.0, the same reasoned constant and
+sample-size argument compute_projections.py's k_recent uses (one
+effective recent tournament contributes 25% weight, three ~50%) -
+appropriate here too since a single golf tournament's residual is at
+least as noisy as a single football gameweek's. The resulting
+recent_form_points_adjustment is added directly to expected_points
+(same additive treatment as course_history_points_adjustment) and
+shifts the whole simulated distribution by the same constant (no
+separate variance model for it, same reasoning as course history's own
+shift). Reported in inputs.recent_form (null when a golfer has no
+graded history yet - shrinkage naturally reduces to a true no-op at
+zero observations, so this isn't a special case, just what the formula
+already does) and surfaced in the explanation text whenever it moves
+the projection by more than a token amount.
+
 RUN:
     python3 scripts/compute_golf_projections.py <tournament_id_or_url>
 """
@@ -136,6 +179,17 @@ ROOT = Path(__file__).resolve().parent.parent
 # worth of tour starts before a real solo signal is trustworthy) is the
 # same order of magnitude as football's 10-game constant.
 SHRINKAGE_TOURNAMENTS = 8
+
+# Recent Form (2026-08-12 fix) - decay/shrinkage constants for the
+# calibration layer described in the module docstring. Identical values
+# and reasoning to compute_projections.py's football RECENT_FORM_DECAY/
+# RECENT_FORM_K - not re-derived independently, since the underlying
+# sample-size argument (a single recent result should nudge, not
+# dominate, until several agree) applies just as well to a golf
+# tournament's residual as to a football gameweek's stat rate.
+RECENT_FORM_DECAY = 0.85
+RECENT_FORM_LOOKBACK_EVENTS = 8
+RECENT_FORM_K = 3.0
 
 SIMULATIONS = 3000
 
@@ -303,6 +357,16 @@ DEFAULT_WEIGHTS = {
     # staying purely informational - bump this if the weight or which
     # markets map to a scored tier ever changes.
     "market_blend": {"weight": MARKET_BLEND_WEIGHT, "tiers": sorted(MARKET_TIER_MAP.keys())},
+    # Recent Form (2026-08-12 fix) - see module docstring's own section
+    # and fetch_recent_form_residuals()/compute_recent_form_adjustment()
+    # for the mechanism. First real feedback loop this engine has ever
+    # had - bump this if the decay/lookback/shrinkage constants change.
+    "recent_form_mechanism": {
+        "decay": RECENT_FORM_DECAY,
+        "lookback_events": RECENT_FORM_LOOKBACK_EVENTS,
+        "k": RECENT_FORM_K,
+        "signal": "golf_tournament_predictions.points_difference",
+    },
 }
 
 
@@ -458,6 +522,91 @@ def fetch_market_odds(cur, tournament_id):
             "implied_probability": float(implied_probability) if implied_probability is not None else None,
         }
     return result
+
+
+def fetch_recent_form_residuals(cur, game_id, current_event_number, current_season_year, lookback=RECENT_FORM_LOOKBACK_EVENTS):
+    """game_player_id -> [(event_number, points_difference), ...] from
+    golf_tournament_predictions (migration 0049) - see the module
+    docstring's Recent Form section for why points_difference
+    (actual_points - expected_points, populated by attach_golf_
+    tournament_results.py) is the right signal here, not a re-derivation
+    of raw stats. Scoped to t.event_number < current (never leaks the
+    tournament being projected right now, even if it's somehow already
+    graded) AND >= current - lookback, AND the SAME season_year -
+    event_number resets each PGA Tour season, so without the season
+    guard a new season's early event_number could wrongly read as
+    "close to" the tail of last season's. Returns {} entirely if
+    current_event_number is None (no gameweek-equivalent to look back
+    from), same graceful no-op as compute_projections.py's own
+    fetch_recent_gameweek_observations."""
+    if current_event_number is None:
+        return {}
+    cur.execute(
+        """
+        select gtp.game_player_id, t.event_number, gtp.points_difference
+        from golf_tournament_predictions gtp
+        join golf_tournaments t on t.id = gtp.tournament_id
+        where t.game_id = %s and t.season_year = %s
+          and gtp.actual_points is not null and gtp.points_difference is not null
+          and t.event_number < %s and t.event_number >= %s - %s
+        order by gtp.game_player_id, t.event_number
+        """,
+        (game_id, current_season_year, current_event_number, current_event_number, lookback),
+    )
+    out = {}
+    for game_player_id, event_number, points_difference in cur.fetchall():
+        out.setdefault(game_player_id, []).append((event_number, float(points_difference)))
+    return out
+
+
+def compute_recent_form_adjustment(observations, current_event_number, decay=RECENT_FORM_DECAY, k=RECENT_FORM_K):
+    """Pure function - no database access. Given one golfer's real
+    (event_number, points_difference) observations, returns the
+    recency-weighted, shrunk points adjustment plus the breakdown
+    inputs.recent_form needs, or None with zero observations ("no
+    evidence" stays "no evidence", never converted into a 0.0 adjustment
+    that LOOKS like a confirmed no-bias reading).
+
+    Same two-step shape as compute_projections.py's compute_recent_form_
+    stat: recency-weight each residual by decay^(event distance), then
+    shrink the weighted average toward a neutral 0 (not toward a
+    football-style historical_prior rate - there's no cohort "expected
+    bias" to shrink toward, since expected_points already IS the
+    unbiased-in-theory estimate this residual is measuring error
+    against) using k virtual "average" observations. adjustment is
+    algebraically bounded between 0 and the raw recency-weighted
+    residual by construction (k >= 0), so this can never overcorrect
+    past what the actual evidence shows."""
+    if not observations:
+        return None
+
+    weighted_sum = 0.0
+    weight_total = 0.0
+    oldest_event = None
+    newest_event = None
+    for event_number, residual in observations:
+        weight = decay ** (current_event_number - event_number - 1)
+        weighted_sum += weight * residual
+        weight_total += weight
+        oldest_event = event_number if oldest_event is None else min(oldest_event, event_number)
+        newest_event = event_number if newest_event is None else max(newest_event, event_number)
+
+    if weight_total <= 0:
+        return None
+
+    raw_recency_weighted_residual = weighted_sum / weight_total
+    adjustment = weighted_sum / (weight_total + k)
+    observed_weight = weight_total / (weight_total + k)
+
+    return {
+        "adjustment": round(adjustment, 3),
+        "raw_recency_weighted_residual": round(raw_recency_weighted_residual, 3),
+        "observed_weight": round(observed_weight, 4),
+        "effective_tournaments": round(weight_total, 3),
+        "tournaments_used": len(observations),
+        "oldest_event_number_used": oldest_event,
+        "newest_event_number_used": newest_event,
+    }
 
 
 def course_history_adjustment(ch_row):
@@ -772,6 +921,9 @@ def main():
         market_odds = fetch_market_odds(cur, tournament_id)
         print(f"Market odds: {len(market_odds)} golfer(s) with at least one pasted-in bookmaker market.")
 
+        recent_form_residuals = fetch_recent_form_residuals(cur, game_id, event_number, season_year)
+        print(f"Recent form: {len(recent_form_residuals)} golfer(s) have graded history from earlier this season to learn from.")
+
         cohort = field_averages(entries)
         algo_id = get_or_create_algorithm_version(
             cur, "golf-v1",
@@ -788,7 +940,11 @@ def main():
             proj = project_entry(entry, cohort, scoring_rules, DEFAULT_WEIGHTS, golfer_odds)
             avail = availability_multiplier(entry["lineup"], entry["status"])
             ch_points, ch_detail = course_history_adjustment(course_history.get(entry["golfer_id"]))
-            expected_points = (proj["expected_points"] + ch_points) * avail
+            recent_form = compute_recent_form_adjustment(
+                recent_form_residuals.get(entry["game_player_id"], []), event_number
+            )
+            recent_form_points = recent_form["adjustment"] if recent_form else 0.0
+            expected_points = (proj["expected_points"] + ch_points + recent_form_points) * avail
 
             sim_totals = sorted(
                 v * avail
@@ -801,12 +957,13 @@ def main():
                     DEFAULT_WEIGHTS["simulations"],
                 )
             ) if avail > 0 else [0.0] * DEFAULT_WEIGHTS["simulations"]
-            # Course history is a deterministic adjustment (no per-round
-            # variance estimate exists for it), so it shifts the whole
-            # simulated distribution by a constant rather than being drawn
-            # stochastically like the count/finish-tier stats above.
-            if avail > 0 and ch_points:
-                sim_totals = sorted(v + ch_points for v in sim_totals)
+            # Course history and recent form are both deterministic
+            # adjustments (no per-round variance estimate exists for
+            # either), so they shift the whole simulated distribution by
+            # a constant rather than being drawn stochastically like the
+            # count/finish-tier stats above.
+            if avail > 0 and (ch_points or recent_form_points):
+                sim_totals = sorted(v + ch_points + recent_form_points for v in sim_totals)
 
             floor = percentile(sim_totals, 0.05)
             ceiling = percentile(sim_totals, 0.95)
@@ -840,6 +997,18 @@ def main():
                     reasons.append(
                         f"He's played this course {ch_detail['rounds_played']} time(s) before, performing {ch_detail['versus_expected']:+.1f} strokes "
                         f"{'better' if ch_detail['versus_expected'] >= 0 else 'worse'} than expected per round - {sign} the projection by {ch_points:+.1f} pts."
+                    )
+                # Only worth a mention once it's moved the projection by a
+                # real amount - a golfer with one tournament of history
+                # barely nudges (see compute_recent_form_adjustment's
+                # shrinkage), and reporting a +0.1 pt "learning" claim
+                # would read as noise, not signal.
+                if recent_form and abs(recent_form_points) >= 1.0:
+                    sign = "outperforming" if recent_form_points >= 0 else "underperforming"
+                    reasons.append(
+                        f"He's been {sign} Mary's own projections by {recent_form['raw_recency_weighted_residual']:+.1f} pts on average across his last "
+                        f"{recent_form['tournaments_used']} graded tournament(s) - {'boosts' if recent_form_points >= 0 else 'docks'} this projection by "
+                        f"{recent_form_points:+.1f} pts."
                     )
 
             model_win_probability = proj["model_exclusive_tier_probs"].get("finish_1st", 0.0)
@@ -880,6 +1049,8 @@ def main():
                 "course_fit_available": False,
                 "course_history_points_adjustment": round(ch_points, 3),
                 "course_history": ch_detail,  # null when no course linked, or golfer has no history there
+                "recent_form_points_adjustment": round(recent_form_points, 3),
+                "recent_form": recent_form,  # null when this golfer has no graded history yet this season
                 "model_win_probability": round(model_win_probability, 4),
                 "market_odds": golfer_odds,  # null when nobody's pasted in odds for this golfer/tournament yet
                 "explanation": " ".join(reasons),
