@@ -269,6 +269,19 @@ def main():
         for golf_tournament_ref in golf_tournament_refs:
             results.append(run_step(f"Re-scrape FanTeam Golf tournament ({golf_tournament_ref})", ["scraper_fanteam_golf.py", golf_tournament_ref]))
             results.append(run_step("Re-import FanTeam Golf tournament", ["import_fanteam_golf.py"]))
+            # Runs AFTER the re-scrape/re-import above on purpose (2026-08-12
+            # fix) - those two only ever work pre-lock (scraper_fanteam_golf.py's
+            # endpoint 401s the instant a tournament starts, see its own
+            # docstring), so once locked they'd otherwise be the last writer
+            # to golf_tournament_entries.raw each cycle and silently overwrite
+            # this step's real score data with stale pre-lock pricing. See
+            # capture_golf_scores.py's docstring for the full story (this
+            # replaces the old 5-minute live poller, which the user doesn't
+            # want back - just the final score, on the existing twice-daily
+            # cadence).
+            results.append(
+                run_step(f"Capture FanTeam Golf scores ({golf_tournament_ref})", ["scripts/capture_golf_scores.py", golf_tournament_ref])
+            )
             results.append(
                 run_step(f"Recompute Hail Mary Golf projections ({golf_tournament_ref})", ["scripts/compute_golf_projections.py", golf_tournament_ref])
             )
