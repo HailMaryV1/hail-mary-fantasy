@@ -595,7 +595,21 @@ def get_or_create_algorithm_version(cur, family, description, weights):
         )
         return cur.fetchone()
     finally:
-        cur.execute("select pg_advisory_unlock(hashtext(%s))", (family,))
+        # Confirmed live 2026-08-17: if the try block's own statement
+        # already failed (e.g. a genuine lock-wait statement_timeout -
+        # see this function's own docstring), Postgres aborts the whole
+        # transaction, and this cleanup statement then fails too with
+        # psycopg2.errors.InFailedSqlTransaction, MASKING the real error
+        # in the traceback. Swallowing that specific failure here is
+        # safe, not silently broken - this is a SESSION-scoped advisory
+        # lock (pg_advisory_lock, not pg_advisory_xact_lock), so it
+        # releases on its own the moment the connection rolls back or
+        # closes, which main()'s own except/finally already guarantees
+        # happens right after this exception propagates.
+        try:
+            cur.execute("select pg_advisory_unlock(hashtext(%s))", (family,))
+        except psycopg2.Error:
+            pass
 
 
 def resolve_neutral_attack(cur, game_id, weights):
