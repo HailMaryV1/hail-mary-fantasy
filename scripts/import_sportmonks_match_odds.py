@@ -57,6 +57,7 @@ RUN:
 """
 import json
 import os
+import statistics
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -95,6 +96,19 @@ LOOKAHEAD_DAYS = 21
 # Fulltime Result (1X2 match-winner market) - confirmed live via a real
 # fixture's odds response (market_id=1, label in Home/Draw/Away).
 FULLTIME_RESULT_MARKET_ID = 1
+
+# "Clean Sheet - Home"/"Clean Sheet - Away" (label="Yes"/"No", each row
+# carries a ready-made `probability` string e.g. "27.78%") - confirmed
+# live 2026-08-17 on a real near-kickoff fixture (Cardiff v Wrexham).
+# Added specifically to fill fixture_clean_sheet_probabilities, which
+# team_fixture_difficulty (migration 0010's view) already COALESCEs
+# ahead of the win%+half-draw% approximation - that table has been
+# empty since it was built because its only other intended source
+# (fixture_team_totals, reconstructed from a real 0.5-line goals
+# market) has never actually been populated by any provider. This is a
+# direct market for exactly the number needed, so it skips that
+# reconstruction entirely rather than adding a second approximation.
+CLEAN_SHEET_MARKETS = {"Clean Sheet - Home": "home", "Clean Sheet - Away": "away"}
 
 # Known SportMonks spellings that differ from this project's canonical
 # `teams.name` - same pattern as import_fixtures_odds.py's
@@ -169,6 +183,63 @@ def insert_odds(cur, fixture_id, bookmaker, home_price, draw_price, away_price):
     )
 
 
+def _parse_probability_field(row):
+    """SportMonks odds rows carry a ready-made `probability` string
+    (e.g. "27.78%") - simpler and more direct than reconstructing one
+    from `value` (the decimal price), which is what import_sportmonks_
+    player_props.py's parse_probability() falls back to only when this
+    field is missing. Every Clean Sheet row observed live has it, so no
+    fallback is needed here."""
+    prob = row.get("probability")
+    if not prob:
+        return None
+    try:
+        return float(prob.strip("%")) / 100.0
+    except ValueError:
+        return None
+
+
+def capture_clean_sheet_probabilities(cur, fixture_id, odds_rows, home_team_id, away_team_id):
+    """Writes real fixture_clean_sheet_probabilities rows straight from
+    SportMonks' "Clean Sheet - Home"/"Clean Sheet - Away" markets (see
+    CLEAN_SHEET_MARKETS's own comment for why this exists) - reuses the
+    SAME odds_rows already fetched for the match-winner market above, no
+    extra API call. Append-only, same convention as
+    compute_clean_sheet_probabilities.py's own writes (and fixture_odds
+    itself) - team_fixture_difficulty's view always reads the latest
+    row per (fixture_id, team_id) by computed_at, so a fresh snapshot
+    each run is exactly what's needed, not an update-in-place.
+
+    One row per team, median across whichever bookmakers offered the
+    market this run - same "de-noise across bookmakers" approach
+    compute_clean_sheet_probabilities.py already uses via
+    statistics.median."""
+    team_id_by_side = {"home": home_team_id, "away": away_team_id}
+    probs_by_side = {"home": [], "away": []}
+
+    for r in odds_rows:
+        side = CLEAN_SHEET_MARKETS.get(r.get("market_description"))
+        if side is None or r.get("label") != "Yes":
+            continue
+        prob = _parse_probability_field(r)
+        if prob is not None:
+            probs_by_side[side].append(prob)
+
+    written = 0
+    for side, probs in probs_by_side.items():
+        if not probs:
+            continue
+        cur.execute(
+            """
+            insert into fixture_clean_sheet_probabilities (fixture_id, team_id, clean_sheet_prob, bookmaker_count)
+            values (%s, %s, %s, %s)
+            """,
+            (fixture_id, team_id_by_side[side], statistics.median(probs), len(probs)),
+        )
+        written += 1
+    return written
+
+
 def main():
     load_env()
     api_key = os.environ["SPORTMONKS_API_KEY"]
@@ -186,7 +257,7 @@ def main():
         # numbering with no crosswalk).
         cur.execute(
             """
-            select f.id, ht.name as home_name, at.name as away_name, f.kickoff_at
+            select f.id, ht.name as home_name, at.name as away_name, f.kickoff_at, f.home_team_id, f.away_team_id
             from fixtures f
             join teams ht on ht.id = f.home_team_id
             join teams at on at.id = f.away_team_id
@@ -195,7 +266,10 @@ def main():
             (tuple(LEAGUE_ID_BY_COMPETITION.keys()), now, now + timedelta(days=LOOKAHEAD_DAYS)),
         )
         our_fixtures = cur.fetchall()
-        by_key = {(home_name, away_name, kickoff_at.date()): fid for fid, home_name, away_name, kickoff_at in our_fixtures}
+        by_key = {
+            (home_name, away_name, kickoff_at.date()): (fid, home_team_id, away_team_id)
+            for fid, home_name, away_name, kickoff_at, home_team_id, away_team_id in our_fixtures
+        }
         print(f"{len(our_fixtures)} upcoming EFL Fantasy fixtures to match against SportMonks.")
 
         start_date = now.date().isoformat()
@@ -203,7 +277,7 @@ def main():
         sm_fixtures = fetch_fixtures(api_key, LEAGUE_ID_BY_COMPETITION.values(), start_date, end_date)
         print(f"{len(sm_fixtures)} SportMonks fixtures found in that window across Championship/L1/L2.")
 
-        matched, priced, odds_written = 0, 0, 0
+        matched, priced, odds_written, clean_sheet_written = 0, 0, 0, 0
         for f in sm_fixtures:
             participants = f.get("participants", [])
             home = next((p for p in participants if (p.get("meta") or {}).get("location") == "home"), None)
@@ -213,9 +287,10 @@ def main():
                 continue
 
             match_date = datetime.fromisoformat(starting_at.replace(" ", "T")).date()
-            our_fixture_id = by_key.get((canonical_name(home.get("name")), canonical_name(away.get("name")), match_date))
-            if our_fixture_id is None:
+            match = by_key.get((canonical_name(home.get("name")), canonical_name(away.get("name")), match_date))
+            if match is None:
                 continue
+            our_fixture_id, our_home_team_id, our_away_team_id = match
             matched += 1
 
             odds_rows = fetch_odds(api_key, f["id"])
@@ -238,8 +313,11 @@ def main():
                     insert_odds(cur, our_fixture_id, f"sportmonks_{bookmaker_id}", prices["Home"], prices["Draw"], prices["Away"])
                     odds_written += 1
 
+            clean_sheet_written += capture_clean_sheet_probabilities(cur, our_fixture_id, odds_rows, our_home_team_id, our_away_team_id)
+
         conn.commit()
-        print(f"\nDone: {matched} fixtures matched, {priced} already priced, {odds_written} bookmaker odds rows written.")
+        print(f"\nDone: {matched} fixtures matched, {priced} already priced, {odds_written} bookmaker odds rows written, "
+              f"{clean_sheet_written} clean-sheet-probability rows written.")
     except Exception:
         conn.rollback()
         raise
