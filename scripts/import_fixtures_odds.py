@@ -16,6 +16,20 @@ fixture_odds are NOT upserted - each run appends a new snapshot per
 bookmaker, so odds movement over time is preserved rather than
 overwritten. Intended to run on a schedule (e.g. daily) once live.
 
+2026-08-17: soccer_epl/soccer_fa_cup/soccer_england_efl_cup now source
+ALL their odds from SportMonks instead (see
+import_sportmonks_match_odds.py - user's explicit request: "I WANT ALL
+ODDS TO COME FROM SportMonks... their range is way more extensive").
+This script still runs upsert_fixture() for those 3 competitions
+unchanged - it remains the ONLY mechanism that discovers new fixtures
+and reschedules for them (import_sportmonks_match_odds.py only matches
+against fixtures that already exist here, it never creates one) - it
+just skips insert_odds() so The Odds API's own, now-superseded prices
+stop being appended alongside SportMonks'. Championship/League One/
+League Two were never covered by The Odds API in the first place (both
+return HTTP 404 "Unknown sport" - confirmed live) so are unaffected
+either way.
+
 RUN:
     python3 scripts/import_fixtures_odds.py
 """
@@ -50,6 +64,11 @@ ODDS_BASE = "https://api.the-odds-api.com/v4"
 ODDS_NAME_OVERRIDES = {
     "Brighton and Hove Albion": "Brighton",
 }
+
+# These 3 now get their odds from SportMonks instead (see module
+# docstring above) - fixture discovery/rescheduling still runs for them
+# below, only insert_odds() is skipped.
+SPORTMONKS_COVERED_COMPETITIONS = {"soccer_epl", "soccer_fa_cup", "soccer_england_efl_cup"}
 
 
 def load_env():
@@ -190,6 +209,13 @@ def main():
                     event["home_team"], event["away_team"],
                 )
                 total_fixtures += 1
+
+                # Fixture (and its kickoff time) still gets synced above
+                # for these 3 - only the odds themselves are skipped, now
+                # that SportMonks is the sole source for them (see module
+                # docstring).
+                if competition in SPORTMONKS_COVERED_COMPETITIONS:
+                    continue
 
                 for bookmaker in event.get("bookmakers", []):
                     market = next((m for m in bookmaker["markets"] if m["key"] == "h2h"), None)

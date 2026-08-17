@@ -793,10 +793,22 @@ def compute_module_rate_bookmaker(stat, fixture, player_id, hub_features):
     migration 0064 - real observation or a baseline scaled from one, see
     scripts/import_sportmonks_player_props.py) converted from P(event
     >= 1) to E[event] via the same Poisson-implied conversion for both -
-    the math isn't goal-specific, just P(count >= 1) -> lambda. Every
-    other stat returns None - no cards/saves market is ingested into the
-    hub yet, so its configured weight simply redistributes to the other
-    modules."""
+    the math isn't goal-specific, just P(count >= 1) -> lambda.
+
+    yellow_card/shot_on_target (added 2026-08-17, migration 0117) read
+    booking_probability/expected_shots_on_target from the same hub.
+    yellow_card is used AS-IS, no Poisson conversion - a 2nd booking in
+    the same match ends with the player sent off (a separate red_card
+    event), so P(booked >= 1) is already a good proxy for E[yellow_card]
+    without needing the multi-event correction goal/assist need.
+    shot_on_target's conversion already happened at write time (see
+    import_sportmonks_player_props.py's anytime_prob_to_expected_count) -
+    the column already holds an expected COUNT, not a probability, so
+    it's also read as-is here.
+
+    Every other stat returns None - no market is ingested into the hub
+    for it yet, so its configured weight simply redistributes to the
+    other modules."""
     if stat == "clean_sheet_60min":
         return fixture.get("real_clean_sheet_score")
     if stat == "goal":
@@ -809,6 +821,16 @@ def compute_module_rate_bookmaker(stat, fixture, player_id, hub_features):
         if not feature or feature.get("assist_probability") is None:
             return None
         return anytime_prob_to_expected_goals(float(feature["assist_probability"]))
+    if stat == "yellow_card":
+        feature = hub_features.get((player_id, fixture.get("fixture_id")))
+        if not feature or feature.get("booking_probability") is None:
+            return None
+        return float(feature["booking_probability"])
+    if stat == "shot_on_target":
+        feature = hub_features.get((player_id, fixture.get("fixture_id")))
+        if not feature or feature.get("expected_shots_on_target") is None:
+            return None
+        return float(feature["expected_shots_on_target"])
     return None
 
 
@@ -1242,22 +1264,29 @@ def resolve_module_weights(cur, game_id):
 
 def fetch_hub_features(cur, fixture_ids):
     """{(player_id, fixture_id): {score_probability, is_estimated,
-    assist_probability, assist_is_estimated}} from the Bookmaker
-    Intelligence Hub (bookmaker_player_features, migration 0064) for the
-    given fixtures - read-only here, this script never writes to the hub
-    (see scripts/import_sportmonks_player_props.py for that).
-    Game-independent by construction: the hub has no game_id column, so
-    the same row serves whichever game is scoring right now.
+    assist_probability, assist_is_estimated, booking_probability,
+    expected_shots_on_target}} from the Bookmaker Intelligence Hub
+    (bookmaker_player_features, migration 0064) for the given fixtures -
+    read-only here, this script never writes to the hub (see
+    scripts/import_sportmonks_player_props.py for that). Game-independent
+    by construction: the hub has no game_id column, so the same row
+    serves whichever game is scoring right now.
 
     is_estimated/assist_is_estimated are deliberately separate columns
     (migration 0069) - goal and assist are independently real-or-
     estimated-or-missing for the same row, so one shared flag couldn't
-    represent both."""
+    represent both. booking_probability and expected_shots_on_target
+    (added 2026-08-17, migration 0117) have their own provenance quads
+    too, but this dict doesn't carry them - see compute_module_rate_
+    bookmaker's yellow_card/shot_on_target branches, which only ever
+    check the value IS NULL, exactly like the goal/assist branches
+    already do (neither reads is_estimated/assist_is_estimated either)."""
     if not fixture_ids:
         return {}
     cur.execute(
         """
-        select player_id, fixture_id, score_probability, is_estimated, assist_probability, assist_is_estimated
+        select player_id, fixture_id, score_probability, is_estimated, assist_probability, assist_is_estimated,
+               booking_probability, expected_shots_on_target
         from bookmaker_player_features
         where fixture_id = any(%s)
         """,
@@ -1267,8 +1296,10 @@ def fetch_hub_features(cur, fixture_ids):
         (player_id, fixture_id): {
             "score_probability": score_probability, "is_estimated": is_estimated,
             "assist_probability": assist_probability, "assist_is_estimated": assist_is_estimated,
+            "booking_probability": booking_probability, "expected_shots_on_target": expected_shots_on_target,
         }
-        for player_id, fixture_id, score_probability, is_estimated, assist_probability, assist_is_estimated in cur.fetchall()
+        for player_id, fixture_id, score_probability, is_estimated, assist_probability, assist_is_estimated,
+            booking_probability, expected_shots_on_target in cur.fetchall()
     }
 
 

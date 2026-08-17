@@ -1,8 +1,15 @@
 """
 import_sportmonks_match_odds.py
 ---------------------------------
-Real bookmaker match-winner odds for EFL Fantasy's 3 divisions
-(Championship/League One/League Two), confirmed live 2026-08-06: all
+Real bookmaker match-winner odds, now for all 6 English competitions
+this SportMonks subscription is entitled to: Premier League, FA Cup and
+Carabao Cup (added 2026-08-17, at the user's explicit request to source
+ALL odds from SportMonks rather than The Odds API - see
+import_fixtures_odds.py's docstring for how the two scripts now divide
+fixture-sync vs odds-write responsibility for these 3), alongside the
+original EFL Fantasy trio below.
+
+Championship/League One/League Two, confirmed live 2026-08-06: all
 three are entitled under this project's SportMonks subscription (league
 ids 9/12/14 - the player-props script's own ENTITLED_LEAGUE_IDS is
 stale, missing 12/14) and, for the real GW1 fixtures (2026-08-14 to
@@ -63,10 +70,19 @@ SPORTMONKS_BASE = "https://api.sportmonks.com/v3/football"
 # Confirmed live 2026-08-06 via /v3/football/leagues - Championship,
 # League One, League Two. Matches EFL Fantasy's 3 synthetic competition
 # strings (see migration 0088's docstring) in the same order.
+#
+# soccer_epl/soccer_fa_cup/soccer_england_efl_cup added 2026-08-17 -
+# these 3 match the exact game_competitions.competition strings The Odds
+# API used for the same fixtures (see import_fixtures_odds.py), which is
+# what makes `fixtures.competition` a valid join key here without a
+# separate competition-name crosswalk.
 LEAGUE_ID_BY_COMPETITION = {
     "efl_championship": 9,
     "efl_league_one": 12,
     "efl_league_two": 14,
+    "soccer_epl": 8,
+    "soccer_fa_cup": 24,
+    "soccer_england_efl_cup": 27,
 }
 
 # How far ahead to pull fixtures/odds for - lower-league odds aren't

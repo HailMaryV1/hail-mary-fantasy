@@ -60,6 +60,7 @@ RUN:
 """
 
 import json
+import math
 import os
 import sys
 import urllib.error
@@ -107,7 +108,35 @@ DEFAULT_PROP_WINDOW_DAYS = 10
 # carry every market a top-flight fixture would). Fails safe if the real
 # market_description string turns out to differ: zero rows match, exactly
 # like any other unrecognised market, never a fabricated probability.
-PLAYER_PROP_MARKETS = {"Goalscorers", "Player to Assist"}
+#
+# "Player to be booked" and "Player Shots On Target" added 2026-08-17,
+# per the user's explicit request that "as many markets that can be used
+# to build points for a player should be the absolute fundamentals" of
+# this project's scoring model - and, unlike Player to Assist above,
+# BOTH confirmed live against two real near-kickoff fixtures (Arsenal v
+# Coventry, 4 days out; Cardiff v Wrexham, same day) before being wired
+# in here:
+#   - "Player to be booked": single binary market (label="Booked"),
+#     same shape as "Player to Assist" - real P(booked) directly.
+#   - "Player Shots On Target": an over/under-style market with several
+#     lines per player (label="1+"/"2+"/"3+"/...) - only the "1+" line is
+#     used (see import_player_props()'s shots-on-target branch), the
+#     same P(count >= 1) shape "Goalscorers"' Anytime label already
+#     provides, so it converts to E[shots on target] via the identical
+#     Poisson-implied maths (duplicated here, not imported, since
+#     compute_projections.py's anytime_prob_to_expected_goals lives in a
+#     separate standalone script).
+#   - A real per-player "sent off" market was searched for on both test
+#     fixtures and does not exist (only a match-level, non-attributable
+#     "Red Card in the Match" yes/no) - sending_off_probability is left
+#     unwired this pass, not guessed at.
+PLAYER_PROP_MARKETS = {"Goalscorers", "Player to Assist", "Player to be booked", "Player Shots On Target"}
+
+# The "1+" line of "Player Shots On Target" is the only one written into
+# the hub (see PLAYER_PROP_MARKETS comment above) - the other lines
+# (2+, 3+, ...) are still captured into fixture_player_props as raw data
+# but deliberately not used for the hub write.
+SHOTS_ON_TARGET_ANYTIME_LABEL = "1+"
 
 # Labels within PLAYER_PROP_MARKETS that don't name an actual player -
 # these show up as an "outcome" of the same market and must be filtered
@@ -257,6 +286,16 @@ def parse_probability(row):
         return None
 
 
+def anytime_prob_to_expected_count(p):
+    """Identical maths to compute_projections.py's
+    anytime_prob_to_expected_goals - duplicated here (not imported)
+    since this is a standalone script. Converts a real P(count >= 1)
+    market probability to E[count] assuming a Poisson process:
+    P(0) = e^-lambda, so lambda = -ln(1 - p)."""
+    p = max(0.0, min(0.99, p))
+    return -math.log(1 - p) if p > 0 else 0.0
+
+
 def import_player_props(cur, api_key, window_days):
     cutoff = datetime.now(timezone.utc) + timedelta(days=window_days)
     cur.execute(
@@ -380,6 +419,62 @@ def import_player_props(cur, api_key, window_days):
                         computed_at = now()
                     """,
                     (player_id, fixture_id, probability),
+                )
+            # "Player to be booked" is a single binary market, same shape
+            # as "Player to Assist" above - real P(booked) directly, its
+            # own booking_is_estimated/booking_source/booking_confidence/
+            # booking_market_observed_at provenance quad (migration 0117)
+            # so it never shares or overwrites goal's/assist's. Written
+            # as-is (no Poisson conversion) - a 2nd booking in the same
+            # match ends with the player sent off (scored separately as
+            # red_card), so P(booked >= 1) is already a good proxy for
+            # E[yellow_card] in practice.
+            elif market_description == "Player to be booked":
+                cur.execute(
+                    """
+                    insert into bookmaker_player_features
+                        (player_id, fixture_id, booking_probability, is_estimated, source, confidence,
+                         booking_is_estimated, booking_source, booking_confidence, booking_market_observed_at)
+                    values (%s, %s, %s, false, 'sportmonks_real', 1.0, false, 'sportmonks_real', 1.0, now())
+                    on conflict (player_id, fixture_id) do update set
+                        booking_probability = excluded.booking_probability,
+                        booking_is_estimated = false,
+                        booking_source = excluded.booking_source,
+                        booking_confidence = excluded.booking_confidence,
+                        booking_market_observed_at = excluded.booking_market_observed_at,
+                        computed_at = now()
+                    """,
+                    (player_id, fixture_id, probability),
+                )
+            # "Player Shots On Target" carries several lines per player
+            # (1+/2+/3+/...) - only the 1+ line gives P(count >= 1), the
+            # same shape Goalscorers' Anytime label gives for goals, so it
+            # converts to E[shots on target] via the identical Poisson
+            # maths (anytime_prob_to_expected_count) rather than storing
+            # the raw probability - unlike score_probability/
+            # assist_probability/booking_probability, which store the raw
+            # market probability and let compute_projections.py convert
+            # at read time, expected_shots_on_target's own name already
+            # promises an expected COUNT, so the conversion happens here
+            # instead, once, at write time.
+            elif market_description == "Player Shots On Target" and label == SHOTS_ON_TARGET_ANYTIME_LABEL:
+                expected_sot = anytime_prob_to_expected_count(probability)
+                cur.execute(
+                    """
+                    insert into bookmaker_player_features
+                        (player_id, fixture_id, expected_shots_on_target, is_estimated, source, confidence,
+                         shots_on_target_is_estimated, shots_on_target_source, shots_on_target_confidence,
+                         shots_on_target_market_observed_at)
+                    values (%s, %s, %s, false, 'sportmonks_real', 1.0, false, 'sportmonks_real', 1.0, now())
+                    on conflict (player_id, fixture_id) do update set
+                        expected_shots_on_target = excluded.expected_shots_on_target,
+                        shots_on_target_is_estimated = false,
+                        shots_on_target_source = excluded.shots_on_target_source,
+                        shots_on_target_confidence = excluded.shots_on_target_confidence,
+                        shots_on_target_market_observed_at = excluded.shots_on_target_market_observed_at,
+                        computed_at = now()
+                    """,
+                    (player_id, fixture_id, expected_sot),
                 )
 
         print(f"  fixture {fixture_id}: {len(rows)} player-prop rows")
@@ -542,7 +637,17 @@ def _populate_estimated_assist_rows(cur):
 def populate_estimated_hub_rows(cur):
     """The hub's fallback half - see _populate_estimated_goal_rows and
     _populate_estimated_assist_rows for the goal/assist-specific scaling
-    logic they share the mechanics of. Returns the combined row count."""
+    logic they share the mechanics of. Returns the combined row count.
+
+    Deliberately goal/assist only - booking_probability and
+    expected_shots_on_target (added 2026-08-17) get NO estimated-fallback
+    pass here: the team-attack-score scaling this uses is specifically an
+    attacking-output signal, which is the wrong driver for booking
+    probability (a discipline/referee-tendency signal, not an attacking
+    one) and an unproven one for shots-on-target scaling this pass
+    intentionally didn't build - both stay real-observation-only for now,
+    same "fails safe as None, never a fabricated estimate" posture as
+    every other unwired stat in compute_module_rate_bookmaker."""
     return _populate_estimated_goal_rows(cur) + _populate_estimated_assist_rows(cur)
 
 
