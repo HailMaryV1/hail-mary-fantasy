@@ -16,7 +16,13 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Bumped from 15 (2026-08-17) - a clean solo run legitimately took
+    # 13m31s, leaving almost no headroom; refresh_cloudff's own solo run
+    # was killed by the 15-minute ceiling mid-recompute with no error of
+    # its own (Error: The operation was canceled) - same fix applied
+    # uniformly to every refresh_*.yml, same reasoning as
+    # refresh_shared_odds.yml's own earlier 30->55 bump.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 

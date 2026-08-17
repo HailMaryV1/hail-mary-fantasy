@@ -16,7 +16,10 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # See refresh_dreamteam.yml's comment - bumped 2026-08-17 after this
+    # workflow's own solo run was killed mid-recompute by the 15-minute
+    # ceiling with no error of its own.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
