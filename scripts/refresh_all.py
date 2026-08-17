@@ -318,13 +318,22 @@ def run_wrapup():
     predictions.py). Scheduled to run after every game section (see
     .github/workflows/refresh_wrapup.yml's cron offset) specifically so
     it always sees each game's freshest recompute, not because any of
-    these scripts assume a particular game finished first."""
+    these scripts assume a particular game finished first.
+
+    prune_old_projections.py runs last, deliberately after everything
+    above that still reads from `projections` this cycle (the Hail Mary
+    Form freeze and Performance Lab snapshot both read it) - see that
+    script's own docstring for why every real consumer already only
+    ever wants the latest row per (game_player_id, gameweek) anyway, so
+    running this every cycle keeps the table from ever re-accumulating
+    the ~90k-row/168MB bloat a one-off cleanup found on 2026-08-17."""
     results = []
     results.append(run_step("Capture gameweek actuals", ["scripts/capture_gameweek_actuals.py"]))
     results.append(run_step("Attach gameweek results to frozen predictions", ["scripts/attach_gameweek_results.py"]))
     results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
     results.append(run_step("Capture squad state at deadline (Mary Performance Lab)", ["scripts/capture_squad_gameweek_state.py"]))
     results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
+    results.append(run_step("Prune superseded projection rows", ["scripts/prune_old_projections.py"]))
     return results
 
 
