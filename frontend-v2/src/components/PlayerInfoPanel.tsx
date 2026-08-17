@@ -3,16 +3,19 @@
 import { useEffect, useState } from "react";
 import { getPlayerExplanation } from "@/lib/playerExplanationActions";
 import {
-  MODULE_DISPLAY_NAMES,
-  MODULE_NAMES,
   MODULAR_STATS,
-  STAT_DISPLAY_NAMES,
+  EXPECTED_STAT_DISPLAY_NAMES,
   confidenceTone,
   dataSourceTone,
   dataSourceLabel,
   competitionLabel,
   type EngineExplanation,
 } from "@/lib/engineExplainability";
+import { getTeamColors } from "@/lib/teamColors";
+
+function formatKickoff(iso: string): string {
+  return new Date(iso).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
 
 /**
  * The friendly, sidebar-sized "why is Mary projecting this" view - a
@@ -79,6 +82,31 @@ export default function PlayerInfoPanel({
             )}
           </div>
 
+          {data.primaryFixture && (
+            <div className="flex items-center gap-2 rounded-lg border border-navy-800 bg-navy-950 px-3 py-2 text-xs">
+              {data.primaryFixture.opponentTeamName && (
+                <span
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold"
+                  style={{
+                    backgroundColor: getTeamColors(data.primaryFixture.opponentTeamName).primary,
+                    color: getTeamColors(data.primaryFixture.opponentTeamName).secondary,
+                  }}
+                >
+                  {getTeamColors(data.primaryFixture.opponentTeamName).abbr}
+                </span>
+              )}
+              <div>
+                <p className="font-semibold text-white">
+                  {data.primaryFixture.isHome ? "vs " : "at "}
+                  {data.primaryFixture.opponentTeamName ?? "Unknown opponent"}
+                </p>
+                <p className="text-navy-500">
+                  {formatKickoff(data.primaryFixture.kickoffAt)} · {competitionLabel(data.primaryFixture.competition)}
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between rounded-lg bg-navy-950 px-3 py-2">
             <div>
               <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Projected Points</p>
@@ -123,43 +151,49 @@ export default function PlayerInfoPanel({
             )}
           </div>
 
-          {data.moduleDetail &&
-            MODULAR_STATS.map((stat) => {
-              const detail = data.moduleDetail?.[stat];
-              if (!detail) return null;
-              const contributingModules = MODULE_NAMES.filter(
-                (m) => detail.modules[m].rawRate != null && detail.modules[m].configuredWeight > 0
-              );
-              if (contributingModules.length === 0) return null;
-              return (
-                <div key={stat} className="rounded-lg border border-navy-800 bg-navy-950 p-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold text-white">{STAT_DISPLAY_NAMES[stat]}</p>
-                    <span
-                      className={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${dataSourceTone(detail.bookmakerDataSource)}`}
-                      title={dataSourceLabel(detail.bookmakerDataSource)}
-                    >
-                      Bookies: {detail.bookmakerDataSource}
+          {data.moduleDetail && (
+            <div className="rounded-lg border border-navy-800 bg-navy-950 p-3 text-xs">
+              <p className="font-semibold text-white">The Bookies Say</p>
+              <p className="mt-0.5 text-navy-500">Real market prices, priced through this game&apos;s real scoring matrix.</p>
+              <div className="mt-2 flex flex-col gap-1.5">
+                {MODULAR_STATS.map((stat) => {
+                  const detail = data.moduleDetail?.[stat];
+                  if (!detail || detail.pointsEach == null) return null;
+                  const count = detail.finalRate * (data.expectedMinutesFraction ?? 0);
+                  const contribution = count * detail.pointsEach;
+                  return (
+                    <div key={stat} className="flex items-center justify-between text-navy-300">
+                      <span className="flex items-center gap-1.5">
+                        {EXPECTED_STAT_DISPLAY_NAMES[stat]}
+                        <span
+                          className={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${dataSourceTone(detail.bookmakerDataSource)}`}
+                          title={dataSourceLabel(detail.bookmakerDataSource)}
+                        >
+                          {detail.bookmakerDataSource}
+                        </span>
+                      </span>
+                      <span className="text-navy-400">
+                        {count.toFixed(2)} × {detail.pointsEach}pt = {contribution >= 0 ? "+" : ""}
+                        {contribution.toFixed(2)}
+                      </span>
+                    </div>
+                  );
+                })}
+                {data.reconciliation && (
+                  <div className="mt-0.5 flex items-center justify-between border-t border-navy-800 pt-1.5 text-navy-300">
+                    <span>Other scoring (appearance, cards, bonus...)</span>
+                    <span className="text-navy-400">
+                      +{(data.reconciliation.nonModularSum + data.reconciliation.bonus).toFixed(2)}
                     </span>
                   </div>
-                  <div className="mt-1.5 flex flex-col gap-1">
-                    {contributingModules.map((m) => {
-                      const entry = detail.modules[m];
-                      return (
-                        <div key={m} className="flex items-center justify-between text-[11px] text-navy-300">
-                          <span>{MODULE_DISPLAY_NAMES[m]}</span>
-                          <span className="text-navy-400">
-                            {entry.weightedPointContribution != null
-                              ? `${entry.weightedPointContribution >= 0 ? "+" : ""}${entry.weightedPointContribution.toFixed(2)} pts`
-                              : "—"}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
+                )}
+                <div className="mt-0.5 flex items-center justify-between border-t border-navy-800 pt-1.5 font-semibold text-white">
+                  <span>Total</span>
+                  <span>{data.finalScore.toFixed(2)}</span>
                 </div>
-              );
-            })}
+              </div>
+            </div>
+          )}
 
           {data.recentFormDetail && (data.recentFormDetail.goal || data.recentFormDetail.assist) && (
             <div className="rounded-lg border border-navy-800 bg-navy-950 p-3 text-xs">

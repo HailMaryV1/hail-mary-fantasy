@@ -465,21 +465,21 @@ DEFAULT_WEIGHTS_V2 = {
     "fantasy_influence_version": "v1",
 }
 
-# The 3 stats with both a real fixture-level driver AND a real bookmaker
+# The 4 stats with both a real fixture-level driver AND a real bookmaker
 # market to draw from (goal: SportMonks anytime-goalscorer; assist:
-# SportMonks "Player to Assist" (added 2026-07-30) - both via the
-# Bookmaker Intelligence Hub; clean_sheet_60min: real match-winner odds
-# directly). Every other STAT_COLUMNS entry keeps the exact single-formula
-# treatment it always had (historical rate x the coalesced fixture
-# factor) - modularizing a stat with no genuinely independent extra
-# signal would just add complexity with nothing new to blend in. Whether
-# the assist market is actually offered for Premier League fixtures
-# specifically is still unconfirmed as of this build (no PL fixture has
-# been close enough to kickoff to test) - see compute_module_rate_bookmaker,
+# SportMonks "Player to Assist" (added 2026-07-30); shot_on_target:
+# SportMonks "Player Shots On Target" (added 2026-08-17) - all three via
+# the Bookmaker Intelligence Hub; clean_sheet_60min: real match-winner
+# odds directly). Every other STAT_COLUMNS entry keeps the exact
+# single-formula treatment it always had (historical rate x the coalesced
+# fixture factor) - modularizing a stat with no genuinely independent
+# extra signal would just add complexity with nothing new to blend in.
+# Whether a given market is actually offered for a specific fixture is
+# still fixture-by-fixture uncertain - see compute_module_rate_bookmaker,
 # which correctly returns None until real (or baseline-scaled) data
-# exists, so its configured weight simply redistributes to the other two
-# in the meantime, exactly as it always has.
-MODULAR_STATS = {"goal", "assist", "clean_sheet_60min"}
+# exists, so its configured weight simply redistributes to the other
+# modules in the meantime, exactly as it always has.
+MODULAR_STATS = {"goal", "assist", "clean_sheet_60min", "shot_on_target"}
 
 # Guessed raw-string -> multiplier mapping for FanTeam's pre-match status
 # fields (`lineup`/`status` on each playerChoices record - see
@@ -552,34 +552,50 @@ def get_or_create_algorithm_version(cur, family, description, weights):
     genuine tuning change gets its own permanent row, which the Mary
     Performance Lab needs to compare prediction accuracy across algorithm
     changes.
+
+    All 4 games share this ONE family ("v2-decomposed") and interleave
+    onto the same revision counter - confirmed live 2026-08-17 that two
+    games' scheduled refresh workflows running at once genuinely race on
+    this SELECT-then-INSERT/UPDATE (a `psycopg2.errors.QueryCanceled:
+    canceling statement due to statement timeout ... while locking tuple`
+    crash in production, not a hypothetical). A session-scoped Postgres
+    advisory lock keyed on the family name serializes concurrent callers
+    for the few milliseconds this function actually needs, instead of
+    each one racing the other and one side erroring out - cheap since
+    only two tiny queries happen while it's held, not the caller's whole
+    multi-minute run.
     """
-    cur.execute(
-        "select id, revision, weights from algorithm_versions where family = %s order by revision desc limit 1",
-        (family,),
-    )
-    row = cur.fetchone()
+    cur.execute("select pg_advisory_lock(hashtext(%s))", (family,))
+    try:
+        cur.execute(
+            "select id, revision, weights from algorithm_versions where family = %s order by revision desc limit 1",
+            (family,),
+        )
+        row = cur.fetchone()
 
-    if row is not None:
-        existing_id, existing_revision, existing_weights = row
-        if isinstance(existing_weights, str):
-            existing_weights = json.loads(existing_weights)
-        if existing_weights == weights:
-            cur.execute("update algorithm_versions set description = %s where id = %s", (description, existing_id))
-            return existing_id, weights
-        next_revision = existing_revision + 1
-    else:
-        next_revision = 1
+        if row is not None:
+            existing_id, existing_revision, existing_weights = row
+            if isinstance(existing_weights, str):
+                existing_weights = json.loads(existing_weights)
+            if existing_weights == weights:
+                cur.execute("update algorithm_versions set description = %s where id = %s", (description, existing_id))
+                return existing_id, weights
+            next_revision = existing_revision + 1
+        else:
+            next_revision = 1
 
-    version_label = f"{family}.{next_revision}"
-    cur.execute(
-        """
-        insert into algorithm_versions (version_label, family, revision, description, weights)
-        values (%s, %s, %s, %s, %s)
-        returning id, weights
-        """,
-        (version_label, family, next_revision, description, psycopg2.extras.Json(weights)),
-    )
-    return cur.fetchone()
+        version_label = f"{family}.{next_revision}"
+        cur.execute(
+            """
+            insert into algorithm_versions (version_label, family, revision, description, weights)
+            values (%s, %s, %s, %s, %s)
+            returning id, weights
+            """,
+            (version_label, family, next_revision, description, psycopg2.extras.Json(weights)),
+        )
+        return cur.fetchone()
+    finally:
+        cur.execute("select pg_advisory_unlock(hashtext(%s))", (family,))
 
 
 def resolve_neutral_attack(cur, game_id, weights):
@@ -1851,11 +1867,12 @@ def project_player_stats(
     fixture two gameweeks out, same simplification module_detail_scope
     already documents elsewhere in this file.
 
-    goal/assist/clean_sheet_60min (MODULAR_STATS) are blended from up to
-    4 independent modules (historical/fixture-model/bookmaker/recent-form -
-    see compute_module_rate_* and blend_module_rates above) instead of the
-    single historical-rate x coalesced-fixture-factor formula every other
-    stat below still uses unchanged."""
+    goal/assist/clean_sheet_60min/shot_on_target (MODULAR_STATS) are
+    blended from up to 4 independent modules (historical/fixture-model/
+    bookmaker/recent-form - see compute_module_rate_* and
+    blend_module_rates above) instead of the single historical-rate x
+    coalesced-fixture-factor formula every other stat below still uses
+    unchanged."""
     k = weights["shrinkage_games"]
     neutral_attack = weights["neutral_attack"]
     neutral_clean_sheet = weights["neutral_clean_sheet"]
@@ -2288,6 +2305,14 @@ def main():
         players = [(r["game_player_id"], r["position"], r["player_id"]) for r in raw_players]
         full_name_by_game_player_id = {r["game_player_id"]: r["full_name"] for r in raw_players}
 
+        # For the simple explainability view's "THIS IS THE FIXTURE" header
+        # (opponent name) - resolved once here rather than per-fixture, and
+        # stored as a ready display string in fixtures_by_player below
+        # rather than a bare team_id, so the frontend needs no second
+        # lookup/join of its own.
+        cur.execute("select id, name from teams")
+        team_name_by_id = {row[0]: row[1] for row in cur.fetchall()}
+
         # Dream Team's raw_stats uses different key names than FanTeam's
         # for the same stat, plus stats FanTeam's export doesn't have at
         # all (see RAW_STAT_ALIASES) - resolved here rather than more
@@ -2465,6 +2490,11 @@ def main():
             fixtures_by_player.setdefault(player_id, []).append({
                 "fixture_id": fixture_id, "kickoff_at": kickoff_at.isoformat(),
                 "competition": competition,
+                # For the "THIS IS THE FIXTURE" header in the simple
+                # explainability view - whichever side isn't this
+                # player's own team_id.
+                "opponent_team_name": team_name_by_id.get(away_team_id if team_id == home_team_id else home_team_id),
+                "is_home": team_id == home_team_id,
                 "attack_score": float(attack_score), "clean_sheet_score": float(clean_sheet_score),
                 # Split real-odds-only / model-only components - see
                 # compute_module_rate_historical/fixture_model/bookmaker -
@@ -2586,6 +2616,7 @@ def main():
                     fixture_breakdown.append({
                         "fixture_id": fx["fixture_id"], "kickoff_at": fx["kickoff_at"],
                         "competition": fx["competition"],
+                        "opponent_team_name": fx["opponent_team_name"], "is_home": fx["is_home"],
                         "attack_score": fx["attack_score"], "clean_sheet_score": fx["clean_sheet_score"],
                         "fixture_factor": round(fixture_factor_equiv, 3),
                         "contribution": round(contribution, 3), "stats": priced,

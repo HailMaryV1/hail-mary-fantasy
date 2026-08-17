@@ -27,13 +27,24 @@ export const MODULE_DISPLAY_NAMES: Record<ModuleName, string> = {
   fantasy_influence: "Fantasy Influence",
 };
 
-export const MODULAR_STATS = ["goal", "assist", "clean_sheet_60min"] as const;
+export const MODULAR_STATS = ["goal", "assist", "clean_sheet_60min", "shot_on_target"] as const;
 export type ModularStat = (typeof MODULAR_STATS)[number];
 
 export const STAT_DISPLAY_NAMES: Record<ModularStat, string> = {
   goal: "Goals",
   assist: "Assists",
   clean_sheet_60min: "Clean Sheet",
+  shot_on_target: "Shots On Target",
+};
+
+// "Expected X" phrasing for the simple bookmaker-literal view - distinct
+// from STAT_DISPLAY_NAMES (used for the dense per-module breakdown),
+// since "Expected Goals 0.42" reads naturally where "Goals 0.42" doesn't.
+export const EXPECTED_STAT_DISPLAY_NAMES: Record<ModularStat, string> = {
+  goal: "Expected Goals",
+  assist: "Expected Assists",
+  clean_sheet_60min: "Clean Sheet Chance",
+  shot_on_target: "Expected Shots On Target",
 };
 
 export type BookmakerDataSource = "real" | "estimated" | "unavailable";
@@ -92,6 +103,16 @@ export type AdditionalFixtures = {
   count: number;
   combinedContribution: number;
   fixtures: { fixtureId: number; kickoffAt: string; competition: string | null; contribution: number }[];
+};
+
+// "THIS IS THE FIXTURE" - the primary (earliest, hail_mary_score-scoring)
+// fixture for this gameweek, for the simple explainability view's header.
+export type PrimaryFixture = {
+  fixtureId: number;
+  kickoffAt: string;
+  competition: string | null;
+  opponentTeamName: string | null;
+  isHome: boolean;
 };
 
 const COMPETITION_LABELS: Record<string, string> = {
@@ -235,6 +256,7 @@ export type EngineExplanation = {
   dataConfidence: DataConfidence;
   reconciliation: Reconciliation | null;
   additionalFixtures: AdditionalFixtures;
+  primaryFixture: PrimaryFixture | null;
 };
 
 type RawRecentFormStatDetail = {
@@ -269,6 +291,10 @@ type RawInputs = {
     games90: number; sample_confidence: number;
   } | null;
   module_detail_scope?: { is_primary_fixture_only: boolean; fixture_count: number };
+  fixtures?: {
+    fixture_id: number; kickoff_at: string; competition: string | null;
+    opponent_team_name: string | null; is_home: boolean;
+  }[];
   additional_fixtures?: {
     count: number;
     combined_contribution: number;
@@ -446,6 +472,15 @@ export function parseEngineExplanation(gameSlug: string, row: SummaryRow): Engin
           })),
         }
       : { count: 0, combinedContribution: 0, fixtures: [] },
+    primaryFixture: inputs.fixtures?.[0]
+      ? {
+          fixtureId: inputs.fixtures[0].fixture_id,
+          kickoffAt: inputs.fixtures[0].kickoff_at,
+          competition: inputs.fixtures[0].competition,
+          opponentTeamName: inputs.fixtures[0].opponent_team_name,
+          isHome: inputs.fixtures[0].is_home,
+        }
+      : null,
   };
 }
 
