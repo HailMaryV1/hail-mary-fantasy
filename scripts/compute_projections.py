@@ -1441,6 +1441,13 @@ SUB_MINUTES_CEILING = 30.0
 START_MINUTES_FLOOR = 60.0
 ROTATION_CONGESTION_DISCOUNT = 0.85
 
+# See resolve_goalkeeper_depth_chart()'s docstring for the full backup-
+# goalkeeper rationale. 0.2 (not the 0.1 first proposed) deliberately
+# leaves real headroom for a genuine rotation/cup start, since this is a
+# price-based proxy, not live confirmation - gated off entirely in
+# compute_opportunity() whenever real lineup data says otherwise.
+GK_BACKUP_START_DISCOUNT = 0.2
+
 
 def start_share_from_avg_minutes(avg_minutes_per_appearance):
     """Proxy for what fraction of a player's historical appearances were
@@ -1550,6 +1557,73 @@ def compute_involvement_rates(players, historical_rows, season_games):
     return out
 
 
+def resolve_goalkeeper_depth_chart(gk_team_and_price, players, historical_by_player_id):
+    """{game_player_id} of every goalkeeper NOT ranked #1 at their own
+    club - see compute_opportunity()'s is_backup_goalkeeper parameter.
+
+    Real bug this exists for (2026-08-17): compute_opportunity() prices
+    every player's P(start) purely from POSITION-level shrinkage, with no
+    awareness of teammates - so a club's clear backup keeper (e.g. Remi
+    Matthews behind Dean Henderson at Crystal Palace) looked nearly as
+    likely to start as the real #1, because nothing forced two players
+    competing for the SAME one goalkeeper slot to compete against each
+    other for probability mass. Most exposed for Dream Team/Cloud FF,
+    which have no live team-news source at all (fetch_live_status()
+    returns {} for them) - P(start) there is ENTIRELY this position prior.
+
+    Ranks each club's keepers by PRICE descending (primary), historical
+    minutes_played descending as a tiebreak on exact price ties. Price
+    was chosen over minutes as the primary signal because it correctly
+    reads a new, expensive summer signing as the incumbent #1 even with
+    zero minutes at this specific club (real example confirmed live:
+    Liverpool's Alisson - #1 keeper for years - shows 0 historical
+    minutes this season after an injury-hit year, while his deputy
+    Mamardashvili shows real minutes; a minutes-only signal would have
+    wrongly flagged Alisson as the backup). Live price spot-check across
+    9 Premier League clubs confirmed price is mostly monotonic with real
+    role; the minutes tiebreak resolves the few exact-price-tie cases
+    (Newcastle: Hornicek/Pope both 3.00 - Pope's real minutes correctly
+    keep him #1; Spurs: Vicario/Kinsky both 3.00 - same).
+
+    Fails open: a club with only one active GK, or where even the
+    tiebreak can't separate the top two (identical price AND minutes),
+    gets nobody flagged - never fabricates a discount the data doesn't
+    support.
+
+    KNOWN LIMITATION: this has no injury/availability signal of its own
+    (Dream Team/Cloud FF have none at all - see fetch_live_status()). If
+    the price-ranked #1 keeper is actually out injured long-term, their
+    healthy deputy - now the real de facto starter - would still be
+    wrongly discounted here. compute_opportunity()'s confirmed_starting
+    gate protects FanTeam/EFL Fantasy from this when real lineup data
+    exists; Dream Team/Cloud FF remain exposed until those games gain a
+    live-status source of their own (separate, unscoped work)."""
+    player_id_by_gk_game_player_id = {
+        game_player_id: player_id
+        for game_player_id, position, player_id in players
+        if position == "GK" and game_player_id in gk_team_and_price
+    }
+    by_team = {}
+    for game_player_id, (team_id, _price) in gk_team_and_price.items():
+        by_team.setdefault(team_id, []).append(game_player_id)
+
+    def rank_key(game_player_id):
+        _team_id, price = gk_team_and_price[game_player_id]
+        player_id = player_id_by_gk_game_player_id.get(game_player_id)
+        minutes = historical_by_player_id.get(player_id, {}).get("minutes_played", 0) if player_id else 0
+        return (-price, -minutes)
+
+    backups = set()
+    for team_id, gk_ids in by_team.items():
+        if len(gk_ids) < 2:
+            continue
+        ranked = sorted(gk_ids, key=rank_key)
+        if rank_key(ranked[0]) == rank_key(ranked[1]):
+            continue  # tied for #1 even after the tiebreak - can't discriminate, discount nobody
+        backups.update(ranked[1:])
+    return backups
+
+
 def fetch_rotation_congestion(cur, fixture_ids):
     """{fixture_id: bool} - a first-pass, uniform-per-fixture rotation-risk
     signal: True if this fixture is a cup/non-league competition, or
@@ -1631,7 +1705,7 @@ OPPORTUNITY_LINEUP_BLEND = {
 }
 
 
-def compute_opportunity(historical_row, position, pos_inv, weights, lineup, status, is_transferred, is_congested):
+def compute_opportunity(historical_row, position, pos_inv, weights, lineup, status, is_transferred, is_congested, is_backup_goalkeeper=False):
     """The Opportunity Model (Phase A - Minimum Viable Opportunity Model).
     Returns (expected_minutes_fraction, opportunity_detail).
 
@@ -1657,7 +1731,13 @@ def compute_opportunity(historical_row, position, pos_inv, weights, lineup, stat
     lineup/status should be None for anything but the PRIMARY fixture -
     live team news doesn't exist for a fixture two gameweeks out, same
     simplification module_detail_scope already documents elsewhere in
-    this file."""
+    this file.
+
+    is_backup_goalkeeper - see resolve_goalkeeper_depth_chart() - is
+    gated OFF whenever lineup == "confirmed_starting", so real live
+    confirmation always wins over this price-based proxy; a positional
+    (not per-fixture) fact, so callers pass the same value for every
+    fixture a player has this gameweek, unlike is_congested."""
     k = weights["shrinkage_games"]
     k_effective = k * 2.0 if is_transferred else k
     season_games = weights["season_games"]
@@ -1716,6 +1796,17 @@ def compute_opportunity(historical_row, position, pos_inv, weights, lineup, stat
     # --- Rotation/congestion: first-pass uniform discount (Component 7) ---
     if is_congested and status not in OPPORTUNITY_HARD_OUT_STATUSES and lineup != "confirmed_not_in_squad":
         p_start *= ROTATION_CONGESTION_DISCOUNT
+    # --- Goalkeeper depth chart: see resolve_goalkeeper_depth_chart() -
+    # gated off by the same hard-out/not-in-squad checks as congestion,
+    # PLUS never applied when live data has actually confirmed this
+    # exact player is starting - real confirmation always beats a price
+    # proxy. ---
+    if (
+        is_backup_goalkeeper
+        and status not in OPPORTUNITY_HARD_OUT_STATUSES
+        and lineup not in ("confirmed_not_in_squad", "confirmed_starting")
+    ):
+        p_start *= GK_BACKUP_START_DISCOUNT
     p_start = max(0.0, min(1.0, p_start))
 
     # --- P(appear | didn't start) (Component 3) ---
@@ -1789,6 +1880,7 @@ def compute_opportunity(historical_row, position, pos_inv, weights, lineup, stat
         "p_full_match": round(p_full_match, 4),
         "is_transferred": bool(is_transferred),
         "is_congested": bool(is_congested),
+        "is_backup_goalkeeper": bool(is_backup_goalkeeper),
         "live_status_applied": live_status_applied,
         "structural_confidence": structural_confidence,
         # Deliberately not modeled in Phase A - see
@@ -1850,6 +1942,7 @@ def _implied_involvement(raw_pt1, raw_pt60, raw_pt90, minutes_played):
 def project_player_stats(
     position, player_id, historical_row, fixture, weights, position_avg, position_involvement,
     hub_features, recent_form_rates, lineup, status, is_transferred, is_congested,
+    is_backup_goalkeeper=False,
 ):
     """Per-stat projected count for one player's one fixture (v2-decomposed).
     Returns (projected, expected_minutes_fraction, module_rates_by_stat,
@@ -1891,6 +1984,7 @@ def project_player_stats(
     pos_inv = position_involvement[position]
     expected_minutes_fraction, opportunity_detail = compute_opportunity(
         historical_row, position, pos_inv, weights, lineup, status, is_transferred, is_congested,
+        is_backup_goalkeeper,
     )
 
     projected = {
@@ -2273,6 +2367,7 @@ def main():
         dict_cur.execute(
             """
             select gp.id as game_player_id, gp.position_code as position, gp.player_id, p.full_name,
+                   p.team_id, gp.price,
                    coalesce(gps.total_points, 0) as total_points, coalesce(gps.minutes_played, 0) as minutes_played,
                    coalesce(gps.goals, 0) as goals, coalesce(gps.assists, 0) as assists,
                    coalesce(gps.clean_sheets, 0) as clean_sheets, coalesce(gps.saves, 0) as saves,
@@ -2304,6 +2399,15 @@ def main():
         dict_cur.close()
         players = [(r["game_player_id"], r["position"], r["player_id"]) for r in raw_players]
         full_name_by_game_player_id = {r["game_player_id"]: r["full_name"] for r in raw_players}
+        # For resolve_goalkeeper_depth_chart() below - a separate, narrow
+        # lookup rather than widening the `players` tuple itself, since 5
+        # call sites elsewhere in this file already destructure `players`
+        # as exactly (game_player_id, position, player_id).
+        gk_team_and_price = {
+            r["game_player_id"]: (r["team_id"], float(r["price"]))
+            for r in raw_players
+            if r["position"] == "GK"
+        }
 
         # For the simple explainability view's "THIS IS THE FIXTURE" header
         # (opponent name) - resolved once here rather than per-fixture, and
@@ -2426,6 +2530,12 @@ def main():
         # Feeds is_transferred into compute_opportunity() below - see
         # fetch_transferred_player_ids.
         transferred_player_ids = fetch_transferred_player_ids(cur) if use_v2 else set()
+        # Feeds is_backup_goalkeeper into compute_opportunity() below - see
+        # resolve_goalkeeper_depth_chart(). game_player_id-keyed (not
+        # player_id), same as gk_team_and_price itself.
+        backup_goalkeeper_ids = (
+            resolve_goalkeeper_depth_chart(gk_team_and_price, players, historical_by_player_id) if use_v2 else set()
+        )
         # Only meaningful for v2 (weights["season_games"] doesn't exist on
         # v1's DEFAULT_WEIGHTS) - v1 never calls project_player_stats.
         position_involvement = (
@@ -2542,6 +2652,7 @@ def main():
             # after both branches, purely to feed status_multiplier().
             lineup, status = player_status.get(game_player_id, (None, None))
             is_transferred = player_id in transferred_player_ids
+            is_backup_goalkeeper = game_player_id in backup_goalkeeper_ids
 
             if use_v2:
                 # A neutral-fixture (factor = 1.0 everywhere) baseline, priced
@@ -2563,6 +2674,7 @@ def main():
                     position, player_id, historical_row, neutral_fixture, runtime_weights, position_avg_rates,
                     position_involvement, hub_features, recent_form_rates,
                     None, None, is_transferred, False,
+                    is_backup_goalkeeper,
                 )
                 points_per_90, neutral_priced = price_projected_stats(position, neutral_stats, scoring_rules)
                 neutral_bonus = compute_bonus_points(
@@ -2597,6 +2709,7 @@ def main():
                         position, player_id, historical_row, fx, runtime_weights, position_avg_rates,
                         position_involvement, hub_features, recent_form_rates,
                         fixture_lineup, fixture_status, is_transferred, fixture_is_congested,
+                        is_backup_goalkeeper,
                     )
                     if fixture_index == 0:
                         primary_module_detail = build_module_detail_report(

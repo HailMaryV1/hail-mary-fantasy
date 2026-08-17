@@ -153,6 +153,7 @@ export type OpportunityDetail = {
   pFullMatch: number;
   isTransferred: boolean;
   isCongested: boolean;
+  isBackupGoalkeeper: boolean;
   liveStatusApplied: boolean;
   structuralConfidence: number;
   footballUncertainty: number | null;
@@ -276,7 +277,7 @@ type RawInputs = {
     p_start: number; p_start_historical: number; p_appear_if_not_started: number;
     opportunity_if_start: number; opportunity_if_sub: number; early_substitution_risk: number | null;
     start_share_proxy: number; p_appear: number; p_60_plus: number; p_full_match: number;
-    is_transferred: boolean; is_congested: boolean; live_status_applied: boolean;
+    is_transferred: boolean; is_congested: boolean; is_backup_goalkeeper: boolean; live_status_applied: boolean;
     structural_confidence: number; football_uncertainty: number | null;
   } | null;
   recent_form_detail?: {
@@ -399,6 +400,7 @@ export function parseEngineExplanation(gameSlug: string, row: SummaryRow): Engin
           pFullMatch: inputs.opportunity_detail.p_full_match,
           isTransferred: inputs.opportunity_detail.is_transferred,
           isCongested: inputs.opportunity_detail.is_congested,
+          isBackupGoalkeeper: inputs.opportunity_detail.is_backup_goalkeeper,
           liveStatusApplied: inputs.opportunity_detail.live_status_applied,
           structuralConfidence: inputs.opportunity_detail.structural_confidence,
           footballUncertainty: inputs.opportunity_detail.football_uncertainty,
