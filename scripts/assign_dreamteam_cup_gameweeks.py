@@ -70,7 +70,10 @@ CUP_COMPETITIONS = [
 
 
 def load_env():
-    for line in (ROOT / ".env").read_text().splitlines():
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return  # CI sets real env vars directly - no .env file there.
+    for line in env_path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
