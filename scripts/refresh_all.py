@@ -1,15 +1,34 @@
 """
 refresh_all.py
 ----------------
-Single entrypoint for the automated data-refresh pipeline (see
-.github/workflows/refresh_data.yml, twice-daily cron): odds -> fixture
+Single entrypoint for the automated data-refresh pipeline: odds -> fixture
 extras -> SportMonks player props -> probabilities -> FanTeam player
 pull -> import -> recompute scores for every upcoming gameweek, then the
-same players/fixtures/recompute shape again for Cloud FF. Every step
-here is authentication-free (the FanTeam player pull needs no login -
-confirmed live, see scraper_fanteam.py; Cloud FF's getPlayerList and
-fixtures.json are both confirmed live unauthenticated, see
-scraper_cloudff.py) so this can run entirely unattended in CI.
+same players/fixtures/recompute shape again for Cloud FF, EFL Fantasy,
+Dream Team, and Golf, finishing with the cross-game wrap-up (actuals
+capture, prediction freezing, grading). Every step here is
+authentication-free (the FanTeam player pull needs no login - confirmed
+live, see scraper_fanteam.py; Cloud FF's getPlayerList and fixtures.json
+are both confirmed live unauthenticated, see scraper_cloudff.py) so this
+can run entirely unattended in CI.
+
+2026-08-17: restructured into named per-section functions (run_shared_
+odds/run_fanteam/run_cloudff/run_eflfantasy/run_dreamteam/run_golf/
+run_wrapup) behind a `--only <section>` flag, so each game can run on its
+own staggered GitHub Actions schedule instead of one long sequential
+job - see .github/workflows/refresh_*.yml. This was a genuine operational
+problem, not a style preference: this script running all ~49 steps back
+to back had already needed its GitHub Actions timeout raised once (30min
+-> 55min, see that workflow's own history), and running several games'
+score recomputes concurrently (which staggering avoids entirely, unlike
+true parallelism) was directly observed today causing statement-timeout
+failures on shared tables (algorithm_versions, bookmaker_player_features)
+under concurrent write load. No step's INTERNAL logic changed in this
+restructure - every subprocess call, its exact argument list, and every
+comment explaining why a step is ordered where it is, is unchanged from
+the single-file version; only the grouping/dispatch is new. Omitting
+--only (or passing nothing) still runs every section in the original
+order, for local end-to-end testing.
 
 Deliberately excludes:
   - compute_team_strength.py - manually re-run from screenshot odds, not
@@ -29,13 +48,15 @@ Deliberately excludes:
     dedicated scheduled workflows (provider_sync_requested.yml /
     provider_sync_scheduled.yml), not part of this game-data refresh.
 
-Each step's failure is logged but doesn't abort the rest (e.g. a
-transient Odds API hiccup shouldn't also block the FanTeam player pull,
-or vice versa) - exits non-zero only if something failed, so GitHub
-Actions surfaces a red run either way.
+Each step's failure is logged but doesn't abort the rest of ITS OWN
+section (e.g. a transient Odds API hiccup shouldn't also block the
+FanTeam player pull, or vice versa) - a section exits non-zero only if
+something within it failed, so GitHub Actions surfaces a red run for
+that section alone.
 
 RUN:
-    python3 scripts/refresh_all.py
+    python3 scripts/refresh_all.py                 # everything, in order
+    python3 scripts/refresh_all.py --only fanteam   # just one section
 """
 
 import os
@@ -47,6 +68,12 @@ import psycopg2
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_GAMEWEEKS_AHEAD = 5
+
+# Matches this file's section functions 1:1, and the `section:` argument
+# each .github/workflows/refresh_*.yml passes via --only. Order here is
+# the order a no-flag (full) run executes them in - unchanged from the
+# original single-file version.
+SECTIONS = ["shared_odds", "fanteam", "cloudff", "eflfantasy", "dreamteam", "golf", "wrapup"]
 
 
 def load_env():
@@ -118,10 +145,35 @@ def upcoming_gameweeks(conn, game_slug):
     return [row[0] for row in cur.fetchall()]
 
 
-def main():
-    load_env()
+def recompute_section(game_slug, label):
+    """Shared by fanteam/cloudff/eflfantasy/dreamteam below - each just
+    differs in which game_slug/label to recompute for. Returns the list
+    of per-gameweek step results."""
     results = []
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    try:
+        gameweeks = upcoming_gameweeks(conn, game_slug)
+    finally:
+        conn.close()
 
+    if not gameweeks:
+        print(f"\nNo upcoming {label} gameweeks found in game_fixture_gameweeks - skipping score recompute.")
+    else:
+        print(f"\nRecomputing Hail Mary Score for {label} gameweeks: {gameweeks}")
+        for gw in gameweeks:
+            results.append(
+                run_step(f"Recompute {label} GW{gw}", ["scripts/compute_projections.py", game_slug, "--gameweek", str(gw)])
+            )
+    return results
+
+
+def run_shared_odds():
+    """Odds/fixtures/probabilities - feeds every game at once (a Premier
+    League fixture's odds matter to FanTeam, Cloud FF, and Dream Team
+    simultaneously), so this runs once, ahead of every game-specific
+    section, rather than being duplicated per game (which would burn
+    through the Odds API/SportMonks quota re-fetching the same data)."""
+    results = []
     results.append(run_step("Odds: fixtures + h2h", ["scripts/import_fixtures_odds.py"]))
     results.append(
         run_step("Odds: fixture extras (team totals / player props)", ["scripts/import_fixture_extras.py", "--limit", "20"])
@@ -131,134 +183,92 @@ def main():
     )
     results.append(run_step("Fixture probabilities", ["scripts/compute_fixture_probabilities.py"]))
     results.append(run_step("Clean sheet probabilities", ["scripts/compute_clean_sheet_probabilities.py"]))
+    return results
+
+
+def run_fanteam():
+    results = []
     results.append(run_step("FanTeam players (no login needed)", ["scraper_fanteam.py", "--players-only"]))
     results.append(run_step("Import FanTeam players", ["import_fanteam_live.py", "--skip-fixtures"]))
-    results.append(run_step("Capture gameweek actuals", ["scripts/capture_gameweek_actuals.py"]))
-    results.append(run_step("Attach gameweek results to frozen predictions", ["scripts/attach_gameweek_results.py"]))
     results.append(run_step("Accrue FanTeam free transfers", ["scripts/accrue_free_transfers.py"]))
+    results.extend(recompute_section("fanteam", "FanTeam"))
+    return results
 
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
-    try:
-        gameweeks = upcoming_gameweeks(conn, "fanteam")
-    finally:
-        conn.close()
 
-    if not gameweeks:
-        print("\nNo upcoming FanTeam gameweeks found in game_fixture_gameweeks - skipping score recompute.")
-    else:
-        print(f"\nRecomputing Hail Mary Score for FanTeam gameweeks: {gameweeks}")
-        for gw in gameweeks:
-            results.append(
-                run_step(f"Recompute FanTeam GW{gw}", ["scripts/compute_projections.py", "fanteam", "--gameweek", str(gw)])
-            )
-
-    # Cloud FF - same players/fixtures/recompute shape as FanTeam above,
-    # its own two real unauthenticated endpoints (see scraper_cloudff.py).
-    # seed_cloudff_historical_stats.py is idempotent (skips any Cloud FF
-    # game_player that already has a historical row - see its own
-    # docstring) so it's safe to run every cycle, picking up newly-signed
-    # players as import_cloudff.py adds them.
+def run_cloudff():
+    """Same players/fixtures/recompute shape as FanTeam above, its own
+    two real unauthenticated endpoints (see scraper_cloudff.py).
+    seed_cloudff_historical_stats.py is idempotent (skips any Cloud FF
+    game_player that already has a historical row - see its own
+    docstring) so it's safe to run every cycle, picking up newly-signed
+    players as import_cloudff.py adds them."""
+    results = []
     results.append(run_step("Cloud FF players + fixtures (no login needed)", ["scraper_cloudff.py"]))
     results.append(run_step("Import Cloud FF players + fixtures", ["import_cloudff.py"]))
     results.append(run_step("Seed Cloud FF historical stats", ["scripts/seed_cloudff_historical_stats.py"]))
+    results.extend(recompute_section("cloudff", "Cloud FF"))
+    return results
 
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
-    try:
-        cloudff_gameweeks = upcoming_gameweeks(conn, "cloudff")
-    finally:
-        conn.close()
 
-    if not cloudff_gameweeks:
-        print("\nNo upcoming Cloud FF gameweeks found in game_fixture_gameweeks - skipping score recompute.")
-    else:
-        print(f"\nRecomputing Hail Mary Score for Cloud FF gameweeks: {cloudff_gameweeks}")
-        for gw in cloudff_gameweeks:
-            results.append(
-                run_step(f"Recompute Cloud FF GW{gw}", ["scripts/compute_projections.py", "cloudff", "--gameweek", str(gw)])
-            )
-
-    # EFL Fantasy - players/clubs/fixtures, both endpoints real, public,
-    # unauthenticated JSON (see scraper_eflfantasy.py) - no login dance
-    # needed at all, unlike FanTeam.
+def run_eflfantasy():
+    """EFL Fantasy - players/clubs/fixtures, both endpoints real, public,
+    unauthenticated JSON (see scraper_eflfantasy.py) - no login dance
+    needed at all, unlike FanTeam. Also owns its real bookmaker match-
+    winner odds for Championship/League One/League Two (SportMonks,
+    confirmed live 2026-08-06 - see that script's own docstring for why
+    this needed its own importer instead of reusing import_fixtures_
+    odds.py, which only covers Odds-API sport_keys). Writes into the same
+    fixture_odds table every other competition uses, so needs its own
+    compute_fixture_probabilities.py pass here - the shared one in
+    run_shared_odds() already ran before these fixtures/odds existed on
+    a cold run."""
+    results = []
     results.append(run_step("EFL Fantasy players + clubs + fixtures (no login needed)", ["scraper_eflfantasy.py"]))
     results.append(run_step("Import EFL Fantasy players + clubs + fixtures", ["import_eflfantasy.py"]))
-
-    # Real bookmaker match-winner odds for Championship/League One/League
-    # Two (SportMonks, confirmed live 2026-08-06 - see that script's own
-    # docstring for why this needed its own importer instead of reusing
-    # import_fixtures_odds.py, which only covers Odds-API sport_keys).
-    # Writes into the same fixture_odds table every other competition
-    # uses, so needs its own compute_fixture_probabilities.py pass here -
-    # the one at the top of this pipeline already ran before these
-    # fixtures/odds existed on a cold run.
     results.append(run_step("EFL Fantasy real match odds (SportMonks)", ["scripts/import_sportmonks_match_odds.py"]))
     results.append(run_step("Fixture probabilities (post-EFL-odds)", ["scripts/compute_fixture_probabilities.py"]))
+    results.extend(recompute_section("eflfantasy", "EFL Fantasy"))
+    return results
 
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
-    try:
-        eflfantasy_gameweeks = upcoming_gameweeks(conn, "eflfantasy")
-    finally:
-        conn.close()
 
-    if not eflfantasy_gameweeks:
-        print("\nNo upcoming EFL Fantasy gameweeks found in game_fixture_gameweeks - skipping score recompute.")
-    else:
-        print(f"\nRecomputing Hail Mary Score for EFL Fantasy gameweeks: {eflfantasy_gameweeks}")
-        for gw in eflfantasy_gameweeks:
-            results.append(
-                run_step(f"Recompute EFL Fantasy GW{gw}", ["scripts/compute_projections.py", "eflfantasy", "--gameweek", str(gw)])
-            )
-
-    # Dream Team - players/prices + its own gameweek calendar
-    # (import_dreamteam.py's sync_gameweek_calendar copies FanTeam's real
-    # soccer_epl (fixture_id, gameweek) pairs onto dreamteam's game_id -
-    # see that script's docstring). That calendar only ever covers league
-    # fixtures though, so assign_dreamteam_cup_gameweeks.py runs right
-    # after it to bucket any Carabao Cup/FA Cup/European fixture that's
-    # landed in `fixtures` (via the Odds import above) into whichever
-    # Dream Team gameweek window its kickoff falls in - a fixture that
-    # doesn't exist yet (e.g. a cup round not drawn) simply finds nothing
-    # to assign, not an error, and picks itself up automatically the
-    # first refresh after it appears.
+def run_dreamteam():
+    """Dream Team - players/prices + its own gameweek calendar
+    (import_dreamteam.py's sync_gameweek_calendar copies FanTeam's real
+    soccer_epl (fixture_id, gameweek) pairs onto dreamteam's game_id -
+    see that script's docstring). That calendar only ever covers league
+    fixtures though, so assign_dreamteam_cup_gameweeks.py runs right
+    after it to bucket any Carabao Cup/FA Cup/European fixture that's
+    landed in `fixtures` (via the shared Odds import) into whichever
+    Dream Team gameweek window its kickoff falls in - a fixture that
+    doesn't exist yet (e.g. a cup round not drawn) simply finds nothing
+    to assign, not an error, and picks itself up automatically the
+    first refresh after it appears."""
+    results = []
     results.append(run_step("Dream Team players (no login needed)", ["scraper_dreamteam.py"]))
     results.append(run_step("Import Dream Team players", ["import_dreamteam.py"]))
     results.append(run_step("Dream Team: assign cup/Europe fixtures to gameweeks", ["scripts/assign_dreamteam_cup_gameweeks.py"]))
+    results.extend(recompute_section("dreamteam", "Dream Team"))
+    return results
 
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
-    try:
-        dreamteam_gameweeks = upcoming_gameweeks(conn, "dreamteam")
-    finally:
-        conn.close()
 
-    if not dreamteam_gameweeks:
-        print("\nNo upcoming Dream Team gameweeks found in game_fixture_gameweeks - skipping score recompute.")
-    else:
-        print(f"\nRecomputing Hail Mary Score for Dream Team gameweeks: {dreamteam_gameweeks}")
-        for gw in dreamteam_gameweeks:
-            results.append(
-                run_step(f"Recompute Dream Team GW{gw}", ["scripts/compute_projections.py", "dreamteam", "--gameweek", str(gw)])
-            )
-
-    results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
-    results.append(run_step("Capture squad state at deadline (Mary Performance Lab)", ["scripts/capture_squad_gameweek_state.py"]))
-    results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
-
-    # FanTeam Golf - a brand-new tournament ID drops every week with no
-    # auto-discovery endpoint (confirmed live - every unauthenticated
-    # "list tournaments" path returns HTTP 401), so the FIRST import of a
-    # new week's tournament stays a manual, one-time action (the
-    # Tournament Builder wizard at /golf/import). But once a tournament
-    # is already known, RE-scraping it needs no new information from a
-    # human at all - it's the same fanteam_tournament_id every time, and
-    # FanTeam's own API naturally returns each day's updated round scores/
-    # prices/status for it. Re-running the scraper+importer here, before
-    # the recompute step, is what makes "today's round scores" show up
-    # without anyone revisiting /golf/import - directly closes the gap
-    # where a tournament's scores/prices only ever updated if someone
-    # remembered to paste the same URL in again each day. Loops over
-    # every tournament active_golf_tournaments() returns (not just one)
-    # so importing next week's tournament doesn't silently cut off this
-    # week's still-finishing one - see that function's own docstring.
+def run_golf():
+    """FanTeam Golf - a brand-new tournament ID drops every week with no
+    auto-discovery endpoint (confirmed live - every unauthenticated
+    "list tournaments" path returns HTTP 401), so the FIRST import of a
+    new week's tournament stays a manual, one-time action (the
+    Tournament Builder wizard at /golf/import). But once a tournament
+    is already known, RE-scraping it needs no new information from a
+    human at all - it's the same fanteam_tournament_id every time, and
+    FanTeam's own API naturally returns each day's updated round scores/
+    prices/status for it. Re-running the scraper+importer here, before
+    the recompute step, is what makes "today's round scores" show up
+    without anyone revisiting /golf/import - directly closes the gap
+    where a tournament's scores/prices only ever updated if someone
+    remembered to paste the same URL in again each day. Loops over
+    every tournament active_golf_tournaments() returns (not just one)
+    so importing next week's tournament doesn't silently cut off this
+    week's still-finishing one - see that function's own docstring."""
+    results = []
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:
         golf_tournament_refs = active_golf_tournaments(conn)
@@ -290,9 +300,59 @@ def main():
 
     # These two scans need no tournament ID at all - they operate on
     # every already-imported golf_tournaments row, so they're exactly as
-    # safe to run unattended as their football counterparts above.
+    # safe to run unattended as their football counterparts.
     results.append(run_step("Freeze golf predictions (Hail Mary Golf)", ["scripts/capture_golf_predictions.py"]))
     results.append(run_step("Attach golf tournament results", ["scripts/attach_golf_tournament_results.py"]))
+    return results
+
+
+def run_wrapup():
+    """Cross-game steps that don't belong to any single game's own
+    section - either because they span more than one game
+    (capture_gameweek_actuals.py captures BOTH FanTeam's and Cloud FF's
+    real actuals in one pass, from two different data sources - see its
+    own docstring) or because they operate generically over whichever
+    games/gameweeks/predictions already exist in the database with no
+    game_slug filter at all (attach_gameweek_results.py, capture_
+    gameweek_predictions.py, capture_squad_gameweek_state.py, evaluate_
+    predictions.py). Scheduled to run after every game section (see
+    .github/workflows/refresh_wrapup.yml's cron offset) specifically so
+    it always sees each game's freshest recompute, not because any of
+    these scripts assume a particular game finished first."""
+    results = []
+    results.append(run_step("Capture gameweek actuals", ["scripts/capture_gameweek_actuals.py"]))
+    results.append(run_step("Attach gameweek results to frozen predictions", ["scripts/attach_gameweek_results.py"]))
+    results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
+    results.append(run_step("Capture squad state at deadline (Mary Performance Lab)", ["scripts/capture_squad_gameweek_state.py"]))
+    results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
+    return results
+
+
+SECTION_FUNCS = {
+    "shared_odds": run_shared_odds,
+    "fanteam": run_fanteam,
+    "cloudff": run_cloudff,
+    "eflfantasy": run_eflfantasy,
+    "dreamteam": run_dreamteam,
+    "golf": run_golf,
+    "wrapup": run_wrapup,
+}
+
+
+def main():
+    load_env()
+
+    only = None
+    if "--only" in sys.argv:
+        only = sys.argv[sys.argv.index("--only") + 1]
+        if only not in SECTION_FUNCS:
+            raise SystemExit(f"--only must be one of {SECTIONS}, got {only!r}")
+
+    sections_to_run = [only] if only else SECTIONS
+
+    results = []
+    for section in sections_to_run:
+        results.extend(SECTION_FUNCS[section]())
 
     failed = results.count(False)
     print(f"\n{len(results) - failed}/{len(results)} steps succeeded.")

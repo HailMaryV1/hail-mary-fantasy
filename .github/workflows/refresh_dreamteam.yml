@@ -1,0 +1,33 @@
+name: Refresh - Dream Team
+
+# Runs 12 minutes after refresh_eflfantasy.yml - see refresh_shared_odds.yml's
+# comment for why these are staggered rather than run all-in-one or in
+# true parallel.
+on:
+  schedule:
+    - cron: "48 6 * * *"
+    - cron: "48 18 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: refresh-dreamteam
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary
+
+      - name: Run Dream Team refresh
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/refresh_all.py --only dreamteam

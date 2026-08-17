@@ -1,0 +1,39 @@
+name: Refresh - wrap-up
+
+# Runs 12 minutes after refresh_golf.yml, last in the staggered sequence
+# (see refresh_shared_odds.yml's comment for the full reasoning). Covers
+# the steps that don't belong to any single game's own workflow - either
+# because they span more than one game (capturing FanTeam's AND Cloud
+# FF's real actuals in one pass) or because they operate generically
+# over whichever games/predictions already exist with no game filter at
+# all (see run_wrapup()'s own docstring in scripts/refresh_all.py).
+# Scheduled last specifically so it always sees every game's freshest
+# recompute from this cycle.
+on:
+  schedule:
+    - cron: "12 7 * * *"
+    - cron: "12 19 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: refresh-wrapup
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary
+
+      - name: Run cross-game wrap-up
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/refresh_all.py --only wrapup

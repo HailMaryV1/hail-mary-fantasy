@@ -1,0 +1,54 @@
+name: Refresh - shared odds
+
+# 2026-08-17: first of 7 staggered steps that replace the old single
+# refresh_data.yml (see git history) - that one file ran all ~49 steps
+# for every game back to back, which meant (a) a single slow/broken game
+# could block every other game behind it in the queue (the exact failure
+# mode that forced this file's own timeout-minutes up from 30 to 55
+# earlier today), and (b) running several games' score recomputes in the
+# same process at the same moment caused real statement-timeout failures
+# on shared tables (algorithm_versions, bookmaker_player_features) -
+# observed live today when a leftover run overlapped with manual testing.
+#
+# This step runs first because odds/fixtures/probabilities feed every
+# game at once (a Premier League fixture's real odds matter to FanTeam,
+# Cloud FF, and Dream Team simultaneously) - fetching them once here,
+# rather than duplicating the fetch inside each game's own workflow,
+# avoids burning through the SportMonks/Odds API quota re-requesting the
+# same data 4-5 times a cycle.
+#
+# 12-minute gaps to each following game (see refresh_fanteam.yml etc.)
+# were chosen over true parallelism specifically to avoid the concurrent-
+# write contention above - every individual step observed today finished
+# in well under a minute, so 12 minutes is generous headroom, not a tight
+# margin.
+on:
+  schedule:
+    - cron: "0 6 * * *"
+    - cron: "0 18 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: refresh-shared-odds
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary
+
+      - name: Run shared odds refresh
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+          SPORTMONKS_API_KEY: ${{ secrets.SPORTMONKS_API_KEY }}
+        run: python scripts/refresh_all.py --only shared_odds

@@ -1,0 +1,37 @@
+name: Refresh - EFL Fantasy
+
+# Runs 12 minutes after refresh_cloudff.yml - see refresh_shared_odds.yml's
+# comment for why these are staggered rather than run all-in-one or in
+# true parallel. Also owns SportMonks' real match odds for Championship/
+# League One/League Two (see scripts/import_sportmonks_match_odds.py) and
+# its own follow-up fixture-probabilities pass, since that odds import
+# runs after refresh_shared_odds.yml already finished.
+on:
+  schedule:
+    - cron: "36 6 * * *"
+    - cron: "36 18 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: refresh-eflfantasy
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary
+
+      - name: Run EFL Fantasy refresh
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SPORTMONKS_API_KEY: ${{ secrets.SPORTMONKS_API_KEY }}
+        run: python scripts/refresh_all.py --only eflfantasy
