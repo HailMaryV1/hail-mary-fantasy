@@ -37,6 +37,7 @@ RUN:
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -90,15 +91,29 @@ def season_for(kickoff: datetime) -> str:
     return f"{year - 1}/{str(year)[-2:]}"
 
 
-def fetch_odds(competition, api_key):
+def fetch_odds(competition, api_key, retries=3, backoff_seconds=5):
+    # Retries a transient network blip (URLError/TimeoutError) a few
+    # times before giving up on this one competition - same fix already
+    # proven for scraper_fanteam.py's own fetch_json. A real HTTPError
+    # (e.g. an unsupported sport_key returning 404) still fails
+    # immediately, unchanged - retrying a permanent error just delays
+    # the inevitable and wastes quota.
     url = f"{ODDS_BASE}/sports/{competition}/odds?apiKey={api_key}&regions=uk&markets=h2h"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        print(f"  [warn] {competition}: HTTP {e.code} - {e.read()[:200]}")
-        return []
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            print(f"  [warn] {competition}: HTTP {e.code} - {e.read()[:200]}")
+            return []
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt < retries:
+                print(f"  [retry] {competition}: attempt {attempt}/{retries} failed ({e}) - retrying in {backoff_seconds}s ...")
+                time.sleep(backoff_seconds)
+            else:
+                print(f"  [warn] {competition}: gave up after {retries} attempts ({e})")
+                return []
 
 
 def resolve_team_id(cur, name):

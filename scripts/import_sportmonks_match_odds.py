@@ -58,6 +58,7 @@ RUN:
 import json
 import os
 import statistics
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -139,10 +140,25 @@ def load_env():
         os.environ.setdefault(key.strip(), value.strip())
 
 
-def fetch_json(url):
+def fetch_json(url, retries=3, backoff_seconds=5):
+    # 2026-08-17: a single slow SportMonks response (TimeoutError, not an
+    # HTTPError - so the caller's own except clauses never saw it) killed
+    # a real run outright mid-pipeline. Same fix already proven for
+    # scraper_fanteam.py's own fetch_json - retry a transient blip a
+    # few times with a short pause before giving up for real, instead of
+    # one bad request taking down the whole run.
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read())
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read())
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_error = e
+            if attempt < retries:
+                print(f"  [retry] {url}: attempt {attempt}/{retries} failed ({e}) - retrying in {backoff_seconds}s ...")
+                time.sleep(backoff_seconds)
+    raise last_error
 
 
 def fetch_fixtures(api_key, league_ids, start_date, end_date):

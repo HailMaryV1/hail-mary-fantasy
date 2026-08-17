@@ -42,6 +42,8 @@ RUN:
 """
 import gzip
 import json
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -56,17 +58,31 @@ ENDPOINTS = {
 }
 
 
-def fetch_json(url):
+def fetch_json(url, retries=3, backoff_seconds=5):
     # fantasy.efl.com gzips responses regardless of Accept-Encoding -
     # urllib doesn't auto-decompress, so this checks the magic bytes
     # rather than trusting Content-Encoding (confirmed live: the header
     # isn't always present even though the body is gzipped).
+    #
+    # Retries a transient network blip (URLError/TimeoutError) a few
+    # times before giving up for real - same fix already proven for
+    # scraper_fanteam.py's own fetch_json, applied here since this
+    # script runs unattended on the same automated schedule.
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = resp.read()
-    if raw[:2] == b"\x1f\x8b":
-        raw = gzip.decompress(raw)
-    return json.loads(raw)
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+            if raw[:2] == b"\x1f\x8b":
+                raw = gzip.decompress(raw)
+            return json.loads(raw)
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_error = e
+            if attempt < retries:
+                print(f"  [retry] {url}: attempt {attempt}/{retries} failed ({e}) - retrying in {backoff_seconds}s ...")
+                time.sleep(backoff_seconds)
+    raise last_error
 
 
 def main():

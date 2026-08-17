@@ -63,6 +63,7 @@ import json
 import math
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -161,17 +162,32 @@ def load_env():
         os.environ.setdefault(key.strip(), value.strip())
 
 
-def fetch_json(url, api_key, params=None):
+def fetch_json(url, api_key, params=None, retries=3, backoff_seconds=5):
+    # 2026-08-17: a real run crashed outright on a plain TimeoutError from
+    # this exact call (not an HTTPError, so the except clause below never
+    # saw it) - one slow response took down the whole player-props import.
+    # Same fix already proven for scraper_fanteam.py's own fetch_json:
+    # retry a transient blip a few times before soft-failing to None,
+    # which every call site here already treats as "nothing to do" rather
+    # than a fatal error.
     query = dict(params or {})
     query["api_token"] = api_key
     full_url = f"{url}?{urllib.parse.urlencode(query)}"
     req = urllib.request.Request(full_url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        print(f"  [warn] {full_url}: HTTP {e.code} - {e.read()[:200]}")
-        return None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            print(f"  [warn] {full_url}: HTTP {e.code} - {e.read()[:200]}")
+            return None
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt < retries:
+                print(f"  [retry] {full_url}: attempt {attempt}/{retries} failed ({e}) - retrying in {backoff_seconds}s ...")
+                time.sleep(backoff_seconds)
+            else:
+                print(f"  [warn] {full_url}: gave up after {retries} attempts ({e})")
+                return None
 
 
 def resolve_team_id(cur, name):

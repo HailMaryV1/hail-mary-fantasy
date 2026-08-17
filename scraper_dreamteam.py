@@ -28,6 +28,8 @@ RUN:
     python3 scraper_dreamteam.py
 """
 import json
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -36,10 +38,23 @@ ROOT = Path(__file__).resolve().parent
 PLAYERS_URL = "https://engagecraft-fantasy-backend-prod.azurewebsites.net/api/players"
 
 
-def fetch_json(url):
+def fetch_json(url, retries=3, backoff_seconds=5):
+    # Retries a transient network blip (URLError/TimeoutError) a few
+    # times before giving up for real - same fix already proven for
+    # scraper_fanteam.py's own fetch_json, applied here since this
+    # script runs unattended on the same automated schedule.
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError) as e:
+            last_error = e
+            if attempt < retries:
+                print(f"  [retry] {url}: attempt {attempt}/{retries} failed ({e}) - retrying in {backoff_seconds}s ...")
+                time.sleep(backoff_seconds)
+    raise last_error
 
 
 def main():

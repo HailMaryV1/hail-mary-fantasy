@@ -24,6 +24,7 @@ RUN:
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -50,18 +51,32 @@ def load_env():
         os.environ.setdefault(key.strip(), value.strip())
 
 
-def fetch_event_odds(competition, external_id, api_key):
+def fetch_event_odds(competition, external_id, api_key, retries=3, backoff_seconds=5):
+    # Called once per fixture in a loop (see main()) - a single transient
+    # blip used to be able to either crash the whole run or silently skip
+    # every fixture after it, depending on where it landed. Retries a
+    # network error a few times before giving up on just this one
+    # fixture, same fix already proven for scraper_fanteam.py's own
+    # fetch_json. A real HTTPError still fails immediately, unchanged.
     url = (
         f"{ODDS_BASE}/sports/{competition}/events/{external_id}/odds"
         f"?apiKey={api_key}&regions=uk&markets={ALL_EXTRA_MARKETS}"
     )
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        print(f"  [warn] {external_id}: HTTP {e.code} - {e.read()[:200]}")
-        return None
+    for attempt in range(1, retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            print(f"  [warn] {external_id}: HTTP {e.code} - {e.read()[:200]}")
+            return None
+        except (urllib.error.URLError, TimeoutError) as e:
+            if attempt < retries:
+                print(f"  [retry] {external_id}: attempt {attempt}/{retries} failed ({e}) - retrying in {backoff_seconds}s ...")
+                time.sleep(backoff_seconds)
+            else:
+                print(f"  [warn] {external_id}: gave up after {retries} attempts ({e})")
+                return None
 
 
 def resolve_team_id(cur, name):
