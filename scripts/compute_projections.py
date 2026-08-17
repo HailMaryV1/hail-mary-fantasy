@@ -633,7 +633,7 @@ FIXTURE_PROBABILITY_JOIN_SQL = """
 FIXTURE_PROBABILITY_SELECT_SQL = """
                p.id as player_id, p.team_id, tfd.fixture_id, tfd.kickoff_at,
                tfd.attack_score, tfd.clean_sheet_score,
-               f.home_team_id, f.away_team_id,
+               f.home_team_id, f.away_team_id, f.competition, f.created_at as fixture_created_at,
                real_prob.home_win_prob as real_home_win_prob, real_prob.draw_prob as real_draw_prob,
                real_prob.away_win_prob as real_away_win_prob,
                model_prob.home_win_prob as model_home_win_prob, model_prob.draw_prob as model_draw_prob,
@@ -2425,13 +2425,37 @@ def main():
 
         player_status = fetch_live_status(cur, game_id, gameweek, game_slug)
 
+        # The Odds API sometimes carries two rows for the same real tie -
+        # a provisional placeholder kickoff (seen live: every early-round
+        # EFL Cup match assigned an identical "15:00" slot) alongside a
+        # later-imported row with the real, per-match broadcast time.
+        # Confirmed live 2026-08-17 across 9+ EFL Cup ties - the
+        # placeholder's fixture_created_at is always the earlier import.
+        # Without this, both rows would be treated as genuinely separate
+        # fixtures and the same match double-counted in a player's score.
+        # Dedupe by (home, away, competition), keeping only the row whose
+        # fixture was imported most recently (the corrected date).
+        fixture_meta = {}
+        for row in rows:
+            fixture_id, home_team_id, away_team_id, competition, fixture_created_at = row[2], row[6], row[7], row[8], row[9]
+            fixture_meta[fixture_id] = (home_team_id, away_team_id, competition, fixture_created_at)
+        best_fixture_by_matchup = {}
+        for fixture_id, (home_team_id, away_team_id, competition, fixture_created_at) in fixture_meta.items():
+            matchup_key = (home_team_id, away_team_id, competition)
+            current = best_fixture_by_matchup.get(matchup_key)
+            if current is None or fixture_created_at > current[1]:
+                best_fixture_by_matchup[matchup_key] = (fixture_id, fixture_created_at)
+        keep_fixture_ids = {fid for fid, _ in best_fixture_by_matchup.values()}
+
         fixtures_by_player = {}
         all_kickoffs = []
         all_fixture_ids = set()
         for (player_id, team_id, fixture_id, kickoff_at, attack_score, clean_sheet_score,
-             home_team_id, away_team_id,
+             home_team_id, away_team_id, competition, fixture_created_at,
              real_home_win_prob, real_draw_prob, real_away_win_prob,
              model_home_win_prob, model_draw_prob, model_away_win_prob) in rows:
+            if fixture_id not in keep_fixture_ids:
+                continue
             all_kickoffs.append(kickoff_at)
             all_fixture_ids.add(fixture_id)
             real_win, real_draw = _team_side_win_draw(real_home_win_prob, real_draw_prob, real_away_win_prob, team_id, home_team_id)
@@ -2440,6 +2464,7 @@ def main():
             model_attack, model_cs = _attack_and_clean_sheet(model_win, model_draw)
             fixtures_by_player.setdefault(player_id, []).append({
                 "fixture_id": fixture_id, "kickoff_at": kickoff_at.isoformat(),
+                "competition": competition,
                 "attack_score": float(attack_score), "clean_sheet_score": float(clean_sheet_score),
                 # Split real-odds-only / model-only components - see
                 # compute_module_rate_historical/fixture_model/bookmaker -
@@ -2447,6 +2472,14 @@ def main():
                 "real_attack_score": real_attack, "real_clean_sheet_score": real_cs,
                 "model_attack_score": model_attack, "model_clean_sheet_score": model_cs,
             })
+
+        # fixtures[0] is treated as THE primary/headline fixture everywhere
+        # below (module_detail, opportunity_detail, live team news, and -
+        # as of this fix - hail_mary_score itself) - guarantee it's really
+        # the earliest kickoff rather than whatever order Postgres happened
+        # to return rows in (no ORDER BY on the underlying query).
+        for player_fixture_list in fixtures_by_player.values():
+            player_fixture_list.sort(key=lambda fx: fx["kickoff_at"])
 
         hub_features = fetch_hub_features(cur, all_fixture_ids) if use_v2 else {}
         recent_form_rates = (
@@ -2508,7 +2541,7 @@ def main():
                 points_per_90 += neutral_bonus
                 neutral_priced["bonus_points"] = {"projected": round(neutral_bonus, 4), "points_each": 1, "contribution": round(neutral_bonus, 3)}
 
-                score = 0.0
+                all_fixtures_score = 0.0
                 fixture_breakdown = []
                 module_scenario_totals = {module: None for module in MODULE_NAMES}
                 module_has_data = {module: False for module in MODULE_NAMES}
@@ -2548,17 +2581,21 @@ def main():
                     if bonus_points:
                         contribution += bonus_points
                         priced["bonus_points"] = {"projected": round(bonus_points, 4), "points_each": 1, "contribution": round(bonus_points, 3)}
-                    score += contribution
+                    all_fixtures_score += contribution
                     fixture_factor_equiv = contribution / points_per_90 if points_per_90 > 0 else 0.0
                     fixture_breakdown.append({
                         "fixture_id": fx["fixture_id"], "kickoff_at": fx["kickoff_at"],
+                        "competition": fx["competition"],
                         "attack_score": fx["attack_score"], "clean_sheet_score": fx["clean_sheet_score"],
                         "fixture_factor": round(fixture_factor_equiv, 3),
                         "contribution": round(contribution, 3), "stats": priced,
                         # For the Hail Mary Form System (player_gameweek_predictions) -
                         # a double gameweek only reflects fixtures[0] here, same
-                        # single-fixture caveat as the probability fields below;
-                        # hail_mary_score itself still correctly sums both fixtures.
+                        # single-fixture caveat as the probability fields below.
+                        # hail_mary_score itself is PRIMARY-FIXTURE-ONLY as of
+                        # this fix (see additional_fixtures_total just below the
+                        # loop) - any further fixtures this gameweek are shown
+                        # separately, never folded into the headline score.
                         "predicted_minutes": round(expected_minutes_fraction * 90, 1),
                     })
 
@@ -2578,6 +2615,22 @@ def main():
                         module_has_data[module] = True
                         module_scenario_totals[module] = (module_scenario_totals[module] or 0.0) + value + bonus_points
 
+                # hail_mary_score (the headline number shown everywhere -
+                # rankings, squad pages, transfers, Ask Mary) is the
+                # PRIMARY fixture's contribution only - real user feedback
+                # 2026-08-17: a cup tie landing in the same gameweek window
+                # (e.g. a Carabao Cup replay) was silently summed into the
+                # projection, producing scores ~3x too high with no
+                # indication why. Any further fixture(s) this gameweek are
+                # surfaced separately below (additional_fixtures) rather
+                # than folded into the number every other feature reads as
+                # "this gameweek's projection" - matches the real game's
+                # own single-fixture-per-gameweek scoring for the primary
+                # competition, with genuine doubles shown as clearly-labelled
+                # upside rather than blended in.
+                score = fixture_breakdown[0]["contribution"] if fixture_breakdown else 0.0
+                additional_fixtures_total = round(all_fixtures_score - score, 3)
+
                 data_confidence_score = compute_data_confidence(
                     module_has_data, module_weights_by_position.get(position, {}), historical_row["minutes_played"] / 90.0
                 )
@@ -2590,6 +2643,18 @@ def main():
                     # shrunk rates are actually based on.
                     "games90": round(historical_row["minutes_played"] / 90.0, 2),
                     "fixtures": fixture_breakdown,
+                    # "If this player also features in a further fixture
+                    # this gameweek" - explicitly NOT part of hail_mary_score
+                    # (see above). Each entry already carries its own
+                    # rotation-risk-discounted contribution via
+                    # fetch_rotation_congestion()/ROTATION_CONGESTION_DISCOUNT,
+                    # since cup/short-turnaround fixtures are flagged
+                    # is_congested there regardless of fixture_index.
+                    "additional_fixtures": {
+                        "count": len(fixture_breakdown) - 1 if fixture_breakdown else 0,
+                        "fixtures": fixture_breakdown[1:],
+                        "combined_contribution": additional_fixtures_total,
+                    },
                     "explanation": build_explanation(neutral_priced),
                     # Engine Validation report (frontend/src/lib/
                     # engineExplainability.ts) - the primary fixture's full
@@ -2729,8 +2794,12 @@ def main():
                     "passed": abs(primary_difference) <= RECONCILE_TOLERANCE,
                 }
 
-                expected_pre_availability = sum(fx["contribution"] for fx in fixture_breakdown)
-                additional_fixtures_subtotal = expected_pre_availability - fixture_breakdown[0]["contribution"]
+                # Full score check is PRIMARY-FIXTURE-ONLY as of this fix -
+                # hail_mary_score no longer includes additional_fixtures_total,
+                # so this rebuilds the primary fixture's pre-availability
+                # total fresh from the stored breakdown (not the accumulator)
+                # and compares that x multiplier to the real final score.
+                expected_pre_availability = fixture_breakdown[0]["contribution"]
                 expected_final = expected_pre_availability * multiplier
                 full_difference = expected_final - score
                 full_score_check = {
@@ -2748,7 +2817,9 @@ def main():
                     "non_modular_sum": round(non_modular_sum, 4),
                     "bonus": round(bonus_component, 4),
                     "primary_fixture_subtotal": round(fixture_breakdown[0]["contribution"], 4),
-                    "additional_fixtures_subtotal": round(additional_fixtures_subtotal, 4),
+                    # Informational only - NOT part of final_score/pre_availability_total
+                    # any more. See additional_fixtures_total above/inputs["additional_fixtures"].
+                    "additional_fixtures_subtotal": additional_fixtures_total,
                     "pre_availability_total": round(expected_pre_availability, 4),
                     "availability_multiplier": multiplier,
                     "final_score": round(score, 4),

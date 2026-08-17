@@ -416,8 +416,11 @@ export default function EngineExplanationCard({ data }: { data: EngineExplanatio
             <span>Non-modular sum: {data.reconciliation.nonModularSum.toFixed(3)}</span>
             <span>Bonus: {data.reconciliation.bonus.toFixed(3)}</span>
             <span>Primary fixture subtotal: {data.reconciliation.primaryFixtureSubtotal.toFixed(3)}</span>
-            <span>Additional fixtures: {data.reconciliation.additionalFixturesSubtotal.toFixed(3)}</span>
-            <span>Pre-availability total: {data.reconciliation.preAvailabilityTotal.toFixed(3)}</span>
+            <span>
+              If also plays additional fixture(s): +{data.reconciliation.additionalFixturesSubtotal.toFixed(3)}{" "}
+              <span className="text-navy-500">(not in final score)</span>
+            </span>
+            <span>Pre-availability total (primary fixture only): {data.reconciliation.preAvailabilityTotal.toFixed(3)}</span>
             <span>Availability multiplier: ×{data.reconciliation.availabilityMultiplier.toFixed(2)}</span>
             <span className="font-medium text-white">Final score: {data.reconciliation.finalScore.toFixed(3)}</span>
           </div>

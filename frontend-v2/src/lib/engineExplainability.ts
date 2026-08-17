@@ -81,6 +81,33 @@ export type Reconciliation = {
   finalScore: number;
 };
 
+// "If this player also features in a further fixture this gameweek" -
+// e.g. a Carabao Cup tie landing in the same window as the primary
+// Premier League fixture. Deliberately NOT part of hail_mary_score/
+// finalScore (see compute_projections.py) - shown as separate upside,
+// already rotation-risk-discounted per fixture (cup/short-turnaround
+// fixtures get ROTATION_CONGESTION_DISCOUNT applied to their own
+// contribution before reaching here).
+export type AdditionalFixtures = {
+  count: number;
+  combinedContribution: number;
+  fixtures: { fixtureId: number; kickoffAt: string; competition: string | null; contribution: number }[];
+};
+
+const COMPETITION_LABELS: Record<string, string> = {
+  soccer_epl: "Premier League",
+  soccer_fa_cup: "FA Cup",
+  soccer_england_efl_cup: "Carabao Cup",
+  soccer_uefa_champs_league: "Champions League",
+  soccer_uefa_europa_league: "Europa League",
+  soccer_uefa_europa_conference_league: "Conference League",
+};
+
+export function competitionLabel(competition: string | null): string {
+  if (!competition) return "Unknown competition";
+  return COMPETITION_LABELS[competition] ?? competition.replace(/^soccer_/, "").replace(/_/g, " ");
+}
+
 export type PlayerStatus = { lineup: string | null; status: string | null; multiplier: number };
 
 // Opportunity Model (Phase A) - see compute_opportunity() in
@@ -207,6 +234,7 @@ export type EngineExplanation = {
   moduleScenarios: ModuleScenarios;
   dataConfidence: DataConfidence;
   reconciliation: Reconciliation | null;
+  additionalFixtures: AdditionalFixtures;
 };
 
 type RawRecentFormStatDetail = {
@@ -241,6 +269,11 @@ type RawInputs = {
     games90: number; sample_confidence: number;
   } | null;
   module_detail_scope?: { is_primary_fixture_only: boolean; fixture_count: number };
+  additional_fixtures?: {
+    count: number;
+    combined_contribution: number;
+    fixtures: { fixture_id: number; kickoff_at: string; competition: string | null; contribution: number }[];
+  };
   module_detail?: Record<string, { final_rate: number; points_each: number | null; modules: Record<string, {
     raw_rate: number | null; configured_weight: number; effective_weight: number; weighted_point_contribution: number | null;
   }>; bookmaker_data_source: BookmakerDataSource }> | null;
@@ -401,6 +434,18 @@ export function parseEngineExplanation(gameSlug: string, row: SummaryRow): Engin
           finalScore: inputs.reconciliation.final_score,
         }
       : null,
+    additionalFixtures: inputs.additional_fixtures
+      ? {
+          count: inputs.additional_fixtures.count,
+          combinedContribution: inputs.additional_fixtures.combined_contribution,
+          fixtures: inputs.additional_fixtures.fixtures.map((fx) => ({
+            fixtureId: fx.fixture_id,
+            kickoffAt: fx.kickoff_at,
+            competition: fx.competition,
+            contribution: fx.contribution,
+          })),
+        }
+      : { count: 0, combinedContribution: 0, fixtures: [] },
   };
 }
 

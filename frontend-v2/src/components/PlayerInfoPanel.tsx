@@ -10,6 +10,7 @@ import {
   confidenceTone,
   dataSourceTone,
   dataSourceLabel,
+  competitionLabel,
   type EngineExplanation,
 } from "@/lib/engineExplainability";
 
@@ -87,6 +88,19 @@ export default function PlayerInfoPanel({
               {data.dataConfidence.label} confidence
             </span>
           </div>
+
+          {data.additionalFixtures.count > 0 && (
+            <div className="rounded-lg border border-amber-800/50 bg-amber-950/30 p-2.5 text-xs text-amber-200">
+              <p className="font-semibold">
+                +{data.additionalFixtures.combinedContribution.toFixed(1)} if also plays{" "}
+                {data.additionalFixtures.fixtures.map((fx) => competitionLabel(fx.competition)).join(" & ")}
+              </p>
+              <p className="mt-0.5 text-amber-300/70">
+                Not included in Projected Points above - this gameweek's primary fixture is the only one scored by
+                default. Rotation risk already discounts this figure for cup/short-turnaround matches.
+              </p>
+            </div>
+          )}
 
           {data.explanation && <p className="text-sm text-navy-200">{data.explanation}</p>}
 
