@@ -137,7 +137,9 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
   const [{ data: gwFixtureRows }, { data: difficultyRows }, scoreRows] = await Promise.all([
     supabase
       .from("game_fixture_gameweeks")
-      .select("gameweek, fixtures(id, competition, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
+      .select(
+        "gameweek, fixtures(id, competition, home_team_id, away_team_id, created_at, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))"
+      )
       .eq("game_id", game.id)
       .gte("gameweek", viewedGameweek)
       .lte("gameweek", viewedGameweek + 5),
@@ -156,10 +158,35 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       competition: string;
       home_team_id: number;
       away_team_id: number;
+      created_at: string;
       teams_home: { name: string };
       teams_away: { name: string };
     };
   };
+  const gwFixtureRowsTyped = (gwFixtureRows ?? []) as unknown as GwFixtureRow[];
+  // Same dedup as compute_projections.py's fixture_meta/best_fixture_by_matchup
+  // (FIXTURE_PROBABILITY_SELECT_SQL comment) - the Odds API sometimes carries
+  // TWO rows for the same real tie (a provisional placeholder kickoff,
+  // overwritten later by a row with the real broadcast time), both of which
+  // can land in game_fixture_gameweeks for the same gameweek. That Python
+  // fix never touched this frontend query - real user feedback 2026-08-18:
+  // once the fixture lookup below moved from a single overwritten tile to an
+  // array (to support the double-gameweek pill), this exact duplicate
+  // started rendering as the SAME cup opponent shown twice for one gameweek
+  // (Joao Pedro showing 3 "fixtures" instead of 2) - previously invisible
+  // because the old single-tile overwrite silently collapsed it. Keep only
+  // the most-recently-created row per (home, away, competition).
+  const bestFixtureByMatchup = new Map<string, { id: number; createdAt: string }>();
+  for (const row of gwFixtureRowsTyped) {
+    const f = row.fixtures;
+    const matchupKey = `${f.home_team_id}:${f.away_team_id}:${f.competition}`;
+    const current = bestFixtureByMatchup.get(matchupKey);
+    if (!current || f.created_at > current.createdAt) {
+      bestFixtureByMatchup.set(matchupKey, { id: f.id, createdAt: f.created_at });
+    }
+  }
+  const keepFixtureIds = new Set([...bestFixtureByMatchup.values()].map((v) => v.id));
+
   // A team can have TWO fixtures in the same gameweek window here - Dream
   // Team folds cup ties into whichever gameweek their kickoff falls in
   // (assign_dreamteam_cup_gameweeks.py), unlike FanTeam/Cloud FF (EPL-only
@@ -172,8 +199,9 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
   // primary-fixture fix), so both render as a double pill and the league
   // fixture is always the one shown first/alone in single-pill contexts.
   const tilesByTeamGw = new Map<string, FixtureTile[]>();
-  for (const row of (gwFixtureRows ?? []) as unknown as GwFixtureRow[]) {
+  for (const row of gwFixtureRowsTyped) {
     const f = row.fixtures;
+    if (!keepFixtureIds.has(f.id)) continue;
     for (const [teamId, oppName, isHome] of [
       [f.home_team_id, f.teams_away.name, true],
       [f.away_team_id, f.teams_home.name, false],
