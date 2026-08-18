@@ -481,6 +481,22 @@ DEFAULT_WEIGHTS_V2 = {
 # modules in the meantime, exactly as it always has.
 MODULAR_STATS = {"goal", "assist", "clean_sheet_60min", "shot_on_target"}
 
+# Same list as assign_dreamteam_cup_gameweeks.py's CUP_COMPETITIONS -
+# used below to keep a cup fixture from ever becoming a player's PRIMARY
+# (scored) fixture just because it happens to kick off earlier in the
+# week than their league fixture. Only dreamteam's game_competitions
+# includes any of these (fanteam/cloudff are soccer_epl-only, eflfantasy
+# is efl_championship/league_one/league_two-only with no cup rows at
+# all) - harmless no-op for the other 3 games, real fix for dreamteam.
+CUP_COMPETITIONS = {
+    "soccer_england_efl_cup",
+    "soccer_fa_cup",
+    "soccer_uefa_champs_league",
+    "soccer_uefa_champs_league_qualification",
+    "soccer_uefa_europa_league",
+    "soccer_uefa_europa_conference_league",
+}
+
 # Guessed raw-string -> multiplier mapping for FanTeam's pre-match status
 # fields (`lineup`/`status` on each playerChoices record - see
 # scraper_fanteam.py / import_fanteam_live.py / migration 0027). ONLY
@@ -2220,17 +2236,24 @@ EXPLANATION_EXCLUDE = {"appearance", "minutes_60_plus", "played_full_match"}
 
 def build_explanation(priced, top_n=3):
     """Short, honest sentence built from the actual per-stat contributions
-    just priced (the neutral-fixture baseline, so it describes the
-    player, not a specific opponent) - not a canned template. Confirmed
-    nothing like this existed anywhere in this file before (only golf's
-    own separate script had one) - a real transparency gap for both games
-    this now fixes, not just Dream Team's bonus points."""
+    just priced for the PRIMARY fixture (opponent-specific, not a neutral
+    baseline) - not a canned template. Confirmed nothing like this existed
+    anywhere in this file before (only golf's own separate script had
+    one) - a real transparency gap for both games this now fixes, not
+    just Dream Team's bonus points."""
     ranked = sorted(
         ((stat, item) for stat, item in priced.items() if stat not in EXPLANATION_EXCLUDE),
         key=lambda pair: abs(pair[1]["contribution"]),
         reverse=True,
     )
-    parts = [f"{item['projected']:.2f} {STAT_DISPLAY_NAMES.get(stat, stat)}" for stat, item in ranked[:top_n] if abs(item["contribution"]) >= 0.05]
+    # item['projected'] is in SCORING units (already x STAT_RATE_SCALE, e.g.
+    # goals_conceded_per_2's real per-match rate halved before pricing - see
+    # STAT_RATE_SCALE) - divide back out so the sentence states the real
+    # per-match count a reader would recognise, not the scoring-matrix unit.
+    parts = [
+        f"{item['projected'] / STAT_RATE_SCALE.get(stat, 1.0):.2f} {STAT_DISPLAY_NAMES.get(stat, stat)}"
+        for stat, item in ranked[:top_n] if abs(item["contribution"]) >= 0.05
+    ]
     if not parts:
         return "Limited historical signal to project from."
     return "Projects " + ", ".join(parts) + " per match."
@@ -2629,11 +2652,18 @@ def main():
 
         # fixtures[0] is treated as THE primary/headline fixture everywhere
         # below (module_detail, opportunity_detail, live team news, and -
-        # as of this fix - hail_mary_score itself) - guarantee it's really
-        # the earliest kickoff rather than whatever order Postgres happened
-        # to return rows in (no ORDER BY on the underlying query).
+        # as of this fix - hail_mary_score itself). Sort league fixtures
+        # ahead of cup fixtures (CUP_COMPETITIONS) FIRST, kickoff time only
+        # as the tiebreak within each group - otherwise a cup tie that
+        # happens to kick off before the league fixture in the same
+        # gameweek window (confirmed live for Chelsea/Spurs' Carabao Cup
+        # ties) would wrongly become the scored primary fixture instead of
+        # the real league game, with the league game demoted to
+        # additional_fixtures. The double-gameweek risk framing (scored on
+        # the league game, cup upside shown separately IF they play it) is
+        # exactly what additional_fixtures already exists for.
         for player_fixture_list in fixtures_by_player.values():
-            player_fixture_list.sort(key=lambda fx: fx["kickoff_at"])
+            player_fixture_list.sort(key=lambda fx: (fx["competition"] in CUP_COMPETITIONS, fx["kickoff_at"]))
 
         hub_features = fetch_hub_features(cur, all_fixture_ids) if use_v2 else {}
         recent_form_rates = (
@@ -2813,7 +2843,18 @@ def main():
                         "fixtures": fixture_breakdown[1:],
                         "combined_contribution": additional_fixtures_total,
                     },
-                    "explanation": build_explanation(neutral_priced),
+                    # Real user feedback 2026-08-17: this used to always
+                    # read build_explanation(neutral_priced) - the SAME
+                    # fixture-neutral text regardless of opponent (confirmed
+                    # live: a weak-defence keeper showed the identical
+                    # "0.37 goals conceded" line whether facing a
+                    # relegation rival or Man Utd/Liverpool) - looked like
+                    # Mary ignored fixture difficulty even though the real
+                    # per-fixture engine (pressure_factor etc.) already
+                    # scaled correctly underneath. Now built from the
+                    # PRIMARY fixture's own priced stats so the sentence
+                    # matches the specific opponent it's displayed next to.
+                    "explanation": build_explanation(fixture_breakdown[0]["stats"]) if fixture_breakdown else build_explanation(neutral_priced),
                     # Engine Validation report (frontend/src/lib/
                     # engineExplainability.ts) - the primary fixture's full
                     # per-stat, per-module breakdown (raw rate, configured
