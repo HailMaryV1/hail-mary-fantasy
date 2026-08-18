@@ -19,8 +19,20 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # See refresh_dreamteam.yml's comment - bumped 2026-08-17.
-    timeout-minutes: 25
+    # Bumped 25 -> 45 2026-08-18: confirmed live this game's own recompute
+    # is genuinely slower than the other 3, not just unlucky scheduling -
+    # its real player pool (Championship + League One + League Two, ~2,000
+    # active game_players) is roughly 3x any Premier League-scoped game's
+    # pool, so the same 5-gameweek recompute loop (MAX_GAMEWEEKS_AHEAD,
+    # refresh_all.py) does proportionally more work per run. Two solo
+    # workflow_dispatch runs (no other workflow overlapping) still hit the
+    # old 25-minute ceiling and got cancelled mid-step - this wasn't lock
+    # contention, the work itself needs more time. See also the
+    # get_or_create_algorithm_version fix in compute_projections.py from
+    # the same day, which separately fixes the real lock-contention crash
+    # ("statement timeout ... while updating tuple ... in relation
+    # algorithm_versions") seen when this game's run DOES overlap another.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

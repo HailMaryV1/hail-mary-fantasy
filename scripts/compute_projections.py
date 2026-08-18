@@ -2393,6 +2393,21 @@ def main():
             algo_id, weights = get_or_create_algorithm_version(
                 cur, "v1", "points_per_90 x position-weighted fixture factor", DEFAULT_WEIGHTS
             )
+        # Real production crash 2026-08-18 (a day after the pg_advisory_lock
+        # fix below was first added): that lock only serializes WHO gets to
+        # run get_or_create_algorithm_version's select-then-insert/update -
+        # it does nothing to release the real Postgres row lock its UPDATE
+        # takes any sooner. Without this commit, that row lock stayed held
+        # until conn.commit() at the very end of this script (many minutes
+        # later, since autocommit=False spans the whole run) - so a second
+        # concurrent game sharing this family (all 4 football games do, per
+        # get_or_create_algorithm_version's own docstring) blocked on that
+        # row lock for the FIRST game's entire run and hit statement_timeout
+        # waiting - exactly the "while updating tuple ... in relation
+        # algorithm_versions" crash seen live. Committing immediately here
+        # releases the row lock within milliseconds, which is what the
+        # function's docstring already claimed happens - this makes it true.
+        conn.commit()
         if isinstance(weights, str):
             weights = json.loads(weights)
 
