@@ -183,6 +183,10 @@ def run_shared_odds():
     )
     results.append(run_step("Fixture probabilities", ["scripts/compute_fixture_probabilities.py"]))
     results.append(run_step("Clean sheet probabilities", ["scripts/compute_clean_sheet_probabilities.py"]))
+    # Real user request 2026-08-18: alert on large player-odds swings -
+    # runs last in this section so it always sees this cycle's freshest
+    # bookmaker_player_probability_history rows (migration 0120).
+    results.append(run_step("Detect odds swings", ["scripts/detect_odds_swings.py"]))
     return results
 
 

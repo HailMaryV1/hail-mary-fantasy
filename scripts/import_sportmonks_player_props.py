@@ -406,6 +406,12 @@ def import_player_props(cur, api_key, window_days):
                     """,
                     (player_id, fixture_id, probability),
                 )
+                # Append-only log (migration 0120) - see its own comment
+                # for why the hub upsert above alone can't detect a swing.
+                cur.execute(
+                    "insert into bookmaker_player_probability_history (player_id, fixture_id, market, value) values (%s, %s, 'goal', %s)",
+                    (player_id, fixture_id, probability),
+                )
             # "Player to Assist" is a single binary market, unlike
             # Goalscorers - no Anytime/First/Last split, so every real row
             # here is P(assists >= 1) directly. Writes its own
@@ -436,6 +442,10 @@ def import_player_props(cur, api_key, window_days):
                     """,
                     (player_id, fixture_id, probability),
                 )
+                cur.execute(
+                    "insert into bookmaker_player_probability_history (player_id, fixture_id, market, value) values (%s, %s, 'assist', %s)",
+                    (player_id, fixture_id, probability),
+                )
             # "Player to be booked" is a single binary market, same shape
             # as "Player to Assist" above - real P(booked) directly, its
             # own booking_is_estimated/booking_source/booking_confidence/
@@ -460,6 +470,10 @@ def import_player_props(cur, api_key, window_days):
                         booking_market_observed_at = excluded.booking_market_observed_at,
                         computed_at = now()
                     """,
+                    (player_id, fixture_id, probability),
+                )
+                cur.execute(
+                    "insert into bookmaker_player_probability_history (player_id, fixture_id, market, value) values (%s, %s, 'booking', %s)",
                     (player_id, fixture_id, probability),
                 )
             # "Player Shots On Target" carries several lines per player
@@ -490,6 +504,10 @@ def import_player_props(cur, api_key, window_days):
                         shots_on_target_market_observed_at = excluded.shots_on_target_market_observed_at,
                         computed_at = now()
                     """,
+                    (player_id, fixture_id, expected_sot),
+                )
+                cur.execute(
+                    "insert into bookmaker_player_probability_history (player_id, fixture_id, market, value) values (%s, %s, 'shot_on_target', %s)",
                     (player_id, fixture_id, expected_sot),
                 )
 

@@ -44,11 +44,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install psycopg2-binary
+        run: pip install psycopg2-binary pywebpush
 
       - name: Run shared odds refresh
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           SPORTMONKS_API_KEY: ${{ secrets.SPORTMONKS_API_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
         run: python scripts/refresh_all.py --only shared_odds

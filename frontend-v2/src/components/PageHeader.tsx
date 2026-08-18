@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import PushNotificationToggle from "./PushNotificationToggle";
 
 // Shared header for every page inside a game's route tree (wired in via a
 // layout.tsx per top-level segment - see dreamteam/fanteam/cloudff/golf/
@@ -21,6 +22,7 @@ export default function PageHeader() {
       </Link>
 
       <div className="flex items-center gap-2">
+        <PushNotificationToggle />
         <button
           onClick={() => router.back()}
           className="rounded-md border border-navy-700 px-3 py-1.5 text-xs font-medium text-navy-200 transition-colors hover:border-sky-500 hover:text-sky-300"
