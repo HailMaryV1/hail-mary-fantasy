@@ -20,7 +20,12 @@ export const POOL_PAGE_SIZE = 15;
 // glance at the pool table shows which fixtures are still estimates -
 // updates automatically on next page load the moment real odds land,
 // no separate refresh mechanism needed.
-export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number; source: "real_odds" | "fdr" };
+// isCup: true for a Carabao/EFL Cup, FA Cup, or European tie - Dream Team
+// folds these into whichever gameweek their kickoff falls in, so a team
+// can have TWO fixtures in one gameweek slot. Used to keep the league
+// fixture first/primary wherever only one pill fits, and to visually mark
+// the second one when both are shown - see fixtures below.
+export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number; source: "real_odds" | "fdr"; isCup: boolean };
 
 export type BoardPlayer = {
   game_player_id: number;
@@ -31,7 +36,9 @@ export type BoardPlayer = {
   score: number | null;
   isCaptain: boolean;
   isViceCaptain: boolean;
-  fixtures: (FixtureTile | null)[];
+  // One entry per gameweek slot (6 ahead), each itself 0-2 tiles - a
+  // double gameweek (league + cup) shows both, league always first.
+  fixtures: FixtureTile[][];
   rotationRisk?: RotationRiskInfo | null;
   // Real per-gameweek projections from the same decomposed-scoring engine
   // that produces `score` - drives the pool's "Sort by" dropdown.
@@ -92,14 +99,15 @@ function difficultyColor(d: number): string {
   return "bg-red-800";
 }
 
-function fixtureTilesFor(tiles: (FixtureTile | null)[], count: number): { label: string; colorClass: string }[] {
-  return tiles
-    .slice(0, count)
-    .filter((t): t is FixtureTile => t !== null)
-    .map((t) => ({
+function fixtureTilesFor(tiles: FixtureTile[][], count: number): { label: string; colorClass: string }[] {
+  return tiles.slice(0, count).flatMap((slot) =>
+    slot.map((t) => ({
       label: t.isHome ? t.opponentAbbr : t.opponentAbbr.toLowerCase(),
-      colorClass: difficultyColor(t.difficulty),
-    }));
+      // A subtle ring, not a whole new color scale, distinguishes the cup
+      // fixture from the league one when both render side by side.
+      colorClass: t.isCup ? `${difficultyColor(t.difficulty)} ring-1 ring-amber-400/70` : difficultyColor(t.difficulty),
+    }))
+  );
 }
 
 // Best-effort client-side mirror of makeTransfer's real squad-shape
@@ -172,7 +180,7 @@ export default function DreamTeamBoard({
   // fetched from search_game_player_pool only carries a team_id, not
   // fixtures - this lookup is how the board turns that id back into the
   // same 6-tile strip every other view of a player already shows.
-  fixtureTiles: Record<string, FixtureTile>;
+  fixtureTiles: Record<string, FixtureTile[]>;
   // False for a past-gameweek view, whose pool page.tsx already fetched in
   // full - that rare, small-scale path keeps the old client-side filter/
   // sort/paginate behavior rather than hitting search_game_player_pool,
@@ -252,8 +260,8 @@ export default function DreamTeamBoard({
   const isFirstRender = useRef(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  function buildFixtures(teamId: number): (FixtureTile | null)[] {
-    return Array.from({ length: 6 }, (_, i) => fixtureTiles[`${teamId}:${viewedGameweek + i}`] ?? null);
+  function buildFixtures(teamId: number): FixtureTile[][] {
+    return Array.from({ length: 6 }, (_, i) => fixtureTiles[`${teamId}:${viewedGameweek + i}`] ?? []);
   }
 
   function refetchPool() {
@@ -815,17 +823,27 @@ export default function DreamTeamBoard({
                         <td className="py-1.5 pr-2 text-sky-400">
                           {sortBy === "pts" ? (p.score != null ? p.score.toFixed(1) : "-") : sortValue(p, sortBy).toFixed(2)}
                         </td>
-                        {p.fixtures.slice(0, 6).map((f, i) => (
+                        {p.fixtures.slice(0, 6).map((slot, i) => (
                           <td key={i} className="px-1 py-1.5 text-center">
-                            {f ? (
-                              <span
-                                className={`relative inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(f.difficulty)}`}
-                                title={f.source === "real_odds" ? "Live bookmaker odds" : "Estimated - Mary's FDR ratings (no live odds posted yet)"}
-                              >
-                                {f.isHome ? f.opponentAbbr : f.opponentAbbr.toLowerCase()}
-                                {f.source === "real_odds" && (
-                                  <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-sky-400 ring-1 ring-navy-950" />
-                                )}
+                            {slot.length > 0 ? (
+                              <span className="flex flex-col items-center gap-0.5">
+                                {slot.map((f, j) => (
+                                  <span
+                                    key={j}
+                                    className={`relative inline-block rounded px-1 py-0.5 text-[9px] font-bold text-white ${difficultyColor(f.difficulty)} ${
+                                      f.isCup ? "ring-1 ring-amber-400/70" : ""
+                                    }`}
+                                    title={
+                                      (f.isCup ? "Cup fixture (not this gameweek's primary) - " : "") +
+                                      (f.source === "real_odds" ? "Live bookmaker odds" : "Estimated - Mary's FDR ratings (no live odds posted yet)")
+                                    }
+                                  >
+                                    {f.isHome ? f.opponentAbbr : f.opponentAbbr.toLowerCase()}
+                                    {f.source === "real_odds" && (
+                                      <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-sky-400 ring-1 ring-navy-950" />
+                                    )}
+                                  </span>
+                                ))}
                               </span>
                             ) : (
                               <span className="text-navy-700">-</span>

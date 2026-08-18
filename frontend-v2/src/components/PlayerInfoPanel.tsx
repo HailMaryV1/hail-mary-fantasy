@@ -120,12 +120,14 @@ export default function PlayerInfoPanel({
           {data.additionalFixtures.count > 0 && (
             <div className="rounded-lg border border-amber-800/50 bg-amber-950/30 p-2.5 text-xs text-amber-200">
               <p className="font-semibold">
-                +{data.additionalFixtures.combinedContribution.toFixed(1)} if also plays{" "}
-                {data.additionalFixtures.fixtures.map((fx) => competitionLabel(fx.competition)).join(" & ")}
+                +{data.additionalFixtures.combinedContribution.toFixed(1)} more if also selected for{" "}
+                {data.additionalFixtures.fixtures.map((fx) => competitionLabel(fx.competition)).join(" & ")} - total ~
+                {(data.finalScore + data.additionalFixtures.combinedContribution).toFixed(1)} across both games
               </p>
               <p className="mt-0.5 text-amber-300/70">
-                Not included in Projected Points above - this gameweek's primary fixture is the only one scored by
-                default. Rotation risk already discounts this figure for cup/short-turnaround matches.
+                Projected Points above ({data.finalScore.toFixed(1)}) is for the primary fixture only. This extra
+                amount is added on top, not included in it, and only applies if actually picked for the cup game too
+                - rotation risk already discounts it for that uncertainty.
               </p>
             </div>
           )}

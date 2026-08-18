@@ -10,6 +10,20 @@ import DreamTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, PO
 
 export const dynamic = "force-dynamic";
 
+// Mirrors scripts/compute_projections.py's CUP_COMPETITIONS (same fixture
+// dedup problem, same fix shape) - only Dream Team's game_competitions
+// includes any of these (FanTeam/Cloud FF are soccer_epl-only, EFL
+// Fantasy has no cup competitions at all), so this stays a no-op for
+// every other game's own board file.
+const CUP_COMPETITIONS = new Set([
+  "soccer_england_efl_cup",
+  "soccer_fa_cup",
+  "soccer_uefa_champs_league",
+  "soccer_uefa_champs_league_qualification",
+  "soccer_uefa_europa_league",
+  "soccer_uefa_europa_conference_league",
+]);
+
 type SquadRow = {
   id: number;
   name: string;
@@ -123,7 +137,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
   const [{ data: gwFixtureRows }, { data: difficultyRows }, scoreRows] = await Promise.all([
     supabase
       .from("game_fixture_gameweeks")
-      .select("gameweek, fixtures(id, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
+      .select("gameweek, fixtures(id, competition, home_team_id, away_team_id, teams_home:teams!fixtures_home_team_id_fkey(name), teams_away:teams!fixtures_away_team_id_fkey(name))")
       .eq("game_id", game.id)
       .gte("gameweek", viewedGameweek)
       .lte("gameweek", viewedGameweek + 5),
@@ -137,9 +151,27 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
   );
   type GwFixtureRow = {
     gameweek: number;
-    fixtures: { id: number; home_team_id: number; away_team_id: number; teams_home: { name: string }; teams_away: { name: string } };
+    fixtures: {
+      id: number;
+      competition: string;
+      home_team_id: number;
+      away_team_id: number;
+      teams_home: { name: string };
+      teams_away: { name: string };
+    };
   };
-  const tilesByTeamGw = new Map<string, FixtureTile>();
+  // A team can have TWO fixtures in the same gameweek window here - Dream
+  // Team folds cup ties into whichever gameweek their kickoff falls in
+  // (assign_dreamteam_cup_gameweeks.py), unlike FanTeam/Cloud FF (EPL-only
+  // game_competitions) or EFL Fantasy (no cup competitions at all), which
+  // never hit this. Real user feedback 2026-08-17: with only ONE tile slot
+  // per (team, gameweek), Map.set() silently overwrote with whichever row
+  // Postgrest happened to return last (no guaranteed order) - sometimes the
+  // cup tie, sometimes the league game, arbitrarily. Now keyed to an ARRAY,
+  // league-first (mirrors compute_projections.py's CUP_COMPETITIONS
+  // primary-fixture fix), so both render as a double pill and the league
+  // fixture is always the one shown first/alone in single-pill contexts.
+  const tilesByTeamGw = new Map<string, FixtureTile[]>();
   for (const row of (gwFixtureRows ?? []) as unknown as GwFixtureRow[]) {
     const f = row.fixtures;
     for (const [teamId, oppName, isHome] of [
@@ -148,13 +180,17 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
     ] as [number, string, boolean][]) {
       const key = `${teamId}:${row.gameweek}`;
       const { difficulty, source } = difficultyByFixtureTeam.get(`${f.id}:${teamId}`) ?? { difficulty: 0.5, source: "fdr" as const };
-      tilesByTeamGw.set(key, { opponentAbbr: abbreviate(oppName), isHome, difficulty, source });
+      const isCup = CUP_COMPETITIONS.has(f.competition);
+      const existing = tilesByTeamGw.get(key) ?? [];
+      existing.push({ opponentAbbr: abbreviate(oppName), isHome, difficulty, source, isCup });
+      existing.sort((a, b) => Number(a.isCup) - Number(b.isCup));
+      tilesByTeamGw.set(key, existing);
     }
   }
   // Plain-object mirror of tilesByTeamGw - a Map can't cross the server/
   // client boundary as a prop, and the board needs this same lookup to
   // resolve fixtures for every pool page it fetches after the first.
-  const fixtureTilesRecord: Record<string, FixtureTile> = Object.fromEntries(tilesByTeamGw);
+  const fixtureTilesRecord: Record<string, FixtureTile[]> = Object.fromEntries(tilesByTeamGw);
   const emptyStats = { goalProjected: 0, assistProjected: 0, bonusProjected: 0 };
 
   let boardSquad: BoardPlayer[];
@@ -209,7 +245,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
           score: actuals.get(id.game_player_id)?.points ?? null,
           isCaptain: id.game_player_id === lock.snapshot.captainGamePlayerId,
           isViceCaptain: id.game_player_id === lock.snapshot.viceCaptainGamePlayerId,
-          fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${id.team_id}:${viewedGameweek + i}`) ?? null),
+          fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${id.team_id}:${viewedGameweek + i}`) ?? []),
           ...emptyStats,
         }));
       teamValue = boardSquad.reduce((sum, p) => sum + p.price, 0);
@@ -224,7 +260,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
           team_name: p.team_name,
           price: Number(p.price),
           score: actuals.get(p.game_player_id)?.points ?? null,
-          fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
+          fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? []),
           ...emptyStats,
         }))
         .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity));
@@ -283,7 +319,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
       isCaptain: p.game_player_id === squad.captain_game_player_id,
       isViceCaptain: p.game_player_id === squad.vice_captain_game_player_id,
-      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
+      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? []),
       rotationRisk: rotationRiskByPlayerId.get(p.player_id) ?? null,
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
@@ -305,7 +341,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       team_name: r.team_name,
       price: r.price,
       score: r.hail_mary_score,
-      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${r.team_id}:${viewedGameweek + i}`) ?? null),
+      fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${r.team_id}:${viewedGameweek + i}`) ?? []),
       goalProjected: r.goalProjected,
       assistProjected: r.assistProjected,
       bonusProjected: r.bonusProjected,
