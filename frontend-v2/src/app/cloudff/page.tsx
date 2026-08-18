@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
-import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
+import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquadSaved } from "@/lib/gameweekHistory";
 import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
@@ -148,6 +148,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
   let teams: string[] = [];
   let pastViewState: "not_locked" | "no_results_yet" | null = null;
   let formationCode: string | null;
+  let isTeamSaved = false;
 
   if (isPastView) {
     // Full pool fetch is fine to keep here rather than a server-driven
@@ -268,6 +269,23 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 
+    // Save Team indicator (real user request 2026-08-18) - only meaningful
+    // on the current planning gameweek, the only one a save can target
+    // (see cloudff/actions.ts's saveTeamForGameweek). No bench and no
+    // squad-level captain here, so the snapshot compares players only.
+    if (isPlanningView) {
+      const lock = await getSquadGameweekLock(supabase, squadId, planningGameweek);
+      isTeamSaved = isSquadSaved(
+        {
+          players: squadPlayers.map((p) => ({ game_player_id: p.game_player_id, is_starting: true, bench_order: null })),
+          captainGamePlayerId: null,
+          viceCaptainGamePlayerId: null,
+          activeBooster: null,
+        },
+        lock?.snapshot ?? null
+      );
+    }
+
     const [initialPool, teamNames] = await Promise.all([
       searchPool({
         gameSlug: "cloudff",
@@ -323,6 +341,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       squadName={squad.name}
       bank={bank}
       teamValue={teamValue}
+      isTeamSaved={isTeamSaved}
       planningGameweek={planningGameweek}
       viewedGameweek={viewedGameweek}
       isPlanningView={isPlanningView}

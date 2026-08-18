@@ -2,8 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming } from "@/lib/gameweek";
+import { getSeasonTiming, getGameweekInfo } from "@/lib/gameweek";
 import { TRANSFER_HIT_COST as FANTEAM_TRANSFER_HIT_COST, wildcardWindowFor as fanteamWildcardWindow } from "@/lib/transferEconomy";
+import { saveSquadGameweekLock } from "@/lib/gameweekHistory";
 
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
@@ -481,4 +482,47 @@ export async function swapFanteamLineup({ squadId, playerAId, playerBId }: { squ
 
   revalidatePath(`/fanteam/${squadId}`);
   return { success: true };
+}
+
+/**
+ * Manual "Save Team" (real user request 2026-08-18, same pattern as
+ * Dream Team's own saveTeamForGameweek) - locks in the squad's CURRENT
+ * live state (starting XI + bench + captain/vice) as planningGameweek's
+ * official submission, re-pressable right up until that gameweek's real
+ * deadline. Valid regardless of whether this squad is provider-synced
+ * from the real FanTeam site or managed locally - either way it's a real
+ * snapshot of what's actually set for this gameweek, which is exactly
+ * what Mary Performance Lab grades against.
+ */
+export async function saveTeamForGameweek({ squadId }: { squadId: number }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+
+  const { data: squad } = await supabase
+    .from("squads")
+    .select("id, user_id, game_id, captain_game_player_id, vice_captain_game_player_id")
+    .eq("id", squadId)
+    .single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: squadPlayers } = await supabase.from("squad_players").select("game_player_id, is_starting, bench_order").eq("squad_id", squadId);
+  if (!squadPlayers || squadPlayers.length === 0) return { error: "Your squad is empty - nothing to save." };
+
+  const gwInfo = await getGameweekInfo(supabase, squad.game_id);
+  if (gwInfo.planningGameweek == null) return { error: "No upcoming gameweek to save a team for yet." };
+  const deadline = gwInfo.gameweeks.find((g) => g.gameweek === gwInfo.planningGameweek)?.deadline ?? null;
+
+  const result = await saveSquadGameweekLock(supabase, squadId, gwInfo.planningGameweek, deadline, {
+    players: squadPlayers.map((p) => ({ game_player_id: p.game_player_id, is_starting: p.is_starting, bench_order: p.bench_order })),
+    captainGamePlayerId: squad.captain_game_player_id,
+    viceCaptainGamePlayerId: squad.vice_captain_game_player_id,
+    activeBooster: null,
+  });
+  if ("error" in result) return result;
+
+  revalidatePath(`/fanteam/${squadId}`);
+  return { success: true as const };
 }

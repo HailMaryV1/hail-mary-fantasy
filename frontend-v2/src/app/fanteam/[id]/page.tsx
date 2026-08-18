@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
-import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
+import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquadSaved } from "@/lib/gameweekHistory";
 import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
@@ -158,6 +158,7 @@ export default async function FanTeamSquadPage({
   let pastViewState: "not_locked" | "no_results_yet" | null = null;
   let rawCaptainId = squad.captain_game_player_id;
   let rawViceCaptainId = squad.vice_captain_game_player_id;
+  let isTeamSaved = false;
 
   if (isPastView) {
     // Full pool fetch is fine to keep here rather than a server-driven
@@ -278,6 +279,22 @@ export default async function FanTeamSquadPage({
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 
+    // Save Team indicator (real user request 2026-08-18) - only meaningful
+    // on the current planning gameweek, the only one a save can target
+    // (see fanteam/actions.ts's saveTeamForGameweek).
+    if (isPlanningView) {
+      const lock = await getSquadGameweekLock(supabase, squadId, planningGameweek);
+      isTeamSaved = isSquadSaved(
+        {
+          players: squadPlayers.map((p) => ({ game_player_id: p.game_player_id, is_starting: p.is_starting, bench_order: p.bench_order })),
+          captainGamePlayerId: squad.captain_game_player_id,
+          viceCaptainGamePlayerId: squad.vice_captain_game_player_id,
+          activeBooster: null,
+        },
+        lock?.snapshot ?? null
+      );
+    }
+
     const [initialPool, teamNames] = await Promise.all([
       searchPool({
         gameSlug: "fanteam",
@@ -344,6 +361,7 @@ export default async function FanTeamSquadPage({
       transfers={squad.free_transfers}
       bank={bank}
       teamValue={teamValue}
+      isTeamSaved={isTeamSaved}
       planningGameweek={planningGameweek}
       viewedGameweek={viewedGameweek}
       isPlanningView={isPlanningView}

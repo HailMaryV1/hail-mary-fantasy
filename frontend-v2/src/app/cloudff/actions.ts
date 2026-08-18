@@ -2,8 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming } from "@/lib/gameweek";
+import { getSeasonTiming, getGameweekInfo } from "@/lib/gameweek";
 import { getMatchDaysForSquad } from "@/lib/matchDayCaptains";
+import { saveSquadGameweekLock } from "@/lib/gameweekHistory";
 
 /**
  * A real like-for-like transfer (out one squad player, in one pool player
@@ -150,4 +151,44 @@ export async function setMatchDayCaptain({
 
   revalidatePath("/cloudff/captains");
   return { success: true };
+}
+
+/**
+ * Manual "Save Team" (real user request 2026-08-18, same pattern as
+ * Dream Team/FanTeam's own saveTeamForGameweek) - locks in the squad's
+ * CURRENT live player list as planningGameweek's official submission,
+ * re-pressable right up until that gameweek's real deadline. Cloud FF has
+ * no bench (every squad member always starts - is_starting true,
+ * bench_order null) and no squad-level captain (match-day captains live
+ * in squad_match_day_captains instead, a different table this
+ * intentionally doesn't touch), so the snapshot's captain/vice/booster
+ * fields are always null - only the player list is meaningful here.
+ */
+export async function saveTeamForGameweek({ squadId }: { squadId: number }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+
+  const { data: squad } = await supabase.from("squads").select("id, user_id, game_id").eq("id", squadId).single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: squadPlayers } = await supabase.from("squad_players").select("game_player_id").eq("squad_id", squadId);
+  if (!squadPlayers || squadPlayers.length === 0) return { error: "Your squad is empty - nothing to save." };
+
+  const gwInfo = await getGameweekInfo(supabase, squad.game_id);
+  if (gwInfo.planningGameweek == null) return { error: "No upcoming gameweek to save a team for yet." };
+  const deadline = gwInfo.gameweeks.find((g) => g.gameweek === gwInfo.planningGameweek)?.deadline ?? null;
+
+  const result = await saveSquadGameweekLock(supabase, squadId, gwInfo.planningGameweek, deadline, {
+    players: squadPlayers.map((p) => ({ game_player_id: p.game_player_id, is_starting: true, bench_order: null })),
+    captainGamePlayerId: null,
+    viceCaptainGamePlayerId: null,
+    activeBooster: null,
+  });
+  if ("error" in result) return result;
+
+  revalidatePath("/cloudff");
+  return { success: true as const };
 }

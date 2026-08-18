@@ -7,8 +7,9 @@ import type { RotationRiskInfo } from "@/lib/rotationRisk";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
+import SaveTeamButton from "@/components/SaveTeamButton";
 import { searchPool } from "@/lib/poolSearch";
-import { reorderFanteamBench, setFanteamFormation, setFanteamCaptain, swapFanteamLineup } from "../actions";
+import { reorderFanteamBench, setFanteamFormation, setFanteamCaptain, swapFanteamLineup, saveTeamForGameweek } from "../actions";
 import { applyRecommendation } from "./ask-mary/actions";
 
 export const POOL_PAGE_SIZE = 15;
@@ -194,6 +195,7 @@ export default function FanTeamBoard({
   transfers,
   bank,
   teamValue,
+  isTeamSaved,
   planningGameweek,
   viewedGameweek,
   isPlanningView,
@@ -223,6 +225,7 @@ export default function FanTeamBoard({
   transfers: number;
   bank: number;
   teamValue: number;
+  isTeamSaved: boolean;
   planningGameweek: number;
   viewedGameweek: number;
   isPlanningView: boolean;
@@ -930,6 +933,7 @@ export default function FanTeamBoard({
                 />
               </div>
               <div className="flex items-center justify-end gap-2">
+                {isPlanningView && <SaveTeamButton isSaved={isTeamSaved} onSave={() => saveTeamForGameweek({ squadId })} />}
                 <Link
                   href={`/fanteam/${squadId}/ask-mary`}
                   className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"

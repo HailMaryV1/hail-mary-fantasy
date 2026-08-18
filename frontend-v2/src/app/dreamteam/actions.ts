@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming } from "@/lib/gameweek";
+import { getSeasonTiming, getGameweekInfo } from "@/lib/gameweek";
+import { saveSquadGameweekLock } from "@/lib/gameweekHistory";
 
 type Booster = "goal_bonus" | "twelfth_man" | "max_captain";
 
@@ -252,4 +253,46 @@ export async function recordSubstitute({
 
   revalidatePath("/dreamteam");
   return { success: true };
+}
+
+/**
+ * Manual "Save Team" - real user request 2026-08-18: locks in the
+ * squad's CURRENT live state as planningGameweek's official submission,
+ * re-pressable (overwrites) right up until that gameweek's real deadline,
+ * after which saveSquadGameweekLock refuses (see its own docstring).
+ * Dream Team has no bench (every squad member always starts - is_starting
+ * true, bench_order null for every row, unlike FanTeam), so the snapshot
+ * always reflects the whole squad.
+ */
+export async function saveTeamForGameweek({ squadId }: { squadId: number }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+
+  const { data: squad } = await supabase
+    .from("squads")
+    .select("id, user_id, game_id, captain_game_player_id, vice_captain_game_player_id, active_booster, active_booster_gameweek")
+    .eq("id", squadId)
+    .single();
+  if (!squad || squad.user_id !== user.id) return { error: "Squad not found." };
+
+  const { data: squadPlayers } = await supabase.from("squad_players").select("game_player_id").eq("squad_id", squadId);
+  if (!squadPlayers || squadPlayers.length === 0) return { error: "Your squad is empty - nothing to save." };
+
+  const gwInfo = await getGameweekInfo(supabase, squad.game_id);
+  if (gwInfo.planningGameweek == null) return { error: "No upcoming gameweek to save a team for yet." };
+  const deadline = gwInfo.gameweeks.find((g) => g.gameweek === gwInfo.planningGameweek)?.deadline ?? null;
+
+  const result = await saveSquadGameweekLock(supabase, squadId, gwInfo.planningGameweek, deadline, {
+    players: squadPlayers.map((p) => ({ game_player_id: p.game_player_id, is_starting: true, bench_order: null })),
+    captainGamePlayerId: squad.captain_game_player_id,
+    viceCaptainGamePlayerId: squad.vice_captain_game_player_id,
+    activeBooster: squad.active_booster_gameweek === gwInfo.planningGameweek ? squad.active_booster : null,
+  });
+  if ("error" in result) return result;
+
+  revalidatePath("/dreamteam");
+  return { success: true as const };
 }

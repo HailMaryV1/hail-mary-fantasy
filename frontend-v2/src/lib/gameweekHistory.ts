@@ -57,6 +57,67 @@ export async function getSquadGameweekLock(
   return { lockedAt: data.locked_at, snapshot: parseLineupSnapshot(data.lineup_snapshot) };
 }
 
+/**
+ * Manually locks in the squad's CURRENT live state as `gameweek`'s
+ * official submission - real user request 2026-08-18: "once i've locked
+ * it in it saves all my choices... if i make changes before the deadline
+ * i have to re save... once the deadline has passed i cant make changes
+ * to that gameweek's team again". Upserts (unlike
+ * capture_squad_gameweek_state.py's automatic fallback, which only fills
+ * a genuine gap and never overwrites a real decision) - a manual Save is
+ * always the freshest decision, re-pressable as many times as the user
+ * likes right up until the real deadline. Once that deadline passes, this
+ * same (squad_id, gameweek) row simply never gets touched again - by this
+ * function (the caller must check the deadline before calling; see each
+ * game's own saveTeamForGameweek action) or by the auto-capture script
+ * (which only fills gaps, never overwrites), so it stays exactly what was
+ * last saved - the real "final team" record Mary Performance Lab grades.
+ */
+export async function saveSquadGameweekLock(
+  supabase: Supabase,
+  squadId: number,
+  gameweek: number,
+  deadlineIso: string | null,
+  snapshot: LockedSnapshot
+): Promise<{ error: string } | { success: true }> {
+  if (deadlineIso && new Date(deadlineIso).getTime() <= Date.now()) {
+    return { error: "This gameweek's deadline has already passed - it's locked in as your final team." };
+  }
+  const { error } = await supabase.from("squad_gameweek_locks").upsert(
+    {
+      squad_id: squadId,
+      gameweek,
+      locked_at: new Date().toISOString(),
+      lineup_snapshot: {
+        players: snapshot.players,
+        captain_game_player_id: snapshot.captainGamePlayerId,
+        vice_captain_game_player_id: snapshot.viceCaptainGamePlayerId,
+        active_booster: snapshot.activeBooster,
+      },
+    },
+    { onConflict: "squad_id,gameweek" }
+  );
+  if (error) return { error: error.message };
+  return { success: true };
+}
+
+/** Does the squad's current live state already match its latest saved
+ * lock for this gameweek? Drives the Save button's "Saved" vs "Unsaved
+ * changes" indicator - order-independent on players (a reorder alone
+ * isn't a real change), exact match on starting/bench slot per player. */
+export function isSquadSaved(current: LockedSnapshot, saved: LockedSnapshot | null): boolean {
+  if (!saved) return false;
+  if (current.captainGamePlayerId !== saved.captainGamePlayerId) return false;
+  if (current.viceCaptainGamePlayerId !== saved.viceCaptainGamePlayerId) return false;
+  if (current.activeBooster !== saved.activeBooster) return false;
+  if (current.players.length !== saved.players.length) return false;
+  const byId = new Map(saved.players.map((p) => [p.game_player_id, p]));
+  return current.players.every((p) => {
+    const match = byId.get(p.game_player_id);
+    return !!match && match.is_starting === p.is_starting && match.bench_order === p.bench_order;
+  });
+}
+
 /** {game_player_id: {points, minutes}} actually scored in a completed
  * gameweek - empty for games/gameweeks where nothing's been captured yet
  * (see player_gameweek_results, migration 0034; currently populated for
