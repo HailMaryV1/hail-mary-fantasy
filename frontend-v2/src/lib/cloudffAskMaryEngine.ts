@@ -6,7 +6,7 @@ import { type FixtureDifficultyRow } from "./fixtureRuns";
 import { deriveTeamFixtureRatings } from "./fixtureSwing";
 import { LINEUP_SECURITY_SCORES, INJURY_AVAILABILITY_SCORES, DEFAULT_SECURITY_SCORE } from "./playerStatus";
 import { buildFormByGamePlayerId, type FormStatus } from "./hailMaryForm";
-import { getMatchDaysForSquad, resolveAutoPick } from "./matchDayCaptains";
+import { getMatchDaysForSquad, resolveAutoPick, countUncoveredMatchDays } from "./matchDayCaptains";
 import { scoreMoveCandidates, STRATEGY_WEIGHTS, type Strategy, type MoveCandidateInput, type MoveScore, type MoveReason } from "./recommendationScoring";
 import { assessSquadHealth, type SquadHealthPlayer, type SquadHealthReport } from "./squadHealth";
 import { toPredictionRow, type PredictionRecord } from "./predictionArchive";
@@ -661,6 +661,21 @@ export async function runAskMaryAnalysis(
   let captainsByMatchDay: MatchDayCaptainPick[] = [];
   if (planningGameweek !== null) {
     const matchDays = await getMatchDaysForSquad(supabase, game.id, squad.id, planningGameweek, planningGameweek + GAMEWEEK_PLAN_LENGTH - 1);
+
+    // Real user request 2026-08-18: "I would want Mary to ensure i have a
+    // captain for every single gameday." Mary now genuinely auto-fills
+    // every day that HAS an eligible player (see matchDayCaptains.ts's
+    // ensureAutoPicks) - the one thing left worth flagging as a squad
+    // weakness is a day with zero eligible players at all, which no
+    // captain logic can fix, only a transfer can.
+    const uncoveredMatchDayCount = countUncoveredMatchDays(matchDays);
+    if (uncoveredMatchDayCount > 0) {
+      health.weaknesses = [
+        `${uncoveredMatchDayCount} upcoming match-day${uncoveredMatchDayCount === 1 ? "" : "s"} with no squad player fixture - no captain possible those days without a transfer.`,
+        ...health.weaknesses,
+      ].slice(0, 5);
+    }
+
     const captainScoreMap = stepScoreMaps[0] ?? new Map();
     captainsByMatchDay = matchDays.map((day) => {
       const auto = resolveAutoPick(day);

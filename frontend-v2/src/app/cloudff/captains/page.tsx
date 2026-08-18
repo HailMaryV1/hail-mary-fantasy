@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
-import { getMatchDaysForSquad, ensureAutoPicks, type MatchDay } from "@/lib/matchDayCaptains";
+import { getMatchDaysForSquad, ensureAutoPicks, fetchScoresForMatchDays, type MatchDay } from "@/lib/matchDayCaptains";
 import MatchDayCaptainPicker from "./MatchDayCaptainPicker";
 
 // Squad state (captain picks) changes from a server action elsewhere -
@@ -80,7 +80,8 @@ export default async function CloudFFCaptainsPage() {
   }
 
   const matchDays = await getMatchDaysForSquad(supabase, game.id, squad.id, planningGameweek, planningGameweek + PLAN_LENGTH_GAMEWEEKS - 1);
-  await ensureAutoPicks(supabase, squad.id, matchDays);
+  const scoresByGameweek = await fetchScoresForMatchDays(supabase, matchDays);
+  await ensureAutoPicks(supabase, squad.id, matchDays, scoresByGameweek);
 
   const { data: existingPicksRaw } = await supabase
     .from("squad_match_day_captains")

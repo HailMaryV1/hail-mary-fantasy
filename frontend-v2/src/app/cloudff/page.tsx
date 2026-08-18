@@ -6,9 +6,15 @@ import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquad
 import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
+import { getMatchDaysForSquad, ensureAutoPicks, fetchScoresForMatchDays, countUncoveredMatchDays } from "@/lib/matchDayCaptains";
 import CloudFFBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./CloudFFBoard";
 
 export const dynamic = "force-dynamic";
+
+// Matches the Captains page's own window (cloudff/captains/page.tsx) so
+// this page's proactive coverage-ensure never looks at a narrower slice
+// of the calendar than the page the user would otherwise visit by hand.
+const CAPTAIN_COVERAGE_WINDOW_GAMEWEEKS = 3;
 
 type SquadRow = { id: number; name: string };
 
@@ -149,6 +155,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
   let pastViewState: "not_locked" | "no_results_yet" | null = null;
   let formationCode: string | null;
   let isTeamSaved = false;
+  let uncoveredMatchDayCount = 0;
 
   if (isPastView) {
     // Full pool fetch is fine to keep here rather than a server-driven
@@ -284,6 +291,17 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
         },
         lock?.snapshot ?? null
       );
+
+      // Real user request 2026-08-18: "I would want Mary to ensure i have
+      // a captain for every single gameday." Runs on every load of the
+      // live squad page (not just when the user happens to open the
+      // Captains page) so coverage never silently lags behind a squad
+      // change - see matchDayCaptains.ts's ensureAutoPicks/resolveAutoPick
+      // for the actual score-ranked auto-pick logic this calls into.
+      const matchDays = await getMatchDaysForSquad(supabase, game.id, squadId, planningGameweek, planningGameweek + CAPTAIN_COVERAGE_WINDOW_GAMEWEEKS - 1);
+      const scoresByGameweek = await fetchScoresForMatchDays(supabase, matchDays);
+      await ensureAutoPicks(supabase, squadId, matchDays, scoresByGameweek);
+      uncoveredMatchDayCount = countUncoveredMatchDays(matchDays);
     }
 
     const [initialPool, teamNames] = await Promise.all([
@@ -342,6 +360,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       bank={bank}
       teamValue={teamValue}
       isTeamSaved={isTeamSaved}
+      uncoveredMatchDayCount={uncoveredMatchDayCount}
       planningGameweek={planningGameweek}
       viewedGameweek={viewedGameweek}
       isPlanningView={isPlanningView}

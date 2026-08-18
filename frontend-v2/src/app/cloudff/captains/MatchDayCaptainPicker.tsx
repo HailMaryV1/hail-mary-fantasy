@@ -57,7 +57,11 @@ export default function MatchDayCaptainPicker({
     <div className={`rounded-xl border p-4 ${hasNoOptions ? "border-red-800 bg-red-950/20" : "border-navy-700 bg-navy-900"}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-white">{formatMatchDate(matchDate)}</h3>
-        {autoPicked && isSingleOption && <span className="text-xs font-medium text-navy-400">Auto-picked - only one player has a game</span>}
+        {autoPicked && (
+          <span className="text-xs font-medium text-navy-400">
+            {isSingleOption ? "Auto-picked - only one player has a game" : "Mary picked this - tap another player to change"}
+          </span>
+        )}
       </div>
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
       {hasNoOptions ? (

@@ -3,7 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming, getGameweekInfo } from "@/lib/gameweek";
-import { getMatchDaysForSquad } from "@/lib/matchDayCaptains";
+import { getMatchDaysForSquad, ensureAutoPicks, fetchScoresForMatchDays } from "@/lib/matchDayCaptains";
+
+// Matches the Captains page's own window (cloudff/captains/page.tsx) so a
+// transfer's captain-coverage refill never looks at a narrower slice of
+// the calendar than the page the user would otherwise visit by hand.
+const CAPTAIN_REFILL_WINDOW_GAMEWEEKS = 3;
 import { saveSquadGameweekLock } from "@/lib/gameweekHistory";
 
 /**
@@ -82,7 +87,38 @@ export async function makeTransfer({
     used_wildcard: false,
   });
 
+  // Real user request 2026-08-18: Cloud FF transfers happen BETWEEN
+  // match-days mid-gameweek (unlike the other 3 games, which lock once
+  // their gameweek starts), so a captain pick made before this transfer
+  // can now point at a player who just left the squad. Clear any
+  // FUTURE match-day pick (past days are real history - a captain who
+  // already played that day stays on record) that named the outgoing
+  // player as captain or vice, then immediately refill using the same
+  // auto-pick logic the Captains page uses, so the squad never sits with
+  // a stale or genuinely-empty captain slot just because the user hasn't
+  // opened that page since transferring.
+  if (planningGameweek !== null) {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    await supabase
+      .from("squad_match_day_captains")
+      .delete()
+      .eq("squad_id", squadId)
+      .gte("match_date", todayIso)
+      .or(`captain_game_player_id.eq.${outGamePlayerId},vice_captain_game_player_id.eq.${outGamePlayerId}`);
+
+    const matchDays = await getMatchDaysForSquad(
+      supabase,
+      squad.game_id,
+      squadId,
+      planningGameweek,
+      planningGameweek + CAPTAIN_REFILL_WINDOW_GAMEWEEKS - 1
+    );
+    const scoresByGameweek = await fetchScoresForMatchDays(supabase, matchDays);
+    await ensureAutoPicks(supabase, squadId, matchDays, scoresByGameweek);
+  }
+
   revalidatePath("/cloudff");
+  revalidatePath("/cloudff/captains");
   return { success: true };
 }
 
