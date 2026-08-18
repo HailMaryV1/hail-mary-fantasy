@@ -6,6 +6,7 @@ import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquad
 import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
+import { getSquadProjectionTrend, type TrendPoint } from "@/lib/projectionTrend";
 import DreamTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./DreamTeamBoard";
 
 export const dynamic = "force-dynamic";
@@ -228,6 +229,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
   let poolTotalCount = 0;
   let teams: string[] = [];
   let isTeamSaved = false;
+  let squadTrend: TrendPoint[] = [];
   let pastViewState: "not_locked" | "no_results_yet" | null = null;
 
   if (isPastView) {
@@ -369,6 +371,11 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
         },
         lock?.snapshot ?? null
       );
+      // Squad projection trend (real user request 2026-08-18) - "if you
+      // kept this exact squad, here's where your points are heading" over
+      // the next few gameweeks, same framing as Ask Mary's own
+      // PLANNING_LOOKAHEAD_GAMEWEEKS.
+      squadTrend = await getSquadProjectionTrend(supabase, squadIds, planningGameweek);
     }
 
     const [initialPool, teamNames] = await Promise.all([
@@ -426,6 +433,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       bank={bank}
       teamValue={teamValue}
       isTeamSaved={isTeamSaved}
+      squadTrend={squadTrend}
       planningGameweek={planningGameweek}
       viewedGameweek={viewedGameweek}
       isPlanningView={isPlanningView}

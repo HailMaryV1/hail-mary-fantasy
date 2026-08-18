@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getPlayerExplanation } from "@/lib/playerExplanationActions";
+import { getPlayerExplanation, getPlayerProjectionTrendAction } from "@/lib/playerExplanationActions";
 import {
   MODULAR_STATS,
   EXPECTED_STAT_DISPLAY_NAMES,
@@ -12,6 +12,8 @@ import {
   type EngineExplanation,
 } from "@/lib/engineExplainability";
 import { getTeamColors } from "@/lib/teamColors";
+import TrendChart from "./TrendChart";
+import type { TrendPoint } from "@/lib/projectionTrend";
 
 function formatKickoff(iso: string): string {
   return new Date(iso).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -42,12 +44,20 @@ export default function PlayerInfoPanel({
 }) {
   // undefined = loading, null = no projection exists yet for this player
   const [data, setData] = useState<EngineExplanation | null | undefined>(undefined);
+  const [trend, setTrend] = useState<TrendPoint[] | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
     setData(undefined);
+    setTrend(undefined);
     getPlayerExplanation(gameSlug, gamePlayerId).then((result) => {
-      if (!cancelled) setData(result);
+      if (cancelled) return;
+      setData(result);
+      if (result?.gameweek != null) {
+        getPlayerProjectionTrendAction(gamePlayerId, result.gameweek).then((points) => {
+          if (!cancelled) setTrend(points);
+        });
+      }
     });
     return () => {
       cancelled = true;
@@ -116,6 +126,13 @@ export default function PlayerInfoPanel({
               {data.dataConfidence.label} confidence
             </span>
           </div>
+
+          {trend && trend.some((p) => p.score > 0) && (
+            <div className="rounded-lg border border-navy-800 bg-navy-950 p-3">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Projection trend</p>
+              <TrendChart points={trend.map((p) => ({ label: `GW${p.gameweek}`, value: p.score }))} />
+            </div>
+          )}
 
           {data.additionalFixtures.count > 0 && (
             <div className="rounded-lg border border-amber-800/50 bg-amber-950/30 p-2.5 text-xs text-amber-200">

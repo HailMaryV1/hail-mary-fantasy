@@ -2,6 +2,7 @@
 
 import { createAuthServerClient } from "./supabaseServerClient";
 import { fetchEngineExplanation, type EngineExplanation } from "./engineExplainability";
+import { getPlayerProjectionTrend, type TrendPoint } from "./projectionTrend";
 
 /**
  * On-demand fetch for one player's full projection breakdown (bookmaker
@@ -22,4 +23,22 @@ export async function getPlayerExplanation(gameSlug: string, gamePlayerId: numbe
   } = await supabase.auth.getUser();
   if (!user) return null;
   return fetchEngineExplanation(supabase, gameSlug, gamePlayerId);
+}
+
+/**
+ * On-demand fetch for a player's projected-points trend across their
+ * next few gameweeks (real user request 2026-08-18) - a second,
+ * separate action rather than folded into getPlayerExplanation above,
+ * same "don't fetch it until the panel that shows it is actually open"
+ * reasoning that action's own docstring already gives, and this needs
+ * `fromGameweek` (the player's own currently-viewed gameweek) which only
+ * the caller knows once getPlayerExplanation's result is in.
+ */
+export async function getPlayerProjectionTrendAction(gamePlayerId: number, fromGameweek: number, count = 5): Promise<TrendPoint[]> {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return [];
+  return getPlayerProjectionTrend(supabase, gamePlayerId, fromGameweek, count);
 }

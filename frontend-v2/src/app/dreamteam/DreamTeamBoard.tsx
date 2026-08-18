@@ -8,6 +8,8 @@ import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMe
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import SaveTeamButton from "@/components/SaveTeamButton";
+import TrendChart from "@/components/TrendChart";
+import type { TrendPoint } from "@/lib/projectionTrend";
 import { searchPool } from "@/lib/poolSearch";
 import { setBooster, setCaptain, saveTeamForGameweek } from "./actions";
 import { applyRecommendation } from "./ask-mary/actions";
@@ -133,6 +135,7 @@ export default function DreamTeamBoard({
   bank,
   teamValue,
   isTeamSaved,
+  squadTrend,
   planningGameweek,
   viewedGameweek,
   isPlanningView,
@@ -157,6 +160,7 @@ export default function DreamTeamBoard({
   bank: number;
   teamValue: number;
   isTeamSaved: boolean;
+  squadTrend: TrendPoint[];
   planningGameweek: number;
   viewedGameweek: number;
   isPlanningView: boolean;
@@ -715,6 +719,15 @@ export default function DreamTeamBoard({
               <div className="mt-4 rounded-xl border border-navy-700 bg-navy-900 p-4">
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Mary&apos;s Squad Summary</h2>
                 <p className="mt-2 text-sm leading-relaxed text-navy-200">{squadSummary.join(" ")}</p>
+              </div>
+            )}
+            {squadTrend.length > 0 && squadTrend.some((p) => p.score > 0) && (
+              <div className="mt-4 rounded-xl border border-navy-700 bg-navy-900 p-4">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Squad Points Trend</h2>
+                <p className="mt-1 text-xs text-navy-500">If you kept this exact squad - next {squadTrend.length} gameweeks.</p>
+                <div className="mt-2">
+                  <TrendChart points={squadTrend.map((p) => ({ label: `GW${p.gameweek}`, value: p.score }))} accent="#34d399" />
+                </div>
               </div>
             )}
           </div>
