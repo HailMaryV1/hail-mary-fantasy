@@ -698,20 +698,82 @@ export async function runAskMaryAnalysis(
     return { transfers, workingSquad, workingSquadIds, workingBudget, workingClubCounts, freeRemaining };
   }
 
-  function describeStep(step: { seasonStarted: boolean; transfers: BundleTransfer[]; gameweek: number; freeAfter: number | "unlimited" }): string {
+  function describeStep(step: { seasonStarted: boolean; transfers: BundleTransfer[]; gameweek: number; freeAfter: number | "unlimited" }, nearMissNote?: string): string {
     const { transfers, gameweek, freeAfter } = step;
     if (!step.seasonStarted) {
-      if (transfers.length === 0) return "Hold - nothing beats what you already have here.";
+      if (transfers.length === 0) return `Hold - nothing beats what you already have here.${nearMissNote ? ` ${nearMissNote}` : ""}`;
       const names = transfers.map((t) => `${t.outName} → ${t.inName}`).join(", ");
       return transfers.length === 1
         ? `Make this move now - transfers are free and unlimited before the season starts: ${names}.`
         : `Make these ${transfers.length} moves now - transfers are free and unlimited before the season starts: ${names}.`;
     }
     if (transfers.length === 0) {
-      return `Hold this gameweek - banking your free transfer means you'll have ${freeAfter} available before GW${gameweek + 1}.`;
+      return `Hold this gameweek - banking your free transfer means you'll have ${freeAfter} available before GW${gameweek + 1}.${nearMissNote ? ` ${nearMissNote}` : ""}`;
     }
     const names = transfers.map((t) => `${t.outName} → ${t.inName}`).join(", ");
     return transfers.length === 1 ? `Make this transfer using a free transfer: ${names}.` : `Use ${transfers.length} free transfers this gameweek: ${names}.`;
+  }
+
+  // Real user feedback 2026-08-18: a squad member visibly outscored THIS
+  // gameweek alone by a same-price pool player (e.g. Calvert-Lewin 7.0 vs
+  // Evanilson 3.7 in GW1 alone) with Mary still saying "hold" reads as a
+  // bug, when it's actually Mary correctly weighing the
+  // PLANNING_LOOKAHEAD_GAMEWEEKS-week view (Evanilson's huge GW2 fixture
+  // swing made his 2-week average the higher one, 7.1 vs 5.2) - the
+  // decision was right, but silent. This surfaces the single most
+  // eye-catching swap Mary genuinely considered and rejected, with the
+  // real numbers, so a "hold" step next to an obviously-bigger single-week
+  // score is explained rather than looking broken. Deliberately a lighter,
+  // this-week-only-score search (not the full findLegalReplacementsForOutgoing
+  // scoring pass, which never sees a losing candidate in the first place) -
+  // purely explanatory, has zero effect on what Mary actually recommends.
+  function findMostTemptingRejectedSwap(
+    workingSquad: WorkingSquadPlayer[],
+    workingSquadIds: Set<number>,
+    workingBudget: number,
+    workingClubCounts: Map<number, number>,
+    planningScoreMap: Map<number, number>
+  ): string | null {
+    const THIS_WEEK_GAP_THRESHOLD = 2;
+    let best: { outName: string; inName: string; gap: number; outHorizon: number; inHorizon: number } | null = null;
+    for (const outPlayer of workingSquad) {
+      const outThisWeek = poolByGamePlayerId.get(outPlayer.game_player_id)?.hail_mary_score;
+      if (outThisWeek == null) continue;
+      const candidatePool: TransferCandidate[] = (pool ?? []).map((p) => ({
+        gamePlayerId: p.game_player_id,
+        fullName: p.full_name,
+        teamId: p.team_id,
+        teamName: p.team_name,
+        price: Number(p.price),
+        score: p.hail_mary_score != null ? Number(p.hail_mary_score) : 0,
+        position: p.position,
+      }));
+      const legalCandidates = findLegalReplacementsForOutgoing(
+        candidatePool,
+        { gamePlayerId: outPlayer.game_player_id, fullName: outPlayer.full_name, teamId: outPlayer.team_id, teamName: outPlayer.team_name, price: outPlayer.price, score: Number(outThisWeek), position: outPlayer.position },
+        workingSquadIds,
+        workingBudget,
+        workingClubCounts,
+        rules.max_per_club,
+        contestedPairs,
+        highRiskGamePlayerIds
+      );
+      for (const { candidate } of legalCandidates) {
+        const gap = candidate.score - Number(outThisWeek);
+        if (gap <= THIS_WEEK_GAP_THRESHOLD) continue;
+        const outHorizon = avgFor(planningScoreMap, outPlayer.game_player_id);
+        const inHorizon = avgFor(planningScoreMap, candidate.gamePlayerId);
+        // If the candidate genuinely wins over the planning horizon too,
+        // the real search above would already have recommended it - this
+        // is only for the case Mary saw and correctly passed on.
+        if (inHorizon > outHorizon) continue;
+        if (!best || gap > best.gap) {
+          best = { outName: outPlayer.full_name, inName: candidate.fullName, gap, outHorizon, inHorizon };
+        }
+      }
+    }
+    if (!best) return null;
+    return `(${best.inName} scores ${best.gap.toFixed(1)} more than ${best.outName} this gameweek alone, but ${best.outName} still averages higher over the next ${PLANNING_LOOKAHEAD_GAMEWEEKS} gameweeks - ${best.outHorizon.toFixed(1)} vs ${best.inHorizon.toFixed(1)} - so holding wins.)`;
   }
 
   type StepBranch = { step: GameweekPlanStep; state: SearchState; soldIds: Set<number>; boughtIds: Set<number> };
@@ -743,10 +805,18 @@ export async function runAskMaryAnalysis(
     // this step's projected points.
     const planningScoreMap = stepPlanningScoreMaps[offset - 1] ?? new Map();
 
-    function buildStep(result: { transfers: BundleTransfer[] } & SearchState): GameweekPlanStep {
+    function buildStep(result: { transfers: BundleTransfer[] } & SearchState, explainHold = false): GameweekPlanStep {
       const resultingSquadExpectedPoints = optimalXITotal(result.workingSquad, scoreMapForStep);
       const freeAfterPreview = isPreSeasonStep ? 1 : dreamteamAccrueFreeTransfers(result.freeRemaining);
-      const writeup = describeStep({ seasonStarted: !isPreSeasonStep, transfers: result.transfers, gameweek, freeAfter: freeAfterPreview });
+      // Only computed for the immediate, real (not forced-hold, not a
+      // future hypothetical offset) hold - see findMostTemptingRejectedSwap's
+      // docstring. Cheap to skip everywhere else since it's a second search
+      // pass with zero effect on what's actually recommended.
+      const nearMissNote =
+        explainHold && result.transfers.length === 0
+          ? findMostTemptingRejectedSwap(result.workingSquad, result.workingSquadIds, result.workingBudget, result.workingClubCounts, planningScoreMap) ?? undefined
+          : undefined;
+      const writeup = describeStep({ seasonStarted: !isPreSeasonStep, transfers: result.transfers, gameweek, freeAfter: freeAfterPreview }, nearMissNote);
       return {
         gameweek,
         offset: offset as 1 | 2 | 3,
@@ -763,7 +833,7 @@ export async function runAskMaryAnalysis(
     const greedySoldIds = new Set(incomingSoldIds);
     const greedyBoughtIds = new Set(incomingBoughtIds);
     const greedyResult = searchBestMoves(state, planningScoreMap, greedySoldIds, greedyBoughtIds);
-    const greedyStep = buildStep(greedyResult);
+    const greedyStep = buildStep(greedyResult, offset === 1);
     const greedyState: SearchState = { workingSquad: greedyResult.workingSquad, workingSquadIds: greedyResult.workingSquadIds, workingBudget: greedyResult.workingBudget, workingClubCounts: greedyResult.workingClubCounts, freeRemaining: greedyResult.freeRemaining };
     const greedy: StepBranch = { step: greedyStep, state: greedyState, soldIds: greedySoldIds, boughtIds: greedyBoughtIds };
 
