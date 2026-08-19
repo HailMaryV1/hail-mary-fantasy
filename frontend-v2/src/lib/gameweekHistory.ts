@@ -121,19 +121,33 @@ export function isSquadSaved(current: LockedSnapshot, saved: LockedSnapshot | nu
 /** {game_player_id: {points, minutes}} actually scored in a completed
  * gameweek - empty for games/gameweeks where nothing's been captured yet
  * (see player_gameweek_results, migration 0034; currently populated for
- * FanTeam + Cloud FF only, once a real gameweek has finished). */
+ * FanTeam + Cloud FF only, once a real gameweek has finished). Paginates
+ * in PostgREST's own page size rather than a single unbounded select -
+ * a whole game+gameweek's row count (every player in the pool, e.g.
+ * EFL Fantasy's ~3500) can exceed PostgREST's default 1000-row response
+ * cap, which was silently truncating this to an arbitrary subset (real
+ * bug found 2026-08-19 investigating GW1 actual points missing for
+ * exactly the players whose rows fell past row #1000). */
 export async function getActualPoints(
   supabase: Supabase,
   gameId: number,
   gameweek: number
 ): Promise<Map<number, { points: number | null; minutes: number | null }>> {
-  const { data } = await supabase
-    .from("player_gameweek_results")
-    .select("game_player_id, actual_points, actual_minutes")
-    .eq("game_id", gameId)
-    .eq("gameweek", gameweek)
-    .returns<{ game_player_id: number; actual_points: number | null; actual_minutes: number | null }[]>();
-  return new Map((data ?? []).map((r) => [r.game_player_id, { points: r.actual_points, minutes: r.actual_minutes }]));
+  const PAGE_SIZE = 1000;
+  const rows: { game_player_id: number; actual_points: number | null; actual_minutes: number | null }[] = [];
+  for (let page = 0; ; page++) {
+    const { data } = await supabase
+      .from("player_gameweek_results")
+      .select("game_player_id, actual_points, actual_minutes")
+      .eq("game_id", gameId)
+      .eq("gameweek", gameweek)
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
+      .returns<{ game_player_id: number; actual_points: number | null; actual_minutes: number | null }[]>();
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    if (data.length < PAGE_SIZE) break;
+  }
+  return new Map(rows.map((r) => [r.game_player_id, { points: r.actual_points, minutes: r.actual_minutes }]));
 }
 
 export type ResolvedPlayerIdentity = {

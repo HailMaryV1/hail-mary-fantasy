@@ -280,6 +280,17 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         .map((sp) => identities.get(sp.game_player_id))
         .filter((id): id is NonNullable<typeof id> => id != null);
 
+      // Real EFL Fantasy doubles the captain's points - this app has no
+      // captain-selection UI of its own yet, but the lock snapshot's
+      // captain_game_player_id field (migration 0043) already exists for
+      // exactly this, so a past-gameweek's real total can be accurate even
+      // before that UI is built.
+      const captainId = lock.snapshot.captainGamePlayerId;
+      const scoreFor = (gamePlayerId: number) => {
+        const points = actuals.get(gamePlayerId)?.points ?? null;
+        return points != null && gamePlayerId === captainId ? points * 2 : points;
+      };
+
       boardSquad = lockedIdentities
         .filter((id) => id.position !== "CLUB")
         .map((id) => ({
@@ -287,7 +298,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           full_name: id.full_name,
           position: id.position as "GK" | "DEF" | "MID" | "FWD",
           team_name: id.team_name,
-          score: actuals.get(id.game_player_id)?.points ?? null,
+          score: scoreFor(id.game_player_id),
           fixtures: buildFixtures(id.team_id),
         }));
       boardClubs = lockedIdentities
@@ -416,6 +427,20 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       competition: r.competition ? (LEAGUE_LABELS[r.competition] ?? r.competition) : null,
       fixtures: buildFixtures(r.team_id),
       ownershipPct: r.ownershipPct,
+      realTotalPoints: r.realTotalPoints,
+      realAppearances: r.realAppearances,
+      realGoals: r.realGoals,
+      realAssists: r.realAssists,
+      realCleanSheets: r.realCleanSheets,
+      realSaves: r.realSaves,
+      realTackles: r.realTackles,
+      realClearances: r.realClearances,
+      realBlocks: r.realBlocks,
+      realInterceptions: r.realInterceptions,
+      realKeyPasses: r.realKeyPasses,
+      realShotsOnTarget: r.realShotsOnTarget,
+      lastGw: r.lastGw,
+      lastGwPoints: r.lastGwPoints,
     }));
     boardClubPool = initialClubPool.rows.map((r) => ({
       game_player_id: r.game_player_id,
