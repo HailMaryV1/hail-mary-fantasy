@@ -1621,9 +1621,83 @@ NEUTRAL_POSITION_PRIOR = {
 
 def _apply_thin_position_floor(position_rates, players_n_by_position):
     for pos, rates in position_rates.items():
-        if players_n_by_position.get(pos, 0) < MIN_TRUSTED_POOL:
+        rates["_thin"] = players_n_by_position.get(pos, 0) < MIN_TRUSTED_POOL
+        if rates["_thin"]:
             rates.update(NEUTRAL_POSITION_PRIOR)
+            rates["_thin"] = True  # NEUTRAL_POSITION_PRIOR itself has no _thin key
     return position_rates
+
+
+def resolve_role_signal(price, ownership_pct):
+    """One real per-player role-strength number, or None if neither
+    source has anything for this player - see compute_role_percentiles'
+    docstring for why two sources exist. Price preferred when present
+    (it's already validated for goalkeeper depth-chart resolution); a
+    game with no price data at all (confirmed live 2026-08-19: EVERY
+    EFL Fantasy game_player has price=0 - fantasy.efl.com's players.json
+    has no price/value/cost field whatsoever, unlike FPL-style feeds) falls
+    back to that game's own live ownership_pct instead, rather than
+    silently having no signal for that game's entire player pool."""
+    if price and price > 0:
+        return float(price)
+    if ownership_pct and ownership_pct > 0:
+        return float(ownership_pct)
+    return None
+
+
+def compute_role_percentiles(players, role_signal_by_player_id):
+    """{player_id: 0..1} - this player's role-signal rank within their OWN
+    position, weakest signal=0.0, strongest=1.0. Built once, for every
+    player, regardless of whether their position ends up using the
+    thin-pool floor below - cheap (one sort per position) and harmless
+    where it's never read.
+
+    Real production bug caught live 2026-08-19: NEUTRAL_POSITION_PRIOR
+    (below) fixed the "everyone at 0.1pts" collapse, but flattened
+    predicted_minutes to the exact SAME number for every player at a
+    thin position (confirmed live: three different real EFL Fantasy
+    defenders all showing predicted_minutes=24.9) - a real regression,
+    not a hypothetical, caught from a live screenshot the same day. Price
+    is the same proxy already validated for goalkeeper depth-chart
+    resolution (resolve_goalkeeper_depth_chart); ownership_pct
+    (fantasy.efl.com's own live "% of managers who own this player" -
+    see import_eflfantasy.py) is the fallback for EFL Fantasy, the ONE
+    game with zero price data at all - see resolve_role_signal(). Spot-
+    checked live: Kieran Trippier (Wolves' clear starting right-back)
+    40.3% owned vs James Bree 0.2% and Ryan Manning 1.7% - real
+    differentiation, not noise. First-cut, not calibrated against real
+    graded outcomes (none exist yet this season) - see
+    feedback_calibration_layer_discipline."""
+    by_position = {}
+    for _, position, player_id in players:
+        signal = role_signal_by_player_id.get(player_id)
+        if signal is None:
+            continue
+        by_position.setdefault(position, []).append((player_id, signal))
+
+    percentile_by_player_id = {}
+    for rows in by_position.values():
+        rows.sort(key=lambda r: r[1])
+        n = len(rows)
+        for rank, (player_id, _signal) in enumerate(rows):
+            percentile_by_player_id[player_id] = (rank / (n - 1)) if n > 1 else 0.5
+    return percentile_by_player_id
+
+
+def scale_thin_position_involvement(pos_inv, role_percentile):
+    """See compute_role_percentiles' docstring - only ever called when
+    pos_inv["_thin"] is true AND this specific player has zero real
+    historical signal of their own (raw_pt1 <= 0), so it's strictly
+    narrowing an already-uninformative flat guess, never overriding a
+    player's own real evidence. role_scale 0.4-1.6x is a first-cut range
+    (see compute_role_percentiles), clamped so even the weakest-signal
+    player keeps some involvement (never truly 0) and the strongest
+    doesn't exceed a sane ceiling."""
+    role_scale = 0.4 + 1.2 * role_percentile
+    scaled = dict(pos_inv)
+    scaled["appearance"] = min(0.98, pos_inv["appearance"] * role_scale)
+    scaled["start_given_appeared"] = min(0.98, pos_inv["start_given_appeared"] * role_scale)
+    return scaled
 
 
 def resolve_goalkeeper_depth_chart(gk_team_and_price, players, historical_by_player_id):
@@ -2458,7 +2532,7 @@ def main():
         dict_cur.execute(
             """
             select gp.id as game_player_id, gp.position_code as position, gp.player_id, p.full_name,
-                   p.team_id, gp.price,
+                   p.team_id, gp.price, gp.ownership_pct,
                    coalesce(gps.total_points, 0) as total_points, coalesce(gps.minutes_played, 0) as minutes_played,
                    coalesce(gps.goals, 0) as goals, coalesce(gps.assists, 0) as assists,
                    coalesce(gps.clean_sheets, 0) as clean_sheets, coalesce(gps.saves, 0) as saves,
@@ -2498,6 +2572,18 @@ def main():
             r["game_player_id"]: (r["team_id"], float(r["price"]))
             for r in raw_players
             if r["position"] == "GK"
+        }
+        # For scale_thin_position_involvement() below - a per-player role
+        # percentile within their own position, used only to differentiate
+        # zero-signal players at a thin position instead of applying one
+        # identical NEUTRAL_POSITION_PRIOR to all of them (see
+        # compute_role_percentiles' docstring for the live bug this fixes,
+        # and resolve_role_signal's docstring for why price alone isn't
+        # enough - EFL Fantasy has zero price data of any kind).
+        role_signal_by_player_id = {
+            r["player_id"]: signal
+            for r in raw_players
+            if (signal := resolve_role_signal(r["price"], r["ownership_pct"])) is not None
         }
 
         # For the simple explainability view's "THIS IS THE FIXTURE" header
@@ -2632,6 +2718,10 @@ def main():
         position_involvement = (
             compute_involvement_rates(players, historical_by_player_id, weights["season_games"]) if use_v2 else None
         )
+        # See scale_thin_position_involvement() - only ever consulted below
+        # for a thin position, and only for a player with zero real
+        # historical signal of their own.
+        role_percentile_by_player_id = compute_role_percentiles(players, role_signal_by_player_id) if use_v2 else {}
         # Bonus Points' pass-completion PPM component (see
         # compute_bonus_points()) needs its own shrinkage prior, computed
         # separately from position_avg_rates since it's a percentage, not
@@ -2751,6 +2841,26 @@ def main():
             lineup, status = player_status.get(game_player_id, (None, None))
             is_transferred = player_id in transferred_player_ids
             is_backup_goalkeeper = game_player_id in backup_goalkeeper_ids
+            # Only overrides the shared position_involvement dict for THIS
+            # player when the position is thin (see _apply_thin_position_
+            # floor) AND this player has zero real historical signal of
+            # their own - in every other case position_involvement[position]
+            # is used as-is, so a player with real evidence is never
+            # second-guessed by a price proxy. See scale_thin_position_
+            # involvement()'s docstring for the live bug this fixes
+            # (every thin-position player getting an identical
+            # predicted_minutes).
+            player_position_involvement = position_involvement
+            if (
+                use_v2
+                and position_involvement[position]["_thin"]
+                and historical_row["pt1"] <= 0
+            ):
+                role_percentile = role_percentile_by_player_id.get(player_id, 0.5)
+                player_position_involvement = {
+                    **position_involvement,
+                    position: scale_thin_position_involvement(position_involvement[position], role_percentile),
+                }
 
             if use_v2:
                 # A neutral-fixture (factor = 1.0 everywhere) baseline, priced
@@ -2770,7 +2880,7 @@ def main():
                 # attack/clean_sheet factors above.
                 neutral_stats, neutral_minutes_fraction, _, _ = project_player_stats(
                     position, player_id, historical_row, neutral_fixture, runtime_weights, position_avg_rates,
-                    position_involvement, hub_features, recent_form_rates,
+                    player_position_involvement, hub_features, recent_form_rates,
                     None, None, is_transferred, False,
                     is_backup_goalkeeper,
                 )
@@ -2805,7 +2915,7 @@ def main():
                     fixture_is_congested = rotation_congestion.get(fx["fixture_id"], False)
                     projected_stats, expected_minutes_fraction, module_rates_by_stat, opportunity_detail = project_player_stats(
                         position, player_id, historical_row, fx, runtime_weights, position_avg_rates,
-                        position_involvement, hub_features, recent_form_rates,
+                        player_position_involvement, hub_features, recent_form_rates,
                         fixture_lineup, fixture_status, is_transferred, fixture_is_congested,
                         is_backup_goalkeeper,
                     )
