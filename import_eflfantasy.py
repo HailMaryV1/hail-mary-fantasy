@@ -201,7 +201,38 @@ def upsert_stats(cur, game_player_id, season_total: dict, typed: dict):
     )
 
 
-def import_players(cur, game_id, players_data, team_id_by_squad_id):
+def season_has_kicked_off(cur, game_id):
+    """Real production bug caught live 2026-08-19: fantasy.efl.com's
+    players.json totalPoints/averagePoints/appearances genuinely ARE last
+    season's cumulative totals - but only while this (STATS_SEASON) is
+    still pre-season for real. The moment FIXTURE_SEASON's own GW1 kicks
+    off, that same feed silently starts reporting THIS season's live,
+    round-by-round figures instead (confirmed: Oliver Norwood's raw record
+    showed "roundId": 1, "totalPoints": 8 - literally 1 game's worth,
+    not a real last-season total) - nothing on our side ever announces
+    that switch, so import_players() kept writing it into the historical
+    baseline unchanged, quietly poisoning game_player_stats for every
+    still-active player on every refresh (the "eliminated" ones were
+    accidentally spared only because they're skipped entirely, never
+    hitting upsert_stats again). Confirmed live: player squads showing a
+    uniform ~0.1pt projection for nearly the entire pool the moment GW2
+    approached.
+
+    Checked once per import run, not per player: once ANY real
+    FIXTURE_SEASON fixture has actually kicked off, the whole feed's
+    stats fields have flipped for everyone, not just players who've
+    personally appeared yet (a player still awaiting their first
+    involvement this season already shows appearances=0/totalPoints=0 -
+    a fresh-season reset, not "genuinely zero career involvement" either)."""
+    cur.execute(
+        "select 1 from game_fixture_gameweeks gfg join fixtures f on f.id = gfg.fixture_id "
+        "where gfg.game_id = %s and f.season = %s and f.kickoff_at <= now() limit 1",
+        (game_id, FIXTURE_SEASON),
+    )
+    return cur.fetchone() is not None
+
+
+def import_players(cur, game_id, players_data, team_id_by_squad_id, skip_historical_stats):
     cur.execute("select id, full_name, team_id from players where position in ('GK','DEF','MID','FWD')")
     by_team: dict[int, dict[str, int]] = {}
     for pid, full_name, team_id in cur.fetchall():
@@ -326,8 +357,14 @@ def import_players(cur, game_id, players_data, team_id_by_squad_id):
             "tackles": p.get("tackles", 0),
             "interceptions": p.get("interceptions", 0),
         }
-        upsert_stats(cur, game_player_id, raw, typed)
-        stats_written += 1
+        # See season_has_kicked_off()'s docstring - once the real season is
+        # underway this feed's "season total" fields are actually THIS
+        # season's live, tiny, round-by-round figures, not last season's
+        # real baseline. Skipping (not zeroing) leaves whatever was
+        # genuinely captured pre-season in place untouched.
+        if not skip_historical_stats:
+            upsert_stats(cur, game_player_id, raw, typed)
+            stats_written += 1
 
     print(f"Players: {matched} matched to existing rows, {created} new player rows created, {stats_written} stat snapshots written, {eliminated} eliminated (skipped, will be deactivated below).")
 
@@ -510,7 +547,12 @@ def main():
         team_id_by_squad_id, club_player_id_by_squad_id = import_clubs(cur, squads_data)
         import_club_game_players(cur, game_id, squads_data, club_player_id_by_squad_id)
         import_fixtures(cur, game_id, rounds_data, team_id_by_squad_id)
-        import_players(cur, game_id, players_data, team_id_by_squad_id)
+        skip_historical_stats = season_has_kicked_off(cur, game_id)
+        if skip_historical_stats:
+            print("Real season already underway - players.json's stat fields are this season's live "
+                  "figures now, not last season's baseline, so the historical snapshot stays frozen "
+                  "at whatever was captured pre-season (see season_has_kicked_off()'s docstring).")
+        import_players(cur, game_id, players_data, team_id_by_squad_id, skip_historical_stats)
         seed_team_strength(cur, squads_data, team_id_by_squad_id)
 
         conn.commit()

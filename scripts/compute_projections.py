@@ -1584,7 +1584,46 @@ def compute_involvement_rates(players, historical_rows, season_games):
             # default rather than a div/0.
             "avg_sub_minutes": (totals[pos]["sub_minutes_sum"] / totals[pos]["sub_pt1_sum"]) if totals[pos]["sub_pt1_sum"] else 20.0,
         }
-    return out
+    return _apply_thin_position_floor(out, {pos: totals[pos]["players"] for pos in POSITIONS})
+
+
+# Real production bug caught live 2026-08-19: this whole function's "position
+# average" IS the shrinkage prior every individual player's own rate gets
+# blended against - it was built assuming there's always a reasonably-sized
+# real-signal pool behind it (as there always was, until EFL Fantasy's
+# players.json started reporting this season's live figures instead of last
+# season's baseline mid-way through this project - see import_eflfantasy.py's
+# season_has_kicked_off()). Once the poisoned rows were cleaned out (see
+# scripts/fix_eflfantasy_poisoned_historical_stats.py), the position averages
+# above were themselves being computed from a near-empty pool (players_n in
+# the single digits) - not a per-player edge case the existing individual-
+# player shrinkage protects against, but the SHARED PRIOR ITSELF collapsing,
+# silently crushing every single player at that position toward zero
+# regardless of their own real evidence. MIN_TRUSTED_POOL is a first-cut
+# threshold, not calibrated against real data (none existed for this
+# scenario before now) - see feedback_calibration_layer_discipline. These
+# neutral defaults intentionally mirror this function's own existing
+# "shouldn't happen in practice" fallbacks (70.0 avg_minutes_per_appearance,
+# 20.0 avg_sub_minutes) rather than inventing a different mechanism, just
+# with a documented realistic-outfield-player midpoint instead of a pure
+# div/0 guard number.
+MIN_TRUSTED_POOL = 20
+NEUTRAL_POSITION_PRIOR = {
+    "appearance": 0.6,
+    "cond60": 0.75,
+    "cond90": 0.55,
+    "avg_minutes_per_appearance": 75.0,
+    "start_given_appeared": 0.75,
+    "appear_given_not_started": 0.25,
+    "avg_sub_minutes": 20.0,
+}
+
+
+def _apply_thin_position_floor(position_rates, players_n_by_position):
+    for pos, rates in position_rates.items():
+        if players_n_by_position.get(pos, 0) < MIN_TRUSTED_POOL:
+            rates.update(NEUTRAL_POSITION_PRIOR)
+    return position_rates
 
 
 def resolve_goalkeeper_depth_chart(gk_team_and_price, players, historical_by_player_id):
