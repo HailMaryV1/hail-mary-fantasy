@@ -19,20 +19,24 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # Bumped 25 -> 45 2026-08-18: confirmed live this game's own recompute
-    # is genuinely slower than the other 3, not just unlucky scheduling -
-    # its real player pool (Championship + League One + League Two, ~2,000
-    # active game_players) is roughly 3x any Premier League-scoped game's
-    # pool, so the same 5-gameweek recompute loop (MAX_GAMEWEEKS_AHEAD,
-    # refresh_all.py) does proportionally more work per run. Two solo
-    # workflow_dispatch runs (no other workflow overlapping) still hit the
-    # old 25-minute ceiling and got cancelled mid-step - this wasn't lock
-    # contention, the work itself needs more time. See also the
-    # get_or_create_algorithm_version fix in compute_projections.py from
-    # the same day, which separately fixes the real lock-contention crash
-    # ("statement timeout ... while updating tuple ... in relation
-    # algorithm_versions") seen when this game's run DOES overlap another.
-    timeout-minutes: 45
+    # Bumped 25 -> 45 -> 120 2026-08-18. This game's own recompute is
+    # genuinely slower than the other 3 - its real player pool
+    # (Championship + League One + League Two, ~2,000 active game_players)
+    # is roughly 3x any Premier League-scoped game's pool, so the same
+    # 5-gameweek recompute loop (MAX_GAMEWEEKS_AHEAD, refresh_all.py) does
+    # proportionally more work per run. Two solo workflow_dispatch runs (no
+    # other workflow overlapping) still hit the old 25-minute ceiling and
+    # got cancelled mid-step - this wasn't lock contention, the work itself
+    # needed more time, and 45 minutes still wasn't a confirmed-sufficient
+    # number, just a guess. See refresh_dreamteam.yml's comment for why
+    # this is now 120 uniformly across every refresh_*.yml instead of
+    # hand-tuning each one - no cost trade-off on a public repo's free
+    # Actions minutes. See also the get_or_create_algorithm_version fix in
+    # compute_projections.py from the same day, which separately fixes the
+    # real lock-contention crash ("statement timeout ... while updating
+    # tuple ... in relation algorithm_versions") seen when this game's run
+    # DOES overlap another.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 

@@ -16,13 +16,20 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # Bumped from 15 (2026-08-17) - a clean solo run legitimately took
-    # 13m31s, leaving almost no headroom; refresh_cloudff's own solo run
-    # was killed by the 15-minute ceiling mid-recompute with no error of
-    # its own (Error: The operation was canceled) - same fix applied
-    # uniformly to every refresh_*.yml, same reasoning as
-    # refresh_shared_odds.yml's own earlier 30->55 bump.
-    timeout-minutes: 25
+    # Bumped 25 -> 120 2026-08-18, same change applied uniformly to every
+    # refresh_*.yml. This repo is public, so GitHub Actions minutes are
+    # free and unlimited here - there's no real cost trade-off to weigh
+    # against a generous number. Every prior bump (30->55 shared_odds,
+    # 15->25 here and elsewhere) was a guess at "long enough" that kept
+    # turning out wrong as real data volume grew toward season start -
+    # refresh_cloudff and refresh_eflfantasy were both killed mid-step by
+    # their own timeout on solo runs with nothing else even overlapping
+    # (Error: The operation was canceled, not a real script error). 120
+    # minutes is comfortably inside GitHub's own 360-minute hard ceiling
+    # for a single job and gives real headroom over anything observed so
+    # far, so a run finishes or fails on its own merits, never gets killed
+    # mid-write by an artificial clock.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 

@@ -7,10 +7,15 @@ name: Refresh - Golf
 # parallel. Golf's own data (FanTeam Golf tournaments/scores) is entirely
 # independent of the football odds/fixtures above, so it doesn't
 # strictly need to run last - it's simply next in the queue.
+# Schedule disabled 2026-08-19 (real user request - "not got time to
+# mess around with the golf, football is the urgent one"): this was
+# failing every run because active_golf_tournaments()'s intentional 48h
+# post-tournament tail (see its own docstring) always hits a 401 on the
+# re-scrape once a tournament has locked, and refresh_all.py escalates
+# that one sub-step failure into a top-level exit(1) - a real, understood
+# bug (not a random flake), just not urgent enough to fix right now.
+# workflow_dispatch is kept so this can still be run by hand when wanted.
 on:
-  schedule:
-    - cron: "0 7 * * *"
-    - cron: "0 19 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -20,8 +25,8 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # See refresh_dreamteam.yml's comment - bumped 2026-08-17.
-    timeout-minutes: 25
+    # See refresh_dreamteam.yml's comment - bumped 25 -> 120 2026-08-18.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 

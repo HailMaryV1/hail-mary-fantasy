@@ -22,8 +22,12 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # See refresh_dreamteam.yml's comment - bumped 2026-08-17.
-    timeout-minutes: 25
+    # See refresh_dreamteam.yml's comment - bumped 25 -> 120 2026-08-18.
+    # Real production cancellation seen live: cancelled at 25m17s/25m18s
+    # after several steps had already completed cleanly (Error: The
+    # operation was canceled) - this job was doing real, valid work when
+    # its own too-tight ceiling killed it mid-run.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 

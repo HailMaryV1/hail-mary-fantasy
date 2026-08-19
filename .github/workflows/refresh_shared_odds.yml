@@ -35,7 +35,8 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Bumped 20 -> 120 2026-08-18 - see refresh_dreamteam.yml's comment.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
