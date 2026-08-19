@@ -100,6 +100,28 @@ DREAMTEAM_TEAM_ALIASES = {
     "Nottingham Forest FC": "Nottingham Forest",
     "Sunderland AFC": "Sunderland",
     "Tottenham Hotspur FC": "Tottenham Hotspur",
+    # Real CI failure 2026-08-19 (Refresh - Dream Team #8, crashed on
+    # Tottenham) - re-scraping live immediately after showed the API had
+    # ALREADY drifted much further than that one club: Brentford, Chelsea,
+    # Coventry City, Everton, Fulham, Hull City, Ipswich Town, Leeds
+    # United, Newcastle United, Nottingham Forest, and Tottenham Hotspur
+    # were all returning their bare canonical name with no "FC"/"AFC"
+    # suffix at all, while the rest (Arsenal FC, Aston Villa FC, Brighton
+    # & Hove Albion FC, Crystal Palace FC, Liverpool FC, Manchester City/
+    # United FC, Sunderland AFC, AFC Bournemouth) still carried theirs.
+    # Live third-party API mid-migration, not a one-off - both spellings
+    # kept for every affected club so either form resolves.
+    "Brentford": "Brentford",
+    "Chelsea": "Chelsea",
+    "Coventry City": "Coventry City",
+    "Everton": "Everton",
+    "Fulham": "Fulham",
+    "Hull City": "Hull City",
+    "Ipswich Town": "Ipswich Town",
+    "Leeds United": "Leeds United",
+    "Newcastle United": "Newcastle United",
+    "Nottingham Forest": "Nottingham Forest",
+    "Tottenham Hotspur": "Tottenham Hotspur",
 }
 
 # Dream Team's own position code -> shared players.position vocabulary
