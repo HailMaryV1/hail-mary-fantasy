@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, fetchAllPaginated } from "@/lib/gameweek";
-import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquadSaved } from "@/lib/gameweekHistory";
+import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquadSaved, getSquadActualPointsForGameweek } from "@/lib/gameweekHistory";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import EFLFantasyBoard, {
@@ -480,6 +480,24 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
 
   const totalProjectedPoints =
     boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0) + boardClubs.reduce((sum, c) => sum + (c.score ?? 0), 0);
+
+  // Season-to-date real total (2026-08-19 user request: "a large current
+  // points total somewhere on the page") - sums every completed
+  // gameweek's captain-doubled actual result, not just whichever one is
+  // currently being viewed. Reuses totalProjectedPoints for the viewed
+  // gameweek when it's itself a completed one (already computed above
+  // from the same real actuals) rather than re-querying it.
+  const completedGameweeks: number[] = [];
+  for (let gw = gwInfo.minGameweek; gw < planningGameweek; gw++) completedGameweeks.push(gw);
+  const otherGameweekTotals = await Promise.all(
+    completedGameweeks.filter((gw) => gw !== viewedGameweek).map((gw) => getSquadActualPointsForGameweek(supabase, game.id, squadId, gw))
+  );
+  const viewedGameweekTotal = isPastView && pastViewState === null ? totalProjectedPoints : null;
+  const allGameweekTotals = [...otherGameweekTotals, viewedGameweekTotal];
+  const seasonTotalPoints = allGameweekTotals.some((t) => t != null)
+    ? allGameweekTotals.reduce((sum: number, t) => sum + (t ?? 0), 0)
+    : null;
+
   const squadSummary = isPlanningView
     ? buildSquadSummary({
         players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: 0, score: p.score })),
@@ -519,6 +537,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       teams={teams}
       squadSummary={squadSummary}
       actualTotalPoints={isPastView && pastViewState === null ? totalProjectedPoints : null}
+      seasonTotalPoints={seasonTotalPoints}
       isPoolServerDriven={!isPastView}
       fixtureTiles={fixtureTilesRecord}
       reserves={boardReserves}

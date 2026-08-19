@@ -150,6 +150,30 @@ export async function getActualPoints(
   return new Map(rows.map((r) => [r.game_player_id, { points: r.actual_points, minutes: r.actual_minutes }]));
 }
 
+/** Real, captain-doubled points a squad actually scored in one completed
+ * gameweek - null if that gameweek was never locked in, or was locked but
+ * has no results captured yet (same two "no data" cases the past-view
+ * board already distinguishes). lock.snapshot.players already covers both
+ * player and CLUB picks (see saveSquadGameweekLock's docstring), so this
+ * naturally includes club points without a separate lookup. */
+export async function getSquadActualPointsForGameweek(
+  supabase: Supabase,
+  gameId: number,
+  squadId: number,
+  gameweek: number
+): Promise<number | null> {
+  const lock = await getSquadGameweekLock(supabase, squadId, gameweek);
+  if (!lock) return null;
+  const actuals = await getActualPoints(supabase, gameId, gameweek);
+  const hasAnyResult = lock.snapshot.players.some((p) => actuals.get(p.game_player_id)?.points != null);
+  if (!hasAnyResult) return null;
+  const captainId = lock.snapshot.captainGamePlayerId;
+  return lock.snapshot.players.reduce((sum, p) => {
+    const points = actuals.get(p.game_player_id)?.points ?? 0;
+    return sum + (p.game_player_id === captainId ? points * 2 : points);
+  }, 0);
+}
+
 export type ResolvedPlayerIdentity = {
   game_player_id: number;
   full_name: string;

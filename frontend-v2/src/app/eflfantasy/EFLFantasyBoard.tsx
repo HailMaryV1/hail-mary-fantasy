@@ -176,6 +176,7 @@ export default function EFLFantasyBoard({
   teams: teamsProp,
   squadSummary,
   actualTotalPoints,
+  seasonTotalPoints,
   isPoolServerDriven,
   fixtureTiles,
   reserves,
@@ -204,6 +205,11 @@ export default function EFLFantasyBoard({
   // "no record of how many points my team is on" - GW1's real per-player
   // points were showing, but nothing summed them into a visible total.
   actualTotalPoints: number | null;
+  // Real season-to-date total (captain-doubled sum across every completed
+  // gameweek, not just the one on screen) - 2026-08-19 user request: "a
+  // large current points total somewhere on the page". Null only when no
+  // gameweek has any real result yet (pre-season).
+  seasonTotalPoints: number | null;
   // False for a past-gameweek view, whose pool page.tsx already fetched
   // in full (see eflfantasy/page.tsx's fetchAllPoolRows) - that rare,
   // small-scale path keeps the old client-side filter/sort/paginate
@@ -663,6 +669,13 @@ export default function EFLFantasyBoard({
                   : `Showing your GW${viewedGameweek} locked squad and actual points.`
               : `Previewing GW${viewedGameweek} projections - read-only. Switch back to GW${planningGameweek} to make changes.`}
           </p>
+        )}
+
+        {seasonTotalPoints != null && (
+          <div className="mt-4 flex items-baseline gap-3 rounded-xl border border-sky-700 bg-gradient-to-r from-sky-950/60 to-navy-900 px-5 py-4">
+            <span className="text-4xl font-bold tabular-nums text-white sm:text-5xl">{seasonTotalPoints.toFixed(0)}</span>
+            <span className="text-xs font-medium uppercase tracking-wide text-sky-300 sm:text-sm">Total Points</span>
+          </div>
         )}
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
