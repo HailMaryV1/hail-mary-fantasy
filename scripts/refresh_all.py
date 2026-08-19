@@ -313,9 +313,9 @@ def run_golf():
 def run_wrapup():
     """Cross-game steps that don't belong to any single game's own
     section - either because they span more than one game
-    (capture_gameweek_actuals.py captures BOTH FanTeam's and Cloud FF's
-    real actuals in one pass, from two different data sources - see its
-    own docstring) or because they operate generically over whichever
+    (capture_gameweek_actuals.py captures FanTeam's, Cloud FF's, AND EFL
+    Fantasy's real actuals in one pass, from three different data sources -
+    see its own docstring) or because they operate generically over whichever
     games/gameweeks/predictions already exist in the database with no
     game_slug filter at all (attach_gameweek_results.py, capture_
     gameweek_predictions.py, capture_squad_gameweek_state.py, evaluate_

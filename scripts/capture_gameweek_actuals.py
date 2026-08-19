@@ -28,6 +28,28 @@ first real values once GW1 finishes.
 
 Skips gameweek 1 (N-1 = 0 is meaningless - nothing has been played yet).
 
+Also captures EFL Fantasy's real actuals (capture_eflfantasy_actuals below) -
+same target table, different source again: fantasy.efl.com's players.json
+(see scraper_eflfantasy.py) carries a `lastThree` field per player -
+[{"roundId", "points"}, ...] for up to the last 3 completed rounds. No
+per-round minutes field exists in this feed (same gap import_eflfantasy.py's
+minutes_played already documents) - a round appearing in lastThree is
+treated as a full 90-minute appearance, the same full-match proxy used
+throughout this project for this exact gap.
+
+UNCONFIRMED, same class of caveat as the captures above: whether a round
+missing from lastThree always means "didn't play" (vs. "played, scored
+exactly 0, and rounds off the rolling window differently than assumed")
+can't be fully confirmed off a single real completed gameweek (2026-08-19,
+GW1 the only one done so far). Real bug this whole capture step fixes:
+nothing was capturing EFL Fantasy's real per-gameweek results at all before
+now - Performance Lab/Ask Mary grading and Recent Form
+(compute_projections.py's build_recent_form_rates, already wired in for
+this game) had zero real data to work from, on top of the season's
+historical-baseline player-identity mismatch (see NEUTRAL_POSITION_PRIOR's
+docstring) - this is the fix for that second, larger gap. Sanity-check
+against the next real completed gameweek once it lands.
+
 Also captures Cloud FF's real actuals (capture_cloudff_actuals below) -
 same target table, different source: Cloud FF has no per-gameweek
 "currently editable round" status table to read like FanTeam's, but its
@@ -157,6 +179,62 @@ def capture_cloudff_actuals(conn):
         cur.close()
 
 
+def capture_eflfantasy_actuals(conn):
+    cur = conn.cursor()
+    try:
+        cur.execute("select id from fantasy_games where slug = 'eflfantasy'")
+        row = cur.fetchone()
+        if not row:
+            print("No eflfantasy fantasy_games row - skipping EFL Fantasy actuals capture.")
+            return
+        game_id = row[0]
+
+        raw_path = ROOT / "eflfantasy_players_raw.json"
+        if not raw_path.exists():
+            print("No eflfantasy_players_raw.json found - skipping EFL Fantasy actuals capture.")
+            return
+        players_data = json.loads(raw_path.read_text(encoding="utf-8"))
+
+        # external_id-keyed, not player_id - same reasoning as
+        # gk_team_and_price in compute_projections.py: game_player_id is
+        # what player_gameweek_predictions/results are actually keyed on.
+        cur.execute(
+            "select id, external_id from game_players where game_id = %s and position_code != 'CLUB'",
+            (game_id,),
+        )
+        game_player_id_by_external_id = {external_id: gp_id for gp_id, external_id in cur.fetchall()}
+
+        written = 0
+        for p in players_data:
+            game_player_id = game_player_id_by_external_id.get(str(p["id"]))
+            if game_player_id is None:
+                continue
+            for round_entry in p.get("lastThree") or []:
+                gameweek = round_entry.get("roundId")
+                points = round_entry.get("points")
+                if gameweek is None or points is None:
+                    continue
+                cur.execute(
+                    """
+                    insert into player_gameweek_results (game_id, game_player_id, gameweek, actual_points, actual_minutes, captured_at)
+                    values (%s, %s, %s, %s, %s, now())
+                    on conflict (game_id, game_player_id, gameweek) do update
+                        set actual_points = excluded.actual_points, actual_minutes = excluded.actual_minutes,
+                            captured_at = excluded.captured_at
+                    """,
+                    (game_id, game_player_id, gameweek, points, 90),
+                )
+                written += 1
+
+        conn.commit()
+        print(f"Captured {written} real EFL Fantasy gameweek-actual rows (lastThree window).")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
 def main():
     load_env()
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
@@ -198,6 +276,7 @@ def main():
         cur.close()
 
     capture_cloudff_actuals(conn)
+    capture_eflfantasy_actuals(conn)
     conn.close()
 
 
