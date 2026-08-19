@@ -175,6 +175,7 @@ export default function EFLFantasyBoard({
   clubPoolTotalCount: initialClubPoolTotalCount,
   teams: teamsProp,
   squadSummary,
+  actualTotalPoints,
   isPoolServerDriven,
   fixtureTiles,
   reserves,
@@ -197,6 +198,12 @@ export default function EFLFantasyBoard({
   clubPoolTotalCount: number;
   teams: string[];
   squadSummary: string[];
+  // Real total for a locked past gameweek (captain-doubled sum of squad +
+  // clubs' actual points) - null on the planning view (no real result
+  // yet) or before any result has been captured. 2026-08-19 user request:
+  // "no record of how many points my team is on" - GW1's real per-player
+  // points were showing, but nothing summed them into a visible total.
+  actualTotalPoints: number | null;
   // False for a past-gameweek view, whose pool page.tsx already fetched
   // in full (see eflfantasy/page.tsx's fetchAllPoolRows) - that rare,
   // small-scale path keeps the old client-side filter/sort/paginate
@@ -788,6 +795,16 @@ export default function EFLFantasyBoard({
                 <p className="mt-2 text-sm leading-relaxed text-navy-200">{squadSummary.join(" ")}</p>
               </div>
             )}
+            {isPastView && actualTotalPoints != null && (
+              <div className="mt-4 rounded-xl border border-navy-700 bg-navy-900 p-4">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">GW{viewedGameweek} Result</h2>
+                <p className="mt-2 text-sm leading-relaxed text-navy-200">
+                  Your squad scored <span className="font-semibold text-white">{actualTotalPoints.toFixed(1)} pts</span> in gameweek {viewedGameweek}
+                  {" "}
+                  (captain&apos;s points already doubled).
+                </p>
+              </div>
+            )}
             {optimisticClubs.length > 0 && (
               <div className="mt-4 rounded-xl border border-navy-700 bg-navy-900 p-4">
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-navy-400">Why These Clubs</h2>
@@ -927,9 +944,9 @@ export default function EFLFantasyBoard({
                 className="mb-2 rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
               >
                 <option value="ALL">All leagues</option>
-                <option value="Championship">Championship</option>
-                <option value="League One">League One</option>
-                <option value="League Two">League Two</option>
+                <option value="efl_championship">Championship</option>
+                <option value="efl_league_one">League One</option>
+                <option value="efl_league_two">League Two</option>
               </select>
 
               {poolTab === "players" ? (

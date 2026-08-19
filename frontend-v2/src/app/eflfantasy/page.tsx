@@ -65,12 +65,6 @@ type FixtureRow = {
 
 type DifficultyRow = { fixture_id: number; team_id: number; attack_score: number; source: "real_odds" | "fdr" };
 
-const LEAGUE_LABELS: Record<string, string> = {
-  efl_championship: "Championship",
-  efl_league_one: "League One",
-  efl_league_two: "League Two",
-};
-
 type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
 // Only used for the past-gameweek branch below (browsing a completed
@@ -321,7 +315,14 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           position: p.position as "GK" | "DEF" | "MID" | "FWD",
           team_name: p.team_name,
           score: actuals.get(p.game_player_id)?.points ?? null,
-          competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
+          // Raw code (e.g. "efl_league_one"), not the friendly label - the
+          // league <select>'s option values are raw codes too (see
+          // EFLFantasyBoard.tsx), matching what the server-driven pool
+          // path already sends as p_competition. Was friendly-labeled here
+          // until 2026-08-19, which made this client-side filter (used
+          // only on past-gameweek views) silently return zero results for
+          // League One/Two - a real "no players found" bug the user hit.
+          competition: p.competition,
           fixtures: buildFixtures(p.team_id),
           ownershipPct: p.ownership_pct,
         }))
@@ -332,7 +333,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           game_player_id: p.game_player_id,
           club_name: p.team_name,
           score: actuals.get(p.game_player_id)?.points ?? null,
-          competition: p.competition ? (LEAGUE_LABELS[p.competition] ?? p.competition) : null,
+          competition: p.competition,
           fixtures: buildFixtures(p.team_id),
           nextFixtureLabel: nextFixtureLabelByTeamId.get(p.team_id) ?? null,
           lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
@@ -424,7 +425,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       position: r.position as "GK" | "DEF" | "MID" | "FWD",
       team_name: r.team_name,
       score: r.hail_mary_score,
-      competition: r.competition ? (LEAGUE_LABELS[r.competition] ?? r.competition) : null,
+      competition: r.competition,
       fixtures: buildFixtures(r.team_id),
       ownershipPct: r.ownershipPct,
       realTotalPoints: r.realTotalPoints,
@@ -446,7 +447,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       game_player_id: r.game_player_id,
       club_name: r.team_name,
       score: r.hail_mary_score,
-      competition: r.competition ? (LEAGUE_LABELS[r.competition] ?? r.competition) : null,
+      competition: r.competition,
       fixtures: buildFixtures(r.team_id),
       nextFixtureLabel: nextFixtureLabelByTeamId.get(r.team_id) ?? null,
       lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(r.game_player_id) ?? null,
@@ -517,6 +518,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       clubPoolTotalCount={clubPoolTotalCount}
       teams={teams}
       squadSummary={squadSummary}
+      actualTotalPoints={isPastView && pastViewState === null ? totalProjectedPoints : null}
       isPoolServerDriven={!isPastView}
       fixtureTiles={fixtureTilesRecord}
       reserves={boardReserves}
