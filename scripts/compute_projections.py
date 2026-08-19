@@ -102,6 +102,17 @@ from activity_log import log_event
 
 ROOT = Path(__file__).resolve().parent.parent
 HISTORICAL_SEASON = "2025/26"
+# Real, live current-season data - see import_eflfantasy.py's FIXTURE_SEASON
+# (the same literal value) for where this gets written. Used below to
+# override HISTORICAL_SEASON's row once a player has ANY real minutes
+# logged this season - a player's own actual games this season are always
+# a better signal than last season's baseline, before any shrinkage even
+# happens. See raw_players' current-season merge for the real bug this
+# fixes (2026-08-19): EFL Fantasy's real GW1 results existed in the raw
+# feed and were being captured for grading, but never fed back into the
+# projection engine itself - every player was still scored off zero real
+# signal even after a real gameweek had been played.
+CURRENT_SEASON = "2026/27"
 UPCOMING_SEASON = "2026/27"
 POSITIONS = ("GK", "DEF", "MID", "FWD")
 
@@ -1628,78 +1639,6 @@ def _apply_thin_position_floor(position_rates, players_n_by_position):
     return position_rates
 
 
-def resolve_role_signal(price, ownership_pct):
-    """One real per-player role-strength number, or None if neither
-    source has anything for this player - see compute_role_percentiles'
-    docstring for why two sources exist. Price preferred when present
-    (it's already validated for goalkeeper depth-chart resolution); a
-    game with no price data at all (confirmed live 2026-08-19: EVERY
-    EFL Fantasy game_player has price=0 - fantasy.efl.com's players.json
-    has no price/value/cost field whatsoever, unlike FPL-style feeds) falls
-    back to that game's own live ownership_pct instead, rather than
-    silently having no signal for that game's entire player pool."""
-    if price and price > 0:
-        return float(price)
-    if ownership_pct and ownership_pct > 0:
-        return float(ownership_pct)
-    return None
-
-
-def compute_role_percentiles(players, role_signal_by_player_id):
-    """{player_id: 0..1} - this player's role-signal rank within their OWN
-    position, weakest signal=0.0, strongest=1.0. Built once, for every
-    player, regardless of whether their position ends up using the
-    thin-pool floor below - cheap (one sort per position) and harmless
-    where it's never read.
-
-    Real production bug caught live 2026-08-19: NEUTRAL_POSITION_PRIOR
-    (below) fixed the "everyone at 0.1pts" collapse, but flattened
-    predicted_minutes to the exact SAME number for every player at a
-    thin position (confirmed live: three different real EFL Fantasy
-    defenders all showing predicted_minutes=24.9) - a real regression,
-    not a hypothetical, caught from a live screenshot the same day. Price
-    is the same proxy already validated for goalkeeper depth-chart
-    resolution (resolve_goalkeeper_depth_chart); ownership_pct
-    (fantasy.efl.com's own live "% of managers who own this player" -
-    see import_eflfantasy.py) is the fallback for EFL Fantasy, the ONE
-    game with zero price data at all - see resolve_role_signal(). Spot-
-    checked live: Kieran Trippier (Wolves' clear starting right-back)
-    40.3% owned vs James Bree 0.2% and Ryan Manning 1.7% - real
-    differentiation, not noise. First-cut, not calibrated against real
-    graded outcomes (none exist yet this season) - see
-    feedback_calibration_layer_discipline."""
-    by_position = {}
-    for _, position, player_id in players:
-        signal = role_signal_by_player_id.get(player_id)
-        if signal is None:
-            continue
-        by_position.setdefault(position, []).append((player_id, signal))
-
-    percentile_by_player_id = {}
-    for rows in by_position.values():
-        rows.sort(key=lambda r: r[1])
-        n = len(rows)
-        for rank, (player_id, _signal) in enumerate(rows):
-            percentile_by_player_id[player_id] = (rank / (n - 1)) if n > 1 else 0.5
-    return percentile_by_player_id
-
-
-def scale_thin_position_involvement(pos_inv, role_percentile):
-    """See compute_role_percentiles' docstring - only ever called when
-    pos_inv["_thin"] is true AND this specific player has zero real
-    historical signal of their own (raw_pt1 <= 0), so it's strictly
-    narrowing an already-uninformative flat guess, never overriding a
-    player's own real evidence. role_scale 0.4-1.6x is a first-cut range
-    (see compute_role_percentiles), clamped so even the weakest-signal
-    player keeps some involvement (never truly 0) and the strongest
-    doesn't exceed a sane ceiling."""
-    role_scale = 0.4 + 1.2 * role_percentile
-    scaled = dict(pos_inv)
-    scaled["appearance"] = min(0.98, pos_inv["appearance"] * role_scale)
-    scaled["start_given_appeared"] = min(0.98, pos_inv["start_given_appeared"] * role_scale)
-    return scaled
-
-
 def resolve_goalkeeper_depth_chart(gk_team_and_price, players, historical_by_player_id):
     """{game_player_id} of every goalkeeper NOT ranked #1 at their own
     club - see compute_opportunity()'s is_backup_goalkeeper parameter.
@@ -2033,6 +1972,42 @@ def compute_opportunity(historical_row, position, pos_inv, weights, lineup, stat
         "expected_minutes_fraction": round(expected_minutes_fraction, 4),
     }
     return expected_minutes_fraction, opportunity_detail
+
+
+def count_elapsed_gameweeks(cur, game_id, season):
+    """How many of this game's real gameweeks (this season) have actually
+    finished - a gameweek counts once every one of its real fixtures
+    kicked off at least 3 hours ago, same "the match has finished" proxy
+    already used by capture_gameweek_actuals.py's Cloud FF section.
+
+    Real bug this fixes (2026-08-19): CURRENT_SEASON's merged row (see
+    raw_players below) carries a player's REAL pt1/pt60/pt90/minutes for
+    this season so far - but compute_opportunity()'s shrinkage formulas
+    divide by weights["season_games"] (a FIXED full-season length, ~38-46)
+    regardless of how many of those games have actually been played yet.
+    Early season that's catastrophically wrong: a defender who started the
+    only real game played so far (pt1=1) got shrunk as if 1 start out of a
+    possible 38 - collapsing p_start to ~2% for a player who has literally
+    never missed a game. Scaling the current-season row up to a
+    season_games-equivalent (see raw_players) before the existing
+    shrinkage math ever sees it fixes this without needing to change that
+    math itself. Floored at 1 to avoid a div/0 pre-season (nothing to
+    scale from - CURRENT_SEASON's merge only fires when a player has real
+    minutes anyway, so this only matters for the ratio itself)."""
+    cur.execute(
+        """
+        select count(*) from (
+            select gfg.gameweek
+            from game_fixture_gameweeks gfg
+            join fixtures f on f.id = gfg.fixture_id
+            where gfg.game_id = %s and f.season = %s
+            group by gfg.gameweek
+            having max(f.kickoff_at) < now() - interval '3 hours'
+        ) elapsed
+        """,
+        (game_id, season),
+    )
+    return max(cur.fetchone()[0], 1)
 
 
 def fetch_transferred_player_ids(cur):
@@ -2562,6 +2537,62 @@ def main():
         )
         raw_players = dict_cur.fetchall()
         dict_cur.close()
+
+        # See CURRENT_SEASON's docstring - overrides HISTORICAL_SEASON's row
+        # per-player, only when the current season actually has real minutes
+        # for that specific player (a player awaiting their season debut
+        # correctly keeps last season's baseline rather than being zeroed
+        # out by an empty current-season row - same "don't let a real signal
+        # get replaced by silence" principle as this file's other overrides).
+        cur_season_cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur_season_cur.execute(
+            """
+            select gp.id as game_player_id,
+                   coalesce(gps.total_points, 0) as total_points, coalesce(gps.minutes_played, 0) as minutes_played,
+                   coalesce(gps.goals, 0) as goals, coalesce(gps.assists, 0) as assists,
+                   coalesce(gps.clean_sheets, 0) as clean_sheets, coalesce(gps.saves, 0) as saves,
+                   coalesce(gps.goals_conceded, 0) as goals_conceded, coalesce(gps.yellow_cards, 0) as yellow_cards,
+                   coalesce(gps.red_cards, 0) as red_cards,
+                   coalesce((gps.raw_stats->>'SOT')::numeric, 0) as shots_on_target,
+                   coalesce((gps.raw_stats->>'ownGoals')::numeric, 0) as own_goals,
+                   coalesce((gps.raw_stats->>'penaltySaves')::numeric, 0) as penalty_saves,
+                   coalesce((gps.raw_stats->>'PT1')::numeric, 0) as pt1,
+                   coalesce((gps.raw_stats->>'PT60')::numeric, 0) as pt60,
+                   coalesce((gps.raw_stats->>'PT90')::numeric, 0) as pt90,
+                   gps.raw_stats as raw_stats_all
+            from game_players gp
+            join game_player_stats gps
+                on gps.game_player_id = gp.id and gps.season = %s and gps.gameweek = 0
+            where gp.game_id = %s and gp.is_active = true and gp.position_code != 'CLUB'
+              and gps.minutes_played > 0
+            """,
+            (CURRENT_SEASON, game_id),
+        )
+        current_season_by_game_player_id = {r["game_player_id"]: r for r in cur_season_cur.fetchall()}
+        cur_season_cur.close()
+        # See count_elapsed_gameweeks()'s docstring - the merged current-
+        # season row is scaled up to a season_games-equivalent BEFORE it
+        # reaches compute_opportunity()'s shrinkage math, which divides by
+        # the fixed weights["season_games"] regardless of how many of
+        # those games have actually happened. Only meaningful when this
+        # game actually has a current-season row to merge at all (v1 games/
+        # pre-season games never populate CURRENT_SEASON) - skip the query
+        # entirely rather than dividing by a number that means nothing yet.
+        season_games_scale = 1.0
+        if use_v2 and current_season_by_game_player_id:
+            games_elapsed = count_elapsed_gameweeks(cur, game_id, CURRENT_SEASON)
+            season_games_scale = weights["season_games"] / games_elapsed
+        scaled_fields = (
+            "total_points", "minutes_played", "goals", "assists", "clean_sheets", "saves",
+            "goals_conceded", "yellow_cards", "red_cards", "pt1", "pt60", "pt90",
+        )
+        for r in raw_players:
+            current = current_season_by_game_player_id.get(r["game_player_id"])
+            if current:
+                for key, value in current.items():
+                    if key != "game_player_id":
+                        r[key] = float(value) * season_games_scale if key in scaled_fields else value
+
         players = [(r["game_player_id"], r["position"], r["player_id"]) for r in raw_players]
         full_name_by_game_player_id = {r["game_player_id"]: r["full_name"] for r in raw_players}
         # For resolve_goalkeeper_depth_chart() below - a separate, narrow
@@ -2573,19 +2604,6 @@ def main():
             for r in raw_players
             if r["position"] == "GK"
         }
-        # For scale_thin_position_involvement() below - a per-player role
-        # percentile within their own position, used only to differentiate
-        # zero-signal players at a thin position instead of applying one
-        # identical NEUTRAL_POSITION_PRIOR to all of them (see
-        # compute_role_percentiles' docstring for the live bug this fixes,
-        # and resolve_role_signal's docstring for why price alone isn't
-        # enough - EFL Fantasy has zero price data of any kind).
-        role_signal_by_player_id = {
-            r["player_id"]: signal
-            for r in raw_players
-            if (signal := resolve_role_signal(r["price"], r["ownership_pct"])) is not None
-        }
-
         # For the simple explainability view's "THIS IS THE FIXTURE" header
         # (opponent name) - resolved once here rather than per-fixture, and
         # stored as a ready display string in fixtures_by_player below
@@ -2718,10 +2736,6 @@ def main():
         position_involvement = (
             compute_involvement_rates(players, historical_by_player_id, weights["season_games"]) if use_v2 else None
         )
-        # See scale_thin_position_involvement() - only ever consulted below
-        # for a thin position, and only for a player with zero real
-        # historical signal of their own.
-        role_percentile_by_player_id = compute_role_percentiles(players, role_signal_by_player_id) if use_v2 else {}
         # Bonus Points' pass-completion PPM component (see
         # compute_bonus_points()) needs its own shrinkage prior, computed
         # separately from position_avg_rates since it's a percentage, not
@@ -2841,26 +2855,6 @@ def main():
             lineup, status = player_status.get(game_player_id, (None, None))
             is_transferred = player_id in transferred_player_ids
             is_backup_goalkeeper = game_player_id in backup_goalkeeper_ids
-            # Only overrides the shared position_involvement dict for THIS
-            # player when the position is thin (see _apply_thin_position_
-            # floor) AND this player has zero real historical signal of
-            # their own - in every other case position_involvement[position]
-            # is used as-is, so a player with real evidence is never
-            # second-guessed by a price proxy. See scale_thin_position_
-            # involvement()'s docstring for the live bug this fixes
-            # (every thin-position player getting an identical
-            # predicted_minutes).
-            player_position_involvement = position_involvement
-            if (
-                use_v2
-                and position_involvement[position]["_thin"]
-                and historical_row["pt1"] <= 0
-            ):
-                role_percentile = role_percentile_by_player_id.get(player_id, 0.5)
-                player_position_involvement = {
-                    **position_involvement,
-                    position: scale_thin_position_involvement(position_involvement[position], role_percentile),
-                }
 
             if use_v2:
                 # A neutral-fixture (factor = 1.0 everywhere) baseline, priced
@@ -2880,7 +2874,7 @@ def main():
                 # attack/clean_sheet factors above.
                 neutral_stats, neutral_minutes_fraction, _, _ = project_player_stats(
                     position, player_id, historical_row, neutral_fixture, runtime_weights, position_avg_rates,
-                    player_position_involvement, hub_features, recent_form_rates,
+                    position_involvement, hub_features, recent_form_rates,
                     None, None, is_transferred, False,
                     is_backup_goalkeeper,
                 )
@@ -2915,7 +2909,7 @@ def main():
                     fixture_is_congested = rotation_congestion.get(fx["fixture_id"], False)
                     projected_stats, expected_minutes_fraction, module_rates_by_stat, opportunity_detail = project_player_stats(
                         position, player_id, historical_row, fx, runtime_weights, position_avg_rates,
-                        player_position_involvement, hub_features, recent_form_rates,
+                        position_involvement, hub_features, recent_form_rates,
                         fixture_lineup, fixture_status, is_transferred, fixture_is_congested,
                         is_backup_goalkeeper,
                     )

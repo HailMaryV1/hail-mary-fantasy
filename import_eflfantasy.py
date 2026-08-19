@@ -165,7 +165,7 @@ def import_fixtures(cur, game_id, rounds_data, team_id_by_squad_id):
     print(f"Fixtures: {written} gameweek mappings written ({matched} matched existing, {created} newly created).")
 
 
-def upsert_stats(cur, game_player_id, season_total: dict, typed: dict):
+def upsert_stats(cur, game_player_id, season_total: dict, typed: dict, season=STATS_SEASON):
     # gameweek = 0 (not null) - compute_projections.py's historical-baseline
     # query filters on gameweek = 0 specifically (confirmed by reading it),
     # and NULL wouldn't satisfy the (game_player_id, season, gameweek)
@@ -186,7 +186,7 @@ def upsert_stats(cur, game_player_id, season_total: dict, typed: dict):
         """,
         {
             "gpid": game_player_id,
-            "season": STATS_SEASON,
+            "season": season,
             "minutes": typed.get("minutes_played", 0),
             "goals": typed.get("goals", 0),
             "assists": typed.get("assists", 0),
@@ -360,10 +360,24 @@ def import_players(cur, game_id, players_data, team_id_by_squad_id, skip_histori
         # See season_has_kicked_off()'s docstring - once the real season is
         # underway this feed's "season total" fields are actually THIS
         # season's live, tiny, round-by-round figures, not last season's
-        # real baseline. Skipping (not zeroing) leaves whatever was
-        # genuinely captured pre-season in place untouched.
+        # real baseline. Never written under STATS_SEASON (2025/26) once
+        # that's true - that would re-poison the real last-season baseline
+        # exactly like the live bug this whole mechanism exists to prevent.
+        # Real bug this branch fixes (2026-08-19): the pre-season branch
+        # simply skipped writing anything once the season kicked off,
+        # discarding this real, live, genuinely useful current-season data
+        # entirely - compute_projections.py's raw_players query had nothing
+        # to join against for it. Written under FIXTURE_SEASON (2026/27)
+        # instead - a real, live, continuously-updating current-season
+        # baseline compute_projections.py can now read (see its own
+        # CURRENT_SEASON join) - the exact data the season-transition bug
+        # this file already fixed once was trying to protect, just now
+        # actually captured somewhere instead of thrown away.
         if not skip_historical_stats:
             upsert_stats(cur, game_player_id, raw, typed)
+            stats_written += 1
+        else:
+            upsert_stats(cur, game_player_id, raw, typed, season=FIXTURE_SEASON)
             stats_written += 1
 
     print(f"Players: {matched} matched to existing rows, {created} new player rows created, {stats_written} stat snapshots written, {eliminated} eliminated (skipped, will be deactivated below).")
