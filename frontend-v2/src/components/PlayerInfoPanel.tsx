@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getPlayerExplanation, getPlayerProjectionTrendAction } from "@/lib/playerExplanationActions";
+import { getPlayerExplanation, getPlayerProjectionTrendAction, getPlayerRealStatsAction, type PlayerRealStats } from "@/lib/playerExplanationActions";
 import {
   MODULAR_STATS,
   EXPECTED_STAT_DISPLAY_NAMES,
@@ -45,11 +45,13 @@ export default function PlayerInfoPanel({
   // undefined = loading, null = no projection exists yet for this player
   const [data, setData] = useState<EngineExplanation | null | undefined>(undefined);
   const [trend, setTrend] = useState<TrendPoint[] | undefined>(undefined);
+  const [realStats, setRealStats] = useState<PlayerRealStats | null | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
     setData(undefined);
     setTrend(undefined);
+    setRealStats(undefined);
     getPlayerExplanation(gameSlug, gamePlayerId).then((result) => {
       if (cancelled) return;
       setData(result);
@@ -58,6 +60,9 @@ export default function PlayerInfoPanel({
           if (!cancelled) setTrend(points);
         });
       }
+    });
+    getPlayerRealStatsAction(gamePlayerId).then((result) => {
+      if (!cancelled) setRealStats(result);
     });
     return () => {
       cancelled = true;
@@ -126,6 +131,44 @@ export default function PlayerInfoPanel({
               {data.dataConfidence.label} confidence
             </span>
           </div>
+
+          {realStats && (
+            <div className="rounded-lg border border-navy-800 bg-navy-950 p-3 text-xs">
+              <p className="font-semibold text-white">Fantasy Stats</p>
+              <p className="mt-0.5 text-navy-500">Real results this season, not a projection.</p>
+              {realStats.lastGwPoints != null && (
+                <div className="mt-2 flex items-center justify-between rounded bg-navy-900 px-2 py-1.5">
+                  <span className="text-navy-300">GW{realStats.lastGw} points</span>
+                  <span className="font-semibold text-white">{realStats.lastGwPoints.toFixed(1)}</span>
+                </div>
+              )}
+              <div className="mt-2 grid grid-cols-3 gap-1.5">
+                {(
+                  [
+                    ["Total Pts", realStats.totalPoints],
+                    ["Appearances", realStats.appearances],
+                    ["Goals", realStats.goals],
+                    ["Assists", realStats.assists],
+                    ["Clean Sheets", realStats.cleanSheets],
+                    ["Saves", realStats.saves],
+                    ["Tackles", realStats.tackles],
+                    ["Clearances", realStats.clearances],
+                    ["Blocks", realStats.blocks],
+                    ["Interceptions", realStats.interceptions],
+                    ["Key Passes", realStats.keyPasses],
+                    ["Shots on Target", realStats.shotsOnTarget],
+                  ] as [string, number | null][]
+                )
+                  .filter(([, value]) => value != null)
+                  .map(([label, value]) => (
+                    <div key={label} className="rounded bg-navy-900 px-2 py-1.5 text-center">
+                      <p className="text-sm font-semibold text-white">{value}</p>
+                      <p className="text-[9px] uppercase tracking-wide text-navy-500">{label}</p>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
 
           {trend && trend.some((p) => p.score > 0) && (
             <div className="rounded-lg border border-navy-800 bg-navy-950 p-3">

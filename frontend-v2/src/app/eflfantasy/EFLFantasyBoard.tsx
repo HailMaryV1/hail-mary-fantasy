@@ -21,7 +21,32 @@ export const POOL_PAGE_SIZE = 15;
 // convention as DreamTeamBoard.tsx.
 export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: number; source: "real_odds" | "fdr" };
 
-export type BoardPlayer = {
+// Real stats (2026-08-19 user request, mirroring fantasy.efl.com's own
+// player popup - "Recent Gameweeks" points, appearances/clean sheets/
+// tackles/clearances/blocks/interceptions/key passes/shots on target).
+// See migration 0121's docstring - realTotalPoints is a rolling season-
+// to-date total (not the same thing as lastGwPoints, a single real
+// gameweek's result). Optional/nullable throughout: only ever real for
+// EFL Fantasy today, and even there only once a player has actually
+// featured in a real gameweek.
+export type RealPlayerStats = {
+  realTotalPoints?: number | null;
+  realAppearances?: number | null;
+  realGoals?: number | null;
+  realAssists?: number | null;
+  realCleanSheets?: number | null;
+  realSaves?: number | null;
+  realTackles?: number | null;
+  realClearances?: number | null;
+  realBlocks?: number | null;
+  realInterceptions?: number | null;
+  realKeyPasses?: number | null;
+  realShotsOnTarget?: number | null;
+  lastGw?: number | null;
+  lastGwPoints?: number | null;
+};
+
+export type BoardPlayer = RealPlayerStats & {
   game_player_id: number;
   full_name: string;
   position: "GK" | "DEF" | "MID" | "FWD";
@@ -71,10 +96,18 @@ const RESERVE_POSITIONS: ReservePosition[] = ["DEF", "MID", "FWD"];
 type DisplayMode = "next1" | "next2" | "next3" | "pts";
 const FIXTURE_MODE_COUNT: Record<string, number> = { next1: 1, next2: 2, next3: 3 };
 
-type SortBy = "pts" | "owned";
+type SortBy = "pts" | "owned" | "real_pts" | "tackles" | "clearances" | "blocks" | "interceptions" | "key_passes" | "shots_on_target" | "saves";
 const SORT_OPTIONS: [SortBy, string][] = [
-  ["pts", "Pts"],
+  ["pts", "Projected Pts"],
+  ["real_pts", "Total Pts (real)"],
   ["owned", "% Owned"],
+  ["tackles", "Tackles"],
+  ["clearances", "Clearances"],
+  ["blocks", "Blocks"],
+  ["interceptions", "Interceptions"],
+  ["key_passes", "Key Passes"],
+  ["shots_on_target", "Shots on Target"],
+  ["saves", "Saves"],
 ];
 // Off for now (2026-08-07, user request) - the pitch card always shows
 // pts + next fixture together instead, since unlimited weekly transfers
@@ -273,6 +306,20 @@ export default function EFLFantasyBoard({
             competition: r.competition,
             fixtures: buildFixtures(r.team_id),
             ownershipPct: r.ownershipPct,
+            realTotalPoints: r.realTotalPoints,
+            realAppearances: r.realAppearances,
+            realGoals: r.realGoals,
+            realAssists: r.realAssists,
+            realCleanSheets: r.realCleanSheets,
+            realSaves: r.realSaves,
+            realTackles: r.realTackles,
+            realClearances: r.realClearances,
+            realBlocks: r.realBlocks,
+            realInterceptions: r.realInterceptions,
+            realKeyPasses: r.realKeyPasses,
+            realShotsOnTarget: r.realShotsOnTarget,
+            lastGw: r.lastGw,
+            lastGwPoints: r.lastGwPoints,
           }))
         );
         setPoolTotalCount(result.totalCount);
@@ -939,7 +986,8 @@ export default function EFLFantasyBoard({
                     <thead>
                       <tr className="text-navy-500">
                         <th className="pb-2 pr-2 font-medium">Player</th>
-                        <th className="pb-2 pr-2 font-medium">Pts</th>
+                        <th className="pb-2 pr-2 font-medium" title="Projected points for this gameweek">Proj</th>
+                        <th className="pb-2 pr-2 font-medium" title="Real points scored so far this season">Total Pts</th>
                         {Array.from({ length: 6 }, (_, i) => (
                           <th key={i} className="px-1 pb-2 text-center font-medium">
                             GW{viewedGameweek + i}
@@ -985,6 +1033,7 @@ export default function EFLFantasyBoard({
                               </div>
                             </td>
                             <td className="py-1.5 pr-2 text-sky-400">{p.score != null ? p.score.toFixed(1) : "-"}</td>
+                            <td className="py-1.5 pr-2 text-white">{p.realTotalPoints != null ? p.realTotalPoints.toFixed(1) : "-"}</td>
                             {p.fixtures.slice(0, 6).map((f, i) => (
                               <td key={i} className="px-1 py-1.5 text-center">
                                 {f ? (

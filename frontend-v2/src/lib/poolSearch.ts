@@ -2,7 +2,21 @@
 
 import { createAuthServerClient } from "./supabaseServerClient";
 
-export type PoolSortBy = "pts" | "goals" | "assists" | "bonus" | "price" | "owned";
+export type PoolSortBy =
+  | "pts"
+  | "goals"
+  | "assists"
+  | "bonus"
+  | "price"
+  | "owned"
+  | "real_pts"
+  | "tackles"
+  | "clearances"
+  | "blocks"
+  | "interceptions"
+  | "key_passes"
+  | "shots_on_target"
+  | "saves";
 
 export type PoolSearchRow = {
   game_player_id: number;
@@ -20,6 +34,27 @@ export type PoolSearchRow = {
    * Fantasy and Cloud FF (see migration 0114's docstring); null on
    * Dream Team/FanTeam, whose real feeds have no such field. */
   ownershipPct: number | null;
+  /** Real stats (2026-08-19 user request, mirroring fantasy.efl.com's own
+   * player popup) - see migration 0121's docstring. realTotalPoints is a
+   * rolling season-to-date total; lastGw/lastGwPoints is a single real
+   * gameweek's result. The counting stats (tackles/clearances/etc) are
+   * only ever real for EFL Fantasy today - null everywhere else, same
+   * "absence of data is never treated as a real value" convention
+   * ownershipPct already documents. */
+  realTotalPoints: number | null;
+  realAppearances: number | null;
+  realGoals: number | null;
+  realAssists: number | null;
+  realCleanSheets: number | null;
+  realSaves: number | null;
+  realTackles: number | null;
+  realClearances: number | null;
+  realBlocks: number | null;
+  realInterceptions: number | null;
+  realKeyPasses: number | null;
+  realShotsOnTarget: number | null;
+  lastGw: number | null;
+  lastGwPoints: number | null;
 };
 
 export type PoolSearchResult = { rows: PoolSearchRow[]; totalCount: number };
@@ -90,6 +125,20 @@ export async function searchPool(params: {
     assist_projected: number | string;
     bonus_projected: number | string;
     ownership_pct: number | string | null;
+    real_total_points: number | string | null;
+    real_appearances: number | null;
+    real_goals: number | null;
+    real_assists: number | null;
+    real_clean_sheets: number | null;
+    real_saves: number | null;
+    real_tackles: number | null;
+    real_clearances: number | null;
+    real_blocks: number | null;
+    real_interceptions: number | null;
+    real_key_passes: number | null;
+    real_shots_on_target: number | null;
+    last_gw: number | null;
+    last_gw_points: number | string | null;
     total_count: number | string;
   };
   const rpcRows = data as RpcRow[];
@@ -106,6 +155,20 @@ export async function searchPool(params: {
     assistProjected: Number(r.assist_projected),
     bonusProjected: Number(r.bonus_projected),
     ownershipPct: r.ownership_pct != null ? Number(r.ownership_pct) : null,
+    realTotalPoints: r.real_total_points != null ? Number(r.real_total_points) : null,
+    realAppearances: r.real_appearances,
+    realGoals: r.real_goals,
+    realAssists: r.real_assists,
+    realCleanSheets: r.real_clean_sheets,
+    realSaves: r.real_saves,
+    realTackles: r.real_tackles,
+    realClearances: r.real_clearances,
+    realBlocks: r.real_blocks,
+    realInterceptions: r.real_interceptions,
+    realKeyPasses: r.real_key_passes,
+    realShotsOnTarget: r.real_shots_on_target,
+    lastGw: r.last_gw,
+    lastGwPoints: r.last_gw_points != null ? Number(r.last_gw_points) : null,
   }));
   const totalCount = rpcRows.length > 0 ? Number(rpcRows[0].total_count) : 0;
   return { rows, totalCount };
