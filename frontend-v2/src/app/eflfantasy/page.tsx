@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, fetchAllPaginated } from "@/lib/gameweek";
-import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities } from "@/lib/gameweekHistory";
+import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquadSaved } from "@/lib/gameweekHistory";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import EFLFantasyBoard, {
@@ -255,6 +255,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   // gameweek - it's about backing up THIS week's live decisions - so it's
   // only ever populated in the planning branch below.
   let boardReserves: Record<ReservePosition, ReservePick[]> = { DEF: [], MID: [], FWD: [] };
+  let isTeamSaved = false;
 
   if (isPastView) {
     const [lock, poolRaw] = await Promise.all([getSquadGameweekLock(supabase, squadId, viewedGameweek), fetchAllPoolRows(supabase, "eflfantasy")]);
@@ -428,6 +429,27 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
     poolTotalCount = initialPool.totalCount;
     clubPoolTotalCount = initialClubPool.totalCount;
     teams = teamNames;
+
+    // Save Team indicator (real user request 2026-08-19 - "we need the
+    // save team button too... this should already be built", true for
+    // every other game, just never wired in here) - only meaningful on
+    // the current planning gameweek, the only one a save can target (see
+    // eflfantasy/actions.ts's saveTeamForGameweek). No bench and no
+    // squad-level captain here (identical shape to Cloud FF), so the
+    // snapshot compares players only - CLUB picks included, since
+    // squad_players covers both.
+    if (isPlanningView) {
+      const lock = await getSquadGameweekLock(supabase, squadId, planningGameweek);
+      isTeamSaved = isSquadSaved(
+        {
+          players: squadPlayers.map((p) => ({ game_player_id: p.game_player_id, is_starting: true, bench_order: null })),
+          captainGamePlayerId: null,
+          viceCaptainGamePlayerId: null,
+          activeBooster: null,
+        },
+        lock?.snapshot ?? null
+      );
+    }
   }
 
   const totalProjectedPoints =
@@ -454,6 +476,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
     <EFLFantasyBoard
       squadId={squadId}
       squadName={squad.name}
+      isTeamSaved={isTeamSaved}
       planningGameweek={planningGameweek}
       viewedGameweek={viewedGameweek}
       isPlanningView={isPlanningView}

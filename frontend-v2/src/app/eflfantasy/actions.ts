@@ -2,9 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming } from "@/lib/gameweek";
+import { getSeasonTiming, getGameweekInfo } from "@/lib/gameweek";
 import { getClubPickCounts, CLUB_CAP } from "@/lib/eflClubCapCheck";
 import { isLegalPositionSwap, type OutfieldPosition, type SquadPosition } from "@/lib/eflFormation";
+import { saveSquadGameweekLock } from "@/lib/gameweekHistory";
 
 type ReservePosition = OutfieldPosition;
 
@@ -249,4 +250,49 @@ export async function removeReserve({ squadId, position, gamePlayerId }: { squad
 
   revalidatePath("/eflfantasy");
   return { success: true };
+}
+
+/**
+ * Real user request 2026-08-19: "we need the save team button too so it
+ * locks the players in and records their score so we can track my team
+ * and the decisions" - the same saveSquadGameweekLock mechanism Dream
+ * Team/FanTeam/Cloud FF already have (see cloudff/actions.ts's own
+ * saveTeamForGameweek), just never wired into EFL Fantasy's board when it
+ * was built. Locks in the squad's CURRENT live player list (including
+ * CLUB picks - squad_players covers both) as planningGameweek's official
+ * submission, re-pressable right up until that gameweek's real deadline.
+ * EFL Fantasy has no bench and no squad-level captain (every squad member
+ * always starts; match-day-equivalent captaincy isn't a real mechanic
+ * here per migration 0089's docstring), so - identically to Cloud FF -
+ * only the player list is meaningful; captain/vice/booster are always
+ * null. Reserves (squad_reserve_picks) are a separate research list, not
+ * part of the live team, so deliberately excluded from the snapshot.
+ */
+export async function saveTeamForGameweek({ squadId }: { squadId: number }) {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Not signed in." };
+
+  const squad = await getOwnedSquad(supabase, squadId, user.id);
+  if (!squad) return { error: "Squad not found." };
+
+  const { data: squadPlayers } = await supabase.from("squad_players").select("game_player_id").eq("squad_id", squadId);
+  if (!squadPlayers || squadPlayers.length === 0) return { error: "Your squad is empty - nothing to save." };
+
+  const gwInfo = await getGameweekInfo(supabase, squad.game_id);
+  if (gwInfo.planningGameweek == null) return { error: "No upcoming gameweek to save a team for yet." };
+  const deadline = gwInfo.gameweeks.find((g) => g.gameweek === gwInfo.planningGameweek)?.deadline ?? null;
+
+  const result = await saveSquadGameweekLock(supabase, squadId, gwInfo.planningGameweek, deadline, {
+    players: squadPlayers.map((p) => ({ game_player_id: p.game_player_id, is_starting: true, bench_order: null })),
+    captainGamePlayerId: null,
+    viceCaptainGamePlayerId: null,
+    activeBooster: null,
+  });
+  if ("error" in result) return result;
+
+  revalidatePath("/eflfantasy");
+  return { success: true as const };
 }

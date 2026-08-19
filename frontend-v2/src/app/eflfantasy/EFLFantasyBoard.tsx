@@ -8,9 +8,10 @@ import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import Kit from "@/components/Kit";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import OddsRefreshButton from "@/components/OddsRefreshButton";
+import SaveTeamButton from "@/components/SaveTeamButton";
 import { searchPool } from "@/lib/poolSearch";
 import { isLegalPositionSwap } from "@/lib/eflFormation";
-import { makeTransfer, makeClubTransfer, addReserve, removeReserve, setReservesForPosition } from "./actions";
+import { makeTransfer, makeClubTransfer, addReserve, removeReserve, setReservesForPosition, saveTeamForGameweek } from "./actions";
 
 export const POOL_PAGE_SIZE = 15;
 
@@ -125,6 +126,7 @@ function optimisticSwap<T extends { game_player_id: number }>(current: T[], outI
 export default function EFLFantasyBoard({
   squadId,
   squadName,
+  isTeamSaved,
   planningGameweek,
   viewedGameweek,
   isPlanningView,
@@ -146,6 +148,7 @@ export default function EFLFantasyBoard({
 }: {
   squadId: number;
   squadName: string;
+  isTeamSaved: boolean;
   planningGameweek: number;
   viewedGameweek: number;
   isPlanningView: boolean;
@@ -659,6 +662,7 @@ export default function EFLFantasyBoard({
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                {isPlanningView && <SaveTeamButton isSaved={isTeamSaved} onSave={() => saveTeamForGameweek({ squadId })} />}
                 <OddsRefreshButton gameSlug="eflfantasy" />
                 <Link
                   href="/eflfantasy/ask-mary"
