@@ -2402,61 +2402,109 @@ def upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, peri
         )
 
 
-def compute_club_scores(cur, game_id, algo_id, fixtures_by_player, neutral_attack, gameweek, period_start, period_end):
+def compute_club_scores(cur, game_id, algo_id, fixtures_by_player, position_avg_rates, weights, scoring_rules, gameweek, period_start, period_end):
     """EFL Fantasy's 2 CLUB picks (migration 0087) - deliberately NOT run
     through the per-player v2-decomposed pipeline above (POSITIONS/
-    position_avg/weights["position_weights"] have no 'CLUB' entry, and a
-    club's win/draw/clean-sheet/goals event stats aren't derivable yet
-    this pre-season anyway - every rounds.json fixture still has null
-    scores). Uses the same v1-style formula this whole engine started
-    from (points_per_90 * fixture_factor), with each club's own real
-    last-season averagePoints (import_eflfantasy.py's
-    import_club_game_players) standing in for points_per_90, and
-    attack_score/neutral_attack (from team_fixture_difficulty - which
-    IS real here, via team_season_strength's real-averagePoints-derived
-    ratings, see import_eflfantasy.py's seed_team_strength) as the
-    fixture adjustment. A deliberately simple methodology for a
-    deliberately simple, real, already-available signal - not a promise
-    that this covers win/draw/clean-sheet/goals as separate priced
-    events, which is what a real, tuned matrix would require once
-    scores actually exist."""
+    position_avg/weights["position_weights"] have no 'CLUB' entry).
+
+    Real bug fixed 2026-08-19: the original v1-style placeholder here
+    (last season's real averagePoints x attack_score/neutral_attack, see
+    this function's git history) was only ever meant to hold the line
+    "until scores actually exist" - but once real GW1 results existed and
+    every player's own scoring got fixed to use them, this club formula
+    kept multiplying an already-real season average by a SECOND fixture-
+    strength ratio on top, double-counting fixture difficulty and
+    producing scores in the mid-teens for a single gameweek (confirmed
+    live: Luton Town projected 16.66pts for one match). game_scoring_rules
+    already defines EFL Fantasy's real CLUB matrix (win=6, draw=2,
+    clean_sheet=2, away_win_bonus=1, two_plus_goals=1, four_plus_goals=2)
+    - this now prices win/draw/clean_sheet/away_win_bonus directly off
+    real match-odds probabilities, the same real signal every individual
+    player's own score is already built on, instead of a season-average
+    proxy.
+
+    win_prob/draw_prob are recovered EXACTLY from the real_attack_score/
+    real_clean_sheet_score already computed for every fixture (see
+    _attack_and_clean_sheet: real_attack_score IS real_win_prob;
+    real_clean_sheet_score = real_win_prob + 0.5*real_draw_prob, so
+    real_draw_prob = 2*(real_clean_sheet_score - real_attack_score)) -
+    not a new signal, just unpacking two numbers this file already
+    derives from real bookmaker odds. Falls back to the blended (real-
+    odds-or-model) attack_score/clean_sheet_score when real odds don't
+    exist yet for a fixture, same fallback every other stat in this file
+    already uses.
+
+    Real CLEAN SHEET probability has no direct market in this pipeline
+    (win/draw odds aren't the same event as "concedes zero") - approximated
+    from DEF's own real, shrinkage-derived clean_sheet-per-90 rate
+    (position_avg_rates["DEF"]["clean_sheet"] - the same baseline every
+    real DEF/GK player's clean_sheet_60min stat is already priced against
+    elsewhere in this file), scaled by this fixture's clean_sheet_score/
+    neutral_clean_sheet ratio - the identical fixture-adjustment mechanism
+    already used throughout, not a new one invented for this.
+
+    KNOWN LIMITATION, documented rather than guessed: two_plus_goals/
+    four_plus_goals bonuses are NOT priced (no goals-distribution model
+    wired in yet for team-level scorelines, unlike individual players'
+    anytime_prob_to_expected_goals) - a real, smaller (1-2pt) gap, left
+    at 0 rather than fabricated."""
+    win_pts = scoring_rules.get(("CLUB", "win"), 0.0)
+    draw_pts = scoring_rules.get(("CLUB", "draw"), 0.0)
+    clean_sheet_pts = scoring_rules.get(("CLUB", "clean_sheet"), 0.0)
+    away_win_bonus_pts = scoring_rules.get(("CLUB", "away_win_bonus"), 0.0)
+    neutral_clean_sheet = weights["neutral_clean_sheet"]
+    baseline_clean_sheet_rate = position_avg_rates.get("DEF", {}).get("clean_sheet", 0.3)
+
     cur.execute(
         """
-        select gp.id as game_player_id, gp.player_id, coalesce(gps.total_points, 0) as avg_points
+        select gp.id as game_player_id, gp.player_id
         from game_players gp
-        join game_player_stats gps
-            on gps.game_player_id = gp.id and gps.season = %s and gps.gameweek = 0
         where gp.game_id = %s and gp.is_active = true and gp.position_code = 'CLUB'
         """,
-        (HISTORICAL_SEASON, game_id),
+        (game_id,),
     )
     written = 0
-    for game_player_id, player_id, avg_points in cur.fetchall():
+    for game_player_id, player_id in cur.fetchall():
         club_fixtures = fixtures_by_player.get(player_id, [])
         if not club_fixtures:
             continue
         score = 0.0
         fixture_breakdown = []
         for cf in club_fixtures:
-            factor = float(cf["attack_score"]) / neutral_attack if neutral_attack else 1.0
-            contribution = float(avg_points) * factor
+            attack = cf.get("real_attack_score")
+            cs_proxy = cf.get("real_clean_sheet_score")
+            source = "real_odds"
+            if attack is None or cs_proxy is None:
+                attack, cs_proxy = cf["attack_score"], cf["clean_sheet_score"]
+                source = "blended_fallback"
+            win_prob = max(0.0, min(1.0, float(attack)))
+            draw_prob = max(0.0, min(1.0, 2.0 * (float(cs_proxy) - float(attack))))
+            cs_factor = float(cs_proxy) / neutral_clean_sheet if neutral_clean_sheet else 1.0
+            clean_sheet_prob = max(0.0, min(1.0, baseline_clean_sheet_rate * cs_factor))
+            away_win_prob = win_prob if not cf["is_home"] else 0.0
+            contribution = (
+                win_prob * win_pts + draw_prob * draw_pts
+                + clean_sheet_prob * clean_sheet_pts + away_win_prob * away_win_bonus_pts
+            )
             score += contribution
             fixture_breakdown.append({
-                "fixture_id": cf["fixture_id"], "kickoff_at": cf["kickoff_at"],
-                "attack_score": round(float(cf["attack_score"]), 4), "contribution": round(contribution, 3),
+                "fixture_id": cf["fixture_id"], "kickoff_at": cf["kickoff_at"], "is_home": cf["is_home"],
+                "win_prob": round(win_prob, 4), "draw_prob": round(draw_prob, 4),
+                "clean_sheet_prob": round(clean_sheet_prob, 4), "probability_source": source,
+                "contribution": round(contribution, 3),
             })
         inputs = {
-            "methodology": "v1-style: real last-season averagePoints x attack_score/neutral_attack "
-                            "- see compute_club_scores() docstring for why this isn't the full "
-                            "win/draw/clean-sheet/goals decomposition the matrix defines",
-            "avg_points_per_gw": round(float(avg_points), 3),
-            "neutral_attack_used": round(neutral_attack, 4),
+            "methodology": "real match-odds win/draw probability x game_scoring_rules' real CLUB matrix "
+                            "(win/draw/clean_sheet/away_win_bonus) - see compute_club_scores() docstring for "
+                            "the two_plus_goals/four_plus_goals bonuses this doesn't price yet",
+            "scoring_rule_points": {"win": win_pts, "draw": draw_pts, "clean_sheet": clean_sheet_pts, "away_win_bonus": away_win_bonus_pts},
+            "baseline_clean_sheet_rate": round(baseline_clean_sheet_rate, 4),
             "fixtures": fixture_breakdown,
-            "explanation": f"Projects {avg_points:.1f} pts/gameweek (last season's real average) per match.",
+            "explanation": f"Projects {score:.1f} pts from real win/draw/clean-sheet probabilities for this fixture.",
         }
         upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
         written += 1
-    print(f"Wrote {written} club projections (v1-style averagePoints x fixture, see compute_club_scores() docstring).")
+    print(f"Wrote {written} club projections (real win/draw/clean-sheet odds x CLUB scoring matrix).")
 
 
 def main():
@@ -3270,7 +3318,7 @@ def main():
 
         if game_slug == "eflfantasy" and use_v2:
             compute_club_scores(
-                cur, game_id, algo_id, fixtures_by_player, runtime_weights["neutral_attack"],
+                cur, game_id, algo_id, fixtures_by_player, position_avg_rates, runtime_weights, scoring_rules,
                 gameweek, period_start, period_end,
             )
 
