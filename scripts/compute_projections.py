@@ -1369,15 +1369,63 @@ def fetch_scoring_rules(cur, game_id):
     return {(applies_to, stat): float(points) for applies_to, stat, points in cur.fetchall()}
 
 
+def fetch_ffscout_player_status(cur, game_id):
+    """{game_player_id: (lineup, status, live_start_probability)} - real
+    Premier League team news from fantasyfootballscout.co.uk (scripts/
+    capture_ffscout_player_status.py owns ffscout_player_status), 2026-08-19
+    - the first live-status source Dream Team and Cloud FF have ever had
+    (see fetch_live_status below). No gameweek parameter - real-world team
+    news doesn't care about the querying game's own scheduling mode, which
+    is what actually lets this reach Dream Team's period-mode players at
+    all (every OTHER fetch_*_player_status here hard-returns {} whenever
+    gameweek is None). lineup is always None - FFScout has no formation-
+    slot granularity, only Out/Doubt/Banned. 'out'/'banned' become the
+    distinct "ffscout_out"/"ffscout_banned" statuses (see
+    OPPORTUNITY_HARD_OUT_STATUSES) rather than reused "injured"/
+    "suspended" - "Out" doesn't specify a reason, and conflating source
+    semantics under one string would confuse later debugging. 'doubt' rows
+    carry status=None and their real modelled percentage in
+    live_start_probability instead (0.0-1.0, see compute_opportunity's
+    FFSCOUT_DOUBT_BLEND_WEIGHT).
+
+    Most-recent-row-per-player within an 8-day staleness window, not a
+    single global max(snapshot_date) - so one club's parse failure on one
+    scrape run only affects that club's players (they fall back to pure
+    historical P(start)), not every player in the pool."""
+    cur.execute(
+        """
+        select distinct on (s.player_id) s.player_id, gp.id as game_player_id, s.status, s.start_probability
+        from ffscout_player_status s
+        join game_players gp on gp.player_id = s.player_id and gp.game_id = %s
+        where s.player_id is not null and s.snapshot_date >= current_date - interval '8 days'
+        order by s.player_id, s.snapshot_date desc, s.captured_at desc
+        """,
+        (game_id,),
+    )
+    result = {}
+    for row in cur.fetchall():
+        game_player_id, status, start_probability = row[1], row[2], row[3]
+        if status == "out" or status == "banned":
+            result[game_player_id] = (None, f"ffscout_{status}", None)
+        else:
+            live_start_probability = float(start_probability) / 100.0 if start_probability is not None else None
+            result[game_player_id] = (None, None, live_start_probability)
+    return result
+
+
 def fetch_fanteam_player_status(cur, game_id, gameweek):
-    """{game_player_id: (lineup, status)} for one gameweek - empty dict if
-    gameweek is None (period-mode, e.g. Dream Team, which has no live
-    status source at all) or nothing captured yet - the natural no-op
-    default that leaves every score unmultiplied. FanTeam's own live-
-    lineup feed (import_fanteam_live.py owns fanteam_player_status) -
-    never queried for any other game, see fetch_live_status below."""
+    """{game_player_id: (lineup, status, live_start_probability)} for one
+    gameweek - empty dict if gameweek is None (period-mode, e.g. Dream
+    Team, which has no FanTeam-specific live status at all) or nothing
+    captured yet. FanTeam's own live-lineup feed (import_fanteam_live.py
+    owns fanteam_player_status) always wins on a collision; FFScout only
+    fills gaps for a player FanTeam's own feed has no row for - same
+    "real source > fallback > nothing" 3-tier priority already
+    established for EFL fixture difficulty (real odds > EFL's own FDR
+    fallback > nothing)."""
+    ffscout = fetch_ffscout_player_status(cur, game_id)
     if gameweek is None:
-        return {}
+        return ffscout
     cur.execute(
         """
         select gp.id, s.lineup, s.status
@@ -1387,16 +1435,20 @@ def fetch_fanteam_player_status(cur, game_id, gameweek):
         """,
         (game_id, gameweek),
     )
-    return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+    fanteam = {row[0]: (row[1], row[2], None) for row in cur.fetchall()}
+    return {**ffscout, **fanteam}
 
 
 def fetch_eflfantasy_player_status(cur, game_id, gameweek):
-    """{game_player_id: (lineup, status)} for one gameweek, from EFL
-    Fantasy's OWN status table (migration 0104) - never fanteam_player_
-    status, this game's live source is fantasy.efl.com's own real status
-    field (scripts/capture_eflfantasy_player_status.py owns this table),
-    a completely different feed to FanTeam's. lineup is always None -
-    this feed has no predicted-lineup granularity, only a coarser
+    """{game_player_id: (lineup, status, live_start_probability)} for one
+    gameweek, from EFL Fantasy's OWN status table (migration 0104) - never
+    fanteam_player_status or FFScout (EFL Fantasy's Championship/League
+    One/League Two pool is out of FFScout's real-Premier-League scope -
+    see feedback_2026_27_relegation_promotion.md), this game's live
+    source is fantasy.efl.com's own real status field
+    (scripts/capture_eflfantasy_player_status.py owns this table), a
+    completely different feed to FanTeam's. lineup is always None - this
+    feed has no predicted-lineup granularity, only a coarser
     playing/injured/suspended/eliminated status ("eliminated" is handled
     separately at the game_players.is_active level, so never appears
     here). "injured"/"suspended" are real, direct matches for
@@ -1412,18 +1464,22 @@ def fetch_eflfantasy_player_status(cur, game_id, gameweek):
         """,
         (game_id, gameweek),
     )
-    return {row[0]: (None, row[1]) for row in cur.fetchall()}
+    return {row[0]: (None, row[1], None) for row in cur.fetchall()}
 
 
 def fetch_live_status(cur, game_id, gameweek, game_slug):
     """Dispatches to the right game's OWN live-status source - see this
-    app's per-game independent identity rule. Every other game (Dream
-    Team, Cloud FF) has no live-status source at all yet, same as before
-    this dispatcher existed - empty dict, the natural no-op default."""
+    app's per-game independent identity rule. Dream Team/Cloud FF have no
+    platform-specific live status source of their own (unlike FanTeam/EFL
+    Fantasy), but DO get FFScout's real Premier League team news as of
+    2026-08-19 - previously an empty-dict no-op for them, same as EVERY
+    other game before this dispatcher existed at all."""
     if game_slug == "fanteam":
         return fetch_fanteam_player_status(cur, game_id, gameweek)
     if game_slug == "eflfantasy":
         return fetch_eflfantasy_player_status(cur, game_id, gameweek)
+    if game_slug in ("dreamteam", "cloudff"):
+        return fetch_ffscout_player_status(cur, game_id)
     return {}
 
 
@@ -1800,7 +1856,7 @@ def compute_opportunity_confidence(minutes_played, live_status_applied):
 # explicitly flagged for Performance Lab calibration once real live-
 # status-vs-outcome data accumulates - see the implementation plan's risk
 # log.
-OPPORTUNITY_HARD_OUT_STATUSES = {"injured", "suspended", "not_available", "gameweek_off"}
+OPPORTUNITY_HARD_OUT_STATUSES = {"injured", "suspended", "not_available", "gameweek_off", "ffscout_out", "ffscout_banned"}
 OPPORTUNITY_LINEUP_BLEND = {
     "confirmed_starting": (1.0, 0.97),
     "confirmed_not_in_squad": (1.0, 0.0),
@@ -1810,8 +1866,22 @@ OPPORTUNITY_LINEUP_BLEND = {
     "not_expected": (0.4, 0.35),
 }
 
+# FFScout's real modelled "doubt" percentage (see fetch_ffscout_player_
+# status) blends directly against p_start_historical, bypassing
+# OPPORTUNITY_LINEUP_BLEND's discrete buckets entirely - a real percentage
+# is strictly more precise than a coarse category. 0.9, not 1.0: closer to
+# FanTeam's own confirmed_* tier (1.0) than its coarse might_start/not_
+# expected guesses (0.3-0.4), since it's a real modelled probability, but
+# with a small hedge below 1.0 because it's a third party's own model, not
+# this project's own confirmed lineup sheet. Same "needs Performance Lab
+# calibration once real data accumulates" flag as every blend weight above.
+FFSCOUT_DOUBT_BLEND_WEIGHT = 0.9
 
-def compute_opportunity(historical_row, position, pos_inv, weights, lineup, status, is_transferred, is_congested, is_backup_goalkeeper=False):
+
+def compute_opportunity(
+    historical_row, position, pos_inv, weights, lineup, status, is_transferred, is_congested,
+    is_backup_goalkeeper=False, live_start_probability=None,
+):
     """The Opportunity Model (Phase A - Minimum Viable Opportunity Model).
     Returns (expected_minutes_fraction, opportunity_detail).
 
@@ -1843,7 +1913,13 @@ def compute_opportunity(historical_row, position, pos_inv, weights, lineup, stat
     gated OFF whenever lineup == "confirmed_starting", so real live
     confirmation always wins over this price-based proxy; a positional
     (not per-fixture) fact, so callers pass the same value for every
-    fixture a player has this gameweek, unlike is_congested."""
+    fixture a player has this gameweek, unlike is_congested.
+
+    live_start_probability (0.0-1.0, or None) - FFScout's real modelled
+    "doubt" percentage (see fetch_ffscout_player_status), primary-fixture-
+    only same as lineup/status. When present it takes priority over
+    OPPORTUNITY_LINEUP_BLEND's discrete buckets entirely - a real
+    percentage is strictly more precise than a coarse category."""
     k = weights["shrinkage_games"]
     k_effective = k * 2.0 if is_transferred else k
     season_games = weights["season_games"]
@@ -1893,6 +1969,9 @@ def compute_opportunity(historical_row, position, pos_inv, weights, lineup, stat
     live_status_applied = False
     if status in OPPORTUNITY_HARD_OUT_STATUSES:
         p_start = 0.0
+        live_status_applied = True
+    elif live_start_probability is not None:
+        p_start = FFSCOUT_DOUBT_BLEND_WEIGHT * live_start_probability + (1.0 - FFSCOUT_DOUBT_BLEND_WEIGHT) * p_start_historical
         live_status_applied = True
     elif lineup in OPPORTUNITY_LINEUP_BLEND:
         live_weight, live_value = OPPORTUNITY_LINEUP_BLEND[lineup]
@@ -1994,6 +2073,7 @@ def compute_opportunity(historical_row, position, pos_inv, weights, lineup, stat
         # own docstring. None, not fabricated.
         "football_uncertainty": None,
         "expected_minutes_fraction": round(expected_minutes_fraction, 4),
+        "live_start_probability": round(live_start_probability, 4) if live_start_probability is not None else None,
     }
     return expected_minutes_fraction, opportunity_detail
 
@@ -2084,7 +2164,7 @@ def _implied_involvement(raw_pt1, raw_pt60, raw_pt90, minutes_played):
 def project_player_stats(
     position, player_id, historical_row, fixture, weights, position_avg, position_involvement,
     hub_features, recent_form_rates, lineup, status, is_transferred, is_congested,
-    is_backup_goalkeeper=False,
+    is_backup_goalkeeper=False, live_start_probability=None,
 ):
     """Per-stat projected count for one player's one fixture (v2-decomposed).
     Returns (projected, expected_minutes_fraction, module_rates_by_stat,
@@ -2126,7 +2206,7 @@ def project_player_stats(
     pos_inv = position_involvement[position]
     expected_minutes_fraction, opportunity_detail = compute_opportunity(
         historical_row, position, pos_inv, weights, lineup, status, is_transferred, is_congested,
-        is_backup_goalkeeper,
+        is_backup_goalkeeper, live_start_probability,
     )
 
     projected = {
@@ -2940,7 +3020,7 @@ def main():
             # Opportunity Model can consume real live team news for the
             # primary fixture below - previously this lookup happened only
             # after both branches, purely to feed status_multiplier().
-            lineup, status = player_status.get(game_player_id, (None, None))
+            lineup, status, live_start_probability = player_status.get(game_player_id, (None, None, None))
             is_transferred = player_id in transferred_player_ids
             is_backup_goalkeeper = game_player_id in backup_goalkeeper_ids
             # See games_elapsed_by_player_id's docstring above - only
@@ -2973,7 +3053,7 @@ def main():
                     position, player_id, historical_row, neutral_fixture, player_runtime_weights, position_avg_rates,
                     position_involvement, hub_features, recent_form_rates,
                     None, None, is_transferred, False,
-                    is_backup_goalkeeper,
+                    is_backup_goalkeeper, None,
                 )
                 points_per_90, neutral_priced = price_projected_stats(position, neutral_stats, scoring_rules)
                 neutral_bonus = compute_bonus_points(
@@ -3003,12 +3083,13 @@ def main():
                     # simplification just below.
                     fixture_lineup = lineup if fixture_index == 0 else None
                     fixture_status = status if fixture_index == 0 else None
+                    fixture_live_start_probability = live_start_probability if fixture_index == 0 else None
                     fixture_is_congested = rotation_congestion.get(fx["fixture_id"], False)
                     projected_stats, expected_minutes_fraction, module_rates_by_stat, opportunity_detail = project_player_stats(
                         position, player_id, historical_row, fx, player_runtime_weights, position_avg_rates,
                         position_involvement, hub_features, recent_form_rates,
                         fixture_lineup, fixture_status, is_transferred, fixture_is_congested,
-                        is_backup_goalkeeper,
+                        is_backup_goalkeeper, fixture_live_start_probability,
                     )
                     if fixture_index == 0:
                         primary_module_detail = build_module_detail_report(
@@ -3198,7 +3279,7 @@ def main():
                 multiplier = status_multiplier(lineup, status)
             if multiplier != 1.0:
                 score *= multiplier
-            inputs["status"] = {"lineup": lineup, "status": status, "multiplier": multiplier}
+            inputs["status"] = {"lineup": lineup, "status": status, "multiplier": multiplier, "live_start_probability": live_start_probability}
 
             # Reconciliation - Engine Validation report (see
             # frontend/src/lib/engineExplainability.ts). TWO independent

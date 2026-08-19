@@ -1,0 +1,48 @@
+name: FFScout player status
+
+# 2026-08-19 user request: close the "zero live signal at all" gap for
+# Dream Team and Cloud FF (compute_projections.py's fetch_live_status()
+# has always hard-returned {} for them) by scraping fantasyfootballscout.
+# co.uk/team-news, a real Premier League team-news page. Team news only
+# updates after press conferences (Thu PM-Fri evening, per the user's own
+# guidance) - 3x/day the rest of the week is plenty, hourly Thu/Fri
+# catches the deadline crunch without hammering the page needlessly the
+# other 5 days. First day-of-week-conditional cron in this repo - both
+# lines below are standard 5-field cron GitHub Actions already supports,
+# no new tooling. Times are UTC and will drift ~1hr off real UK local
+# time across the BST/GMT boundary - not worth solving here.
+#
+# Deliberately its own lightweight workflow, not folded into
+# refresh_all.py's SECTIONS (same precedent as eflfantasy_player_
+# status.yml) - this one recomputes 3 games' worth of upcoming gameweeks
+# per run (scripts/capture_ffscout_player_status.py calls refresh_all.py's
+# recompute_section for dreamteam/fanteam/cloudff), which doesn't map
+# onto today's per-game section boundaries.
+on:
+  schedule:
+    - cron: "0 7,13,19 * * 0,1,2,3,6"  # 3x/day Sun/Mon/Tue/Wed/Sat (UTC)
+    - cron: "0 6-22 * * 4,5"           # hourly 06:00-22:00 UTC, Thu/Fri
+  workflow_dispatch: {}
+
+concurrency:
+  group: ffscout-player-status
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install beautifulsoup4 psycopg2-binary
+
+      - name: Capture FFScout team news and recompute Dream Team/FanTeam/Cloud FF
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/capture_ffscout_player_status.py
