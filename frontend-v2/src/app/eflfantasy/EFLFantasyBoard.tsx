@@ -647,7 +647,7 @@ export default function EFLFantasyBoard({
 
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
           <div>
-            <div className="mb-3 grid grid-cols-3 items-center gap-2">
+            <div className="mb-3 flex flex-col gap-2 sm:grid sm:grid-cols-3 sm:items-center">
               <h2 className="text-sm font-semibold text-white">{squadName}</h2>
               <div className="flex justify-center">
                 <GameweekSwitcher
@@ -658,7 +658,7 @@ export default function EFLFantasyBoard({
                   planningGameweek={planningGameweek}
                 />
               </div>
-              <div className="flex items-center justify-end gap-2">
+              <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                 <OddsRefreshButton gameSlug="eflfantasy" />
                 <Link
                   href="/eflfantasy/ask-mary"
