@@ -15,13 +15,28 @@ name: FFScout player status
 # Deliberately its own lightweight workflow, not folded into
 # refresh_all.py's SECTIONS (same precedent as eflfantasy_player_
 # status.yml) - this one recomputes 3 games' worth of upcoming gameweeks
-# per run (scripts/capture_ffscout_player_status.py calls refresh_all.py's
-# recompute_section for dreamteam/fanteam/cloudff), which doesn't map
-# onto today's per-game section boundaries.
+# per run (scripts/capture_ffscout_player_status.py recomputes just the
+# NEAREST upcoming gameweek for dreamteam/fanteam/cloudff - see that
+# script's own docstring for why not the full 5-gameweek lookahead),
+# which doesn't map onto today's per-game section boundaries.
+#
+# Cron times deliberately avoid 06:00-07:15 and 18:00-19:15 UTC - the
+# regular twice-daily pipeline (refresh_shared_odds.yml through refresh_
+# wrapup.yml) runs its own dreamteam/fanteam/cloudff recomputes in
+# exactly those windows. Real incident 2026-08-19: this workflow's first
+# scheduled run (then still recomputing all 5 upcoming gameweeks per
+# game) got cancelled at its 30-minute timeout; while investigating,
+# real overlapping cron times were also found and fixed here even though
+# that specific incident's own Dream Team failure turned out to be
+# unrelated (different, non-overlapping time window) - avoiding the
+# collision risk that DOES exist is still the right call, same
+# concurrent-write-under-load concern refresh_all.py's own docstring
+# already documents as the reason the pipeline was staggered in the
+# first place.
 on:
   schedule:
-    - cron: "0 7,13,19 * * 0,1,2,3,6"  # 3x/day Sun/Mon/Tue/Wed/Sat (UTC)
-    - cron: "0 6-22 * * 4,5"           # hourly 06:00-22:00 UTC, Thu/Fri
+    - cron: "0 9,15,21 * * 0,1,2,3,6"     # 3x/day Sun/Mon/Tue/Wed/Sat (UTC)
+    - cron: "0 8-17,20-22 * * 4,5"        # hourly Thu/Fri, skipping the pipeline's own 06-07/18-19 windows
   workflow_dispatch: {}
 
 concurrency:

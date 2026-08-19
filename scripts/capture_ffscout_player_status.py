@@ -259,13 +259,34 @@ def main():
     # A newly-captured status only reaches real projected scores once
     # compute_projections.py re-runs for the affected games - same
     # "capture updates the table, recompute applies it to scores" split as
-    # capture_eflfantasy_player_status.py. FFScout affects 3 games at
-    # once (unlike EFL Fantasy's single-game capture), so recompute all 3.
+    # capture_eflfantasy_player_status.py. Only the NEAREST upcoming
+    # gameweek per game, not refresh_all.py's full recompute_section()
+    # (up to MAX_GAMEWEEKS_AHEAD=5 gameweeks) - team news is inherently
+    # about who plays THIS week; a gameweek 5 weeks out will get entirely
+    # different news by the time it matters, and this app-generated
+    # signal has no business overriding pure historical shrinkage that
+    # far ahead anyway. Real incident 2026-08-19: recomputing 3 games x 5
+    # gameweeks each (up to 15 full compute_projections.py runs) blew
+    # through this workflow's timeout and got cancelled mid-run - each
+    # game's own recompute alone routinely takes 15-20+ minutes (see
+    # refresh_fanteam.yml/refresh_cloudff.yml's own real run durations).
+    # This also shrinks the collision window against the regular
+    # twice-daily per-game refresh workflows recomputing the same tables.
     sys.path.insert(0, str(ROOT / "scripts"))
-    from refresh_all import recompute_section  # noqa: E402
+    from refresh_all import run_step, upcoming_gameweeks  # noqa: E402
 
-    for game_slug, label in (("dreamteam", "Dream Team"), ("fanteam", "FanTeam"), ("cloudff", "Cloud FF")):
-        recompute_section(game_slug, label)
+    # upcoming_gameweeks() needs its own live connection - the one used
+    # for scraping/matching above is already closed by this point.
+    recompute_conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    try:
+        for game_slug, label in (("dreamteam", "Dream Team"), ("fanteam", "FanTeam"), ("cloudff", "Cloud FF")):
+            gameweeks = upcoming_gameweeks(recompute_conn, game_slug)[:1]
+            if not gameweeks:
+                print(f"\nNo upcoming {label} gameweek found - skipping score recompute.")
+                continue
+            run_step(f"Recompute {label} GW{gameweeks[0]}", ["scripts/compute_projections.py", game_slug, "--gameweek", str(gameweeks[0])])
+    finally:
+        recompute_conn.close()
 
 
 if __name__ == "__main__":
