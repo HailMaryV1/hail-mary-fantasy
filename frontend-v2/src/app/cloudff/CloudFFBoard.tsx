@@ -4,6 +4,7 @@ import { useEffect, useOptimistic, useRef, useState, useTransition } from "react
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
 import StatusPill from "@/components/StatusPill";
+import RotationRiskBadge from "@/components/RotationRiskBadge";
 import type { RotationRiskInfo } from "@/lib/rotationRisk";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
@@ -266,6 +267,7 @@ export default function CloudFFBoard({
           ownershipPct: r.ownershipPct,
           ffscoutStatus: r.ffscoutStatus,
           ffscoutStartProbability: r.ffscoutStartProbability,
+          rotationRisk: r.rotationRisk,
         }))
       );
       setPoolTotalCount(result.totalCount);
@@ -638,6 +640,7 @@ export default function CloudFFBoard({
                             <div className="flex items-center font-medium text-white">
                               {p.full_name}
                               <StatusPill ffscoutStatus={p.ffscoutStatus} ffscoutStartProbability={p.ffscoutStartProbability} />
+                              <RotationRiskBadge risk={p.rotationRisk} />
                             </div>
                             <div className="text-[10px] text-navy-500">
                               {p.team_name} · {p.position} · £{p.price.toFixed(1)}m

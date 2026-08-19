@@ -275,7 +275,7 @@ export async function runAskMaryAnalysis(
   // same squad at once. highRiskGamePlayerIds is the stricter standalone
   // check - a player genuinely unlikely to start is never a fresh buy,
   // contested pair or not.
-  const riskByPlayerId = await fetchRotationRiskByPlayerIds(supabase, pool.map((p) => p.player_id), seasonTiming.seasonStarted);
+  const riskByPlayerId = await fetchRotationRiskByPlayerIds(supabase, pool.map((p) => p.player_id));
   const contestedPairs = buildContestedGamePlayerPairs(
     pool.map((p) => ({ game_player_id: p.game_player_id, player_id: p.player_id })),
     riskByPlayerId

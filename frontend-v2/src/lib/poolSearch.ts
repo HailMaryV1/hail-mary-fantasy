@@ -1,6 +1,7 @@
 "use server";
 
 import { createAuthServerClient } from "./supabaseServerClient";
+import type { RotationRiskInfo } from "./rotationRisk";
 
 export type PoolSortBy =
   | "pts"
@@ -64,6 +65,11 @@ export type PoolSearchRow = {
    * Two, outside FFScout's coverage). */
   ffscoutStatus: string | null;
   ffscoutStartProbability: number | null;
+  /** Predicted-lineup rotation-battle data (2026-08-19 user request, see
+   * migration 0124's docstring) - null whenever this player isn't covered
+   * by the screenshot batch or the batch has gone stale. Real Premier
+   * League scope only, same as ffscoutStatus above. */
+  rotationRisk: RotationRiskInfo | null;
 };
 
 export type PoolSearchResult = { rows: PoolSearchRow[]; totalCount: number };
@@ -150,6 +156,10 @@ export async function searchPool(params: {
     last_gw_points: number | string | null;
     ffscout_status: string | null;
     ffscout_start_probability: number | string | null;
+    rotation_start_probability: number | string | null;
+    rotation_contender_name: string | null;
+    rotation_contender_probability: number | string | null;
+    rotation_risk_level: string | null;
     total_count: number | string;
   };
   const rpcRows = data as RpcRow[];
@@ -182,6 +192,16 @@ export async function searchPool(params: {
     lastGwPoints: r.last_gw_points != null ? Number(r.last_gw_points) : null,
     ffscoutStatus: r.ffscout_status,
     ffscoutStartProbability: r.ffscout_start_probability != null ? Number(r.ffscout_start_probability) : null,
+    rotationRisk:
+      r.rotation_start_probability != null && r.rotation_risk_level != null
+        ? {
+            level: r.rotation_risk_level as RotationRiskInfo["level"],
+            ownProbability: Number(r.rotation_start_probability),
+            contenderName: r.rotation_contender_name,
+            contenderProbability: r.rotation_contender_probability != null ? Number(r.rotation_contender_probability) : null,
+            contenderPlayerId: null,
+          }
+        : null,
   }));
   const totalCount = rpcRows.length > 0 ? Number(rpcRows[0].total_count) : 0;
   return { rows, totalCount };

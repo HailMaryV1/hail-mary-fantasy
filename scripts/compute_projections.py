@@ -93,6 +93,7 @@ import json
 import math
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 import psycopg2
@@ -1369,6 +1370,55 @@ def fetch_scoring_rules(cur, game_id):
     return {(applies_to, stat): float(points) for applies_to, stat, points in cur.fetchall()}
 
 
+ROTATION_RISK_STALENESS_DAYS = 30
+
+
+def fetch_rotation_risk(cur, game_id):
+    """{game_player_id: rotation_start_probability (0.0-1.0)} - hand-
+    transcribed predicted-lineup data (player_rotation_risk, a view over
+    player_lineup_probability_latest - migration 0110/0111, Solio
+    Analytics/@FPL_Spaceman screenshots), Premier League only (same real-
+    world scope as FFScout - see fetch_ffscout_player_status).
+
+    A DIFFERENT axis to FFScout's doubt/out/banned: FFScout reports
+    fitness (is this player injured/carrying a knock), this reports
+    tactical/positional selection (is a fully fit player about to lose
+    their slot to a teammate). A player can be 100% fit with zero FFScout
+    history and still be a real coin-flip to start - 2026-08-19 user
+    report: Viktor Gyokeres showed 100% to start despite a real, already-
+    captured 50/46 contest with Kai Havertz that was only ever wired into
+    Ask Mary's advisory logic (rotationRisk.ts), never into the scoring
+    engine's own P(start).
+
+    Deliberately NOT gated on "has the season started", unlike the
+    frontend's own (pre-this-fix) fetchRotationRiskByPlayerIds - that gate
+    assumed FanTeam/EFL Fantasy's own live per-gameweek feeds would take
+    over once matches began, which Dream Team/Cloud FF have never had (see
+    fetch_live_status) and still don't even with FFScout, since FFScout
+    only covers fitness, not tactical rotation. Time-boxed via
+    ROTATION_RISK_STALENESS_DAYS instead, so a one-off pre-season
+    screenshot batch doesn't silently keep driving live scores once it's
+    genuinely gone stale - real user confirmation 2026-08-19: "that data
+    is still fresh for the first few gameweeks." All rows share one
+    capture batch (a single manual screenshot round), so freshness is
+    checked once against the batch's own latest snapshot_date rather than
+    per player."""
+    cur.execute("select max(snapshot_date) from player_lineup_probability_latest")
+    row = cur.fetchone()
+    latest_snapshot = row[0] if row else None
+    if latest_snapshot is None or (date.today() - latest_snapshot).days > ROTATION_RISK_STALENESS_DAYS:
+        return {}
+    cur.execute(
+        """
+        select gp.id, r.start_probability
+        from player_rotation_risk r
+        join game_players gp on gp.player_id = r.player_id and gp.game_id = %s
+        """,
+        (game_id,),
+    )
+    return {row[0]: float(row[1]) / 100.0 for row in cur.fetchall()}
+
+
 def fetch_ffscout_player_status(cur, game_id):
     """{game_player_id: (lineup, status, live_start_probability)} - real
     Premier League team news from fantasyfootballscout.co.uk (scripts/
@@ -1877,10 +1927,21 @@ OPPORTUNITY_LINEUP_BLEND = {
 # calibration once real data accumulates" flag as every blend weight above.
 FFSCOUT_DOUBT_BLEND_WEIGHT = 0.9
 
+# player_rotation_risk's predicted-lineup start_probability (see fetch_
+# rotation_risk) blends against p_start_historical the same way FFScout's
+# doubt % does, just lower-trust: it's a hand-transcribed third-party
+# PREDICTION of the XI, not real official team news (FFScout) or this
+# project's own confirmed lineup sheet (OPPORTUNITY_LINEUP_BLEND), and can
+# be up to ROTATION_RISK_STALENESS_DAYS old. Checked only as a last resort
+# below - real team news/confirmed lineups always win when present. Same
+# "needs Performance Lab calibration once real data accumulates" flag as
+# every blend weight above.
+ROTATION_RISK_BLEND_WEIGHT = 0.65
+
 
 def compute_opportunity(
     historical_row, position, pos_inv, weights, lineup, status, is_transferred, is_congested,
-    is_backup_goalkeeper=False, live_start_probability=None,
+    is_backup_goalkeeper=False, live_start_probability=None, rotation_start_probability=None,
 ):
     """The Opportunity Model (Phase A - Minimum Viable Opportunity Model).
     Returns (expected_minutes_fraction, opportunity_detail).
@@ -1919,7 +1980,16 @@ def compute_opportunity(
     "doubt" percentage (see fetch_ffscout_player_status), primary-fixture-
     only same as lineup/status. When present it takes priority over
     OPPORTUNITY_LINEUP_BLEND's discrete buckets entirely - a real
-    percentage is strictly more precise than a coarse category."""
+    percentage is strictly more precise than a coarse category.
+
+    rotation_start_probability (0.0-1.0, or None) - player_rotation_risk's
+    predicted-lineup percentage (see fetch_rotation_risk), primary-fixture-
+    only same as the above. A DIFFERENT axis to live_start_probability
+    (tactical/positional selection among fit players, not fitness) so it
+    doesn't override live_start_probability or a confirmed lineup - it
+    only ever applies as a last-resort signal above pure historical rate,
+    for the many players (e.g. Dream Team/Cloud FF's whole pool) with
+    neither a live confirmed lineup nor any FFScout news at all."""
     k = weights["shrinkage_games"]
     k_effective = k * 2.0 if is_transferred else k
     season_games = weights["season_games"]
@@ -1976,6 +2046,9 @@ def compute_opportunity(
     elif lineup in OPPORTUNITY_LINEUP_BLEND:
         live_weight, live_value = OPPORTUNITY_LINEUP_BLEND[lineup]
         p_start = live_weight * live_value + (1.0 - live_weight) * p_start_historical
+        live_status_applied = True
+    elif rotation_start_probability is not None:
+        p_start = ROTATION_RISK_BLEND_WEIGHT * rotation_start_probability + (1.0 - ROTATION_RISK_BLEND_WEIGHT) * p_start_historical
         live_status_applied = True
 
     # --- Rotation/congestion: first-pass uniform discount (Component 7) ---
@@ -2074,6 +2147,7 @@ def compute_opportunity(
         "football_uncertainty": None,
         "expected_minutes_fraction": round(expected_minutes_fraction, 4),
         "live_start_probability": round(live_start_probability, 4) if live_start_probability is not None else None,
+        "rotation_start_probability": round(rotation_start_probability, 4) if rotation_start_probability is not None else None,
     }
     return expected_minutes_fraction, opportunity_detail
 
@@ -2164,7 +2238,7 @@ def _implied_involvement(raw_pt1, raw_pt60, raw_pt90, minutes_played):
 def project_player_stats(
     position, player_id, historical_row, fixture, weights, position_avg, position_involvement,
     hub_features, recent_form_rates, lineup, status, is_transferred, is_congested,
-    is_backup_goalkeeper=False, live_start_probability=None,
+    is_backup_goalkeeper=False, live_start_probability=None, rotation_start_probability=None,
 ):
     """Per-stat projected count for one player's one fixture (v2-decomposed).
     Returns (projected, expected_minutes_fraction, module_rates_by_stat,
@@ -2206,7 +2280,7 @@ def project_player_stats(
     pos_inv = position_involvement[position]
     expected_minutes_fraction, opportunity_detail = compute_opportunity(
         historical_row, position, pos_inv, weights, lineup, status, is_transferred, is_congested,
-        is_backup_goalkeeper, live_start_probability,
+        is_backup_goalkeeper, live_start_probability, rotation_start_probability,
     )
 
     projected = {
@@ -3000,6 +3074,14 @@ def main():
         # fetch_rotation_congestion(). Only meaningful for v2, same reason
         # position_involvement above is v2-only.
         rotation_congestion = fetch_rotation_congestion(cur, all_fixture_ids) if use_v2 else {}
+        # player_rotation_risk's predicted-lineup signal (see fetch_
+        # rotation_risk) - real Premier League scope only, same games
+        # fetch_live_status dispatches FFScout to (EFL Fantasy's
+        # Championship/League One/League Two pool never overlaps these
+        # player_ids anyway, but gating explicitly avoids a wasted query).
+        rotation_risk = (
+            fetch_rotation_risk(cur, game_id) if use_v2 and game_slug in ("dreamteam", "fanteam", "cloudff") else {}
+        )
 
         # Even in gameweek mode, derive a display period from the actual
         # fixture dates found - period_start/period_end stay populated
@@ -3021,6 +3103,7 @@ def main():
             # primary fixture below - previously this lookup happened only
             # after both branches, purely to feed status_multiplier().
             lineup, status, live_start_probability = player_status.get(game_player_id, (None, None, None))
+            rotation_start_probability = rotation_risk.get(game_player_id)
             is_transferred = player_id in transferred_player_ids
             is_backup_goalkeeper = game_player_id in backup_goalkeeper_ids
             # See games_elapsed_by_player_id's docstring above - only
@@ -3053,7 +3136,7 @@ def main():
                     position, player_id, historical_row, neutral_fixture, player_runtime_weights, position_avg_rates,
                     position_involvement, hub_features, recent_form_rates,
                     None, None, is_transferred, False,
-                    is_backup_goalkeeper, None,
+                    is_backup_goalkeeper, None, None,
                 )
                 points_per_90, neutral_priced = price_projected_stats(position, neutral_stats, scoring_rules)
                 neutral_bonus = compute_bonus_points(
@@ -3084,12 +3167,13 @@ def main():
                     fixture_lineup = lineup if fixture_index == 0 else None
                     fixture_status = status if fixture_index == 0 else None
                     fixture_live_start_probability = live_start_probability if fixture_index == 0 else None
+                    fixture_rotation_start_probability = rotation_start_probability if fixture_index == 0 else None
                     fixture_is_congested = rotation_congestion.get(fx["fixture_id"], False)
                     projected_stats, expected_minutes_fraction, module_rates_by_stat, opportunity_detail = project_player_stats(
                         position, player_id, historical_row, fx, player_runtime_weights, position_avg_rates,
                         position_involvement, hub_features, recent_form_rates,
                         fixture_lineup, fixture_status, is_transferred, fixture_is_congested,
-                        is_backup_goalkeeper, fixture_live_start_probability,
+                        is_backup_goalkeeper, fixture_live_start_probability, fixture_rotation_start_probability,
                     )
                     if fixture_index == 0:
                         primary_module_detail = build_module_detail_report(
@@ -3279,7 +3363,11 @@ def main():
                 multiplier = status_multiplier(lineup, status)
             if multiplier != 1.0:
                 score *= multiplier
-            inputs["status"] = {"lineup": lineup, "status": status, "multiplier": multiplier, "live_start_probability": live_start_probability}
+            inputs["status"] = {
+                "lineup": lineup, "status": status, "multiplier": multiplier,
+                "live_start_probability": live_start_probability,
+                "rotation_start_probability": rotation_start_probability,
+            }
 
             # Reconciliation - Engine Validation report (see
             # frontend/src/lib/engineExplainability.ts). TWO independent

@@ -239,8 +239,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
     bank = Number(rules.budget) - teamValue;
     const rotationRiskByPlayerId = await fetchRotationRiskByPlayerIds(
       supabase,
-      squadPlayers.map((p) => p.player_id),
-      gwInfo.seasonStarted
+      squadPlayers.map((p) => p.player_id)
     );
     const ffscoutStatusByPlayerId = await fetchFfscoutStatusByPlayerIds(
       supabase,
@@ -335,6 +334,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       ownershipPct: r.ownershipPct,
       ffscoutStatus: r.ffscoutStatus,
       ffscoutStartProbability: r.ffscoutStartProbability,
+      rotationRisk: r.rotationRisk,
     }));
     poolTotalCount = initialPool.totalCount;
     teams = teamNames;
