@@ -21,6 +21,12 @@ export type PitchPlayer = {
   score: number | null;
   lineup?: string | null;
   status?: string | null;
+  // Real team news from fantasyfootballscout.co.uk (2026-08-19 user
+  // request - see migration 0122/0123, playerStatus.ts's resolveStatusBadge)
+  // - 'out'/'doubt'/'banned', with ffscoutStartProbability (0-100) only
+  // meaningful when ffscoutStatus is 'doubt'.
+  ffscoutStatus?: string | null;
+  ffscoutStartProbability?: number | null;
   formStatus?: FormStatus | null;
   // Solio Analytics lineup-probability data (migration 0110/0111) - null/
   // undefined whenever the player isn't covered by this week's screenshot
@@ -146,7 +152,12 @@ export default function PitchView({
             {player.position === "CLUB" ? player.full_name : shortenPlayerName(player.full_name)}
           </span>
           <span className="flex items-center justify-center gap-0.5">
-            <StatusPill lineup={player.lineup} status={player.status} />
+            <StatusPill
+              lineup={player.lineup}
+              status={player.status}
+              ffscoutStatus={player.ffscoutStatus}
+              ffscoutStartProbability={player.ffscoutStartProbability}
+            />
             <FormPill status={player.formStatus} />
             <RotationRiskBadge risk={player.rotationRisk} />
           </span>

@@ -55,6 +55,15 @@ export type PoolSearchRow = {
   realShotsOnTarget: number | null;
   lastGw: number | null;
   lastGwPoints: number | null;
+  /** Real live team news from fantasyfootballscout.co.uk (2026-08-19 user
+   * request - see migration 0122/0123's docstrings) - 'out'|'doubt'|
+   * 'banned', or null if FFScout has no current news on this player.
+   * ffscoutStartProbability (0-100) is only meaningful when status is
+   * 'doubt'. Real for Dream Team/FanTeam/Cloud FF's real Premier League
+   * pool; always null for EFL Fantasy (Championship/League One/League
+   * Two, outside FFScout's coverage). */
+  ffscoutStatus: string | null;
+  ffscoutStartProbability: number | null;
 };
 
 export type PoolSearchResult = { rows: PoolSearchRow[]; totalCount: number };
@@ -139,6 +148,8 @@ export async function searchPool(params: {
     real_shots_on_target: number | null;
     last_gw: number | null;
     last_gw_points: number | string | null;
+    ffscout_status: string | null;
+    ffscout_start_probability: number | string | null;
     total_count: number | string;
   };
   const rpcRows = data as RpcRow[];
@@ -169,6 +180,8 @@ export async function searchPool(params: {
     realShotsOnTarget: r.real_shots_on_target,
     lastGw: r.last_gw,
     lastGwPoints: r.last_gw_points != null ? Number(r.last_gw_points) : null,
+    ffscoutStatus: r.ffscout_status,
+    ffscoutStartProbability: r.ffscout_start_probability != null ? Number(r.ffscout_start_probability) : null,
   }));
   const totalCount = rpcRows.length > 0 ? Number(rpcRows[0].total_count) : 0;
   return { rows, totalCount };

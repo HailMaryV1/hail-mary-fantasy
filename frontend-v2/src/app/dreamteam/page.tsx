@@ -4,6 +4,7 @@ import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquadSaved } from "@/lib/gameweekHistory";
 import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
+import { fetchFfscoutStatusByPlayerIds } from "@/lib/ffscoutStatus";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import { getSquadProjectionTrend, type TrendPoint } from "@/lib/projectionTrend";
@@ -319,6 +320,10 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       squadPlayers.map((p) => p.player_id),
       gwInfo.seasonStarted
     );
+    const ffscoutStatusByPlayerId = await fetchFfscoutStatusByPlayerIds(
+      supabase,
+      squadPlayers.map((p) => p.player_id)
+    );
     teamValue = squadPlayers.reduce((sum, p) => sum + Number(p.price), 0);
     bank = Number(rules.budget) - teamValue;
 
@@ -352,6 +357,8 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       isViceCaptain: p.game_player_id === squad.vice_captain_game_player_id,
       fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? []),
       rotationRisk: rotationRiskByPlayerId.get(p.player_id) ?? null,
+      ffscoutStatus: ffscoutStatusByPlayerId.get(p.player_id)?.status ?? null,
+      ffscoutStartProbability: ffscoutStatusByPlayerId.get(p.player_id)?.startProbability ?? null,
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 
@@ -399,6 +406,8 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       goalProjected: r.goalProjected,
       assistProjected: r.assistProjected,
       bonusProjected: r.bonusProjected,
+      ffscoutStatus: r.ffscoutStatus,
+      ffscoutStartProbability: r.ffscoutStartProbability,
     }));
     poolTotalCount = initialPool.totalCount;
     teams = teamNames;

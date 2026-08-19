@@ -3,6 +3,7 @@
 import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
+import StatusPill from "@/components/StatusPill";
 import type { RotationRiskInfo } from "@/lib/rotationRisk";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
@@ -39,6 +40,14 @@ export type BoardPlayer = {
   goalProjected: number;
   assistProjected: number;
   bonusProjected: number;
+  // Real team news from fantasyfootballscout.co.uk (2026-08-19 user
+  // request - see migration 0122/0123, playerStatus.ts). Server-side,
+  // this is already FanTeam's-own-status-wins-on-collision (see
+  // fetch_fanteam_player_status()'s docstring in compute_projections.py)
+  // - FanTeam's own real live status isn't otherwise threaded into
+  // BoardPlayer today, so FFScout is this board's only status badge.
+  ffscoutStatus?: string | null;
+  ffscoutStartProbability?: number | null;
 };
 
 export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain" | "isStarting" | "benchOrder">;
@@ -387,6 +396,8 @@ export default function FanTeamBoard({
           goalProjected: r.goalProjected,
           assistProjected: r.assistProjected,
           bonusProjected: r.bonusProjected,
+          ffscoutStatus: r.ffscoutStatus,
+          ffscoutStartProbability: r.ffscoutStartProbability,
         }))
       );
       setPoolTotalCount(result.totalCount);
@@ -474,6 +485,8 @@ export default function FanTeamBoard({
       isViceCaptain: p.isViceCaptain,
       benchOrder: p.benchOrder,
       rotationRisk: p.rotationRisk,
+      ffscoutStatus: p.ffscoutStatus,
+      ffscoutStartProbability: p.ffscoutStartProbability,
       statText: displayMode in fixtureModeCount ? undefined : statTextFor(display),
       statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(display.fixtures, fixtureModeCount[displayMode]) : undefined,
       isEmpty: false,
@@ -1146,7 +1159,10 @@ export default function FanTeamBoard({
                         }`}
                       >
                         <td className="py-1.5 pr-2">
-                          <div className="font-medium text-white">{p.full_name}</div>
+                          <div className="flex items-center font-medium text-white">
+                            {p.full_name}
+                            <StatusPill ffscoutStatus={p.ffscoutStatus} ffscoutStartProbability={p.ffscoutStartProbability} />
+                          </div>
                           <div className="text-[10px] text-navy-500">
                             {p.team_name} · {p.position} · £{p.price.toFixed(1)}m
                           </div>

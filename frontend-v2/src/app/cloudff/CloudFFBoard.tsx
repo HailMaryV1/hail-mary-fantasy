@@ -3,6 +3,7 @@
 import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import PitchView, { type PitchPlayer } from "@/components/PitchView";
+import StatusPill from "@/components/StatusPill";
 import type { RotationRiskInfo } from "@/lib/rotationRisk";
 import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMenu";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
@@ -40,6 +41,12 @@ export type BoardPlayer = {
   // player construction site doesn't need to thread through a value that
   // has no use there.
   ownershipPct?: number | null;
+  // Real team news from fantasyfootballscout.co.uk (2026-08-19 user
+  // request - see migration 0122/0123, playerStatus.ts's resolveStatusBadge)
+  // - 'out'/'doubt'/'banned', with ffscoutStartProbability (0-100) only
+  // meaningful when ffscoutStatus is 'doubt'.
+  ffscoutStatus?: string | null;
+  ffscoutStartProbability?: number | null;
 };
 
 export type PoolPlayer = BoardPlayer;
@@ -257,6 +264,8 @@ export default function CloudFFBoard({
           assistProjected: r.assistProjected,
           bonusProjected: r.bonusProjected,
           ownershipPct: r.ownershipPct,
+          ffscoutStatus: r.ffscoutStatus,
+          ffscoutStartProbability: r.ffscoutStartProbability,
         }))
       );
       setPoolTotalCount(result.totalCount);
@@ -315,6 +324,8 @@ export default function CloudFFBoard({
     price: p.price,
     score: p.score,
     rotationRisk: p.rotationRisk,
+    ffscoutStatus: p.ffscoutStatus,
+    ffscoutStartProbability: p.ffscoutStartProbability,
     statText: displayMode in fixtureModeCount ? undefined : statTextFor(p),
     statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(p.fixtures, fixtureModeCount[displayMode]) : undefined,
     isEmpty: pendingOutIds.has(p.game_player_id),
@@ -624,7 +635,10 @@ export default function CloudFFBoard({
                           }`}
                         >
                           <td className="py-1.5 pr-2">
-                            <div className="font-medium text-white">{p.full_name}</div>
+                            <div className="flex items-center font-medium text-white">
+                              {p.full_name}
+                              <StatusPill ffscoutStatus={p.ffscoutStatus} ffscoutStartProbability={p.ffscoutStartProbability} />
+                            </div>
                             <div className="text-[10px] text-navy-500">
                               {p.team_name} · {p.position} · £{p.price.toFixed(1)}m
                             </div>

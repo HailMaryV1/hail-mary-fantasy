@@ -7,8 +7,18 @@ const TONE_CLASSES = {
   gray: "bg-navy-800 text-navy-400",
 } as const;
 
-export default function StatusPill({ lineup, status }: { lineup?: string | null; status?: string | null }) {
-  const badge = resolveStatusBadge(lineup ?? null, status ?? null);
+export default function StatusPill({
+  lineup,
+  status,
+  ffscoutStatus,
+  ffscoutStartProbability,
+}: {
+  lineup?: string | null;
+  status?: string | null;
+  ffscoutStatus?: string | null;
+  ffscoutStartProbability?: number | null;
+}) {
+  const badge = resolveStatusBadge(lineup ?? null, status ?? null, ffscoutStatus ?? null, ffscoutStartProbability ?? null);
   if (!badge) return null;
   return (
     <span

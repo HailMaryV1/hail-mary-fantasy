@@ -4,6 +4,7 @@ import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquadSaved } from "@/lib/gameweekHistory";
 import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
+import { fetchFfscoutStatusByPlayerIds } from "@/lib/ffscoutStatus";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import { getMatchDaysForSquad, ensureAutoPicks, fetchScoresForMatchDays, countUncoveredMatchDays } from "@/lib/matchDayCaptains";
@@ -241,6 +242,10 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       squadPlayers.map((p) => p.player_id),
       gwInfo.seasonStarted
     );
+    const ffscoutStatusByPlayerId = await fetchFfscoutStatusByPlayerIds(
+      supabase,
+      squadPlayers.map((p) => p.player_id)
+    );
 
     const formationCounts = { GK: 0, DEF: 0, MID: 0, FWD: 0 } as Record<string, number>;
     for (const p of squadPlayers) formationCounts[p.position] = (formationCounts[p.position] ?? 0) + 1;
@@ -273,6 +278,8 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
       fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
       rotationRisk: rotationRiskByPlayerId.get(p.player_id) ?? null,
+      ffscoutStatus: ffscoutStatusByPlayerId.get(p.player_id)?.status ?? null,
+      ffscoutStartProbability: ffscoutStatusByPlayerId.get(p.player_id)?.startProbability ?? null,
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 
@@ -326,6 +333,8 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       assistProjected: r.assistProjected,
       bonusProjected: r.bonusProjected,
       ownershipPct: r.ownershipPct,
+      ffscoutStatus: r.ffscoutStatus,
+      ffscoutStartProbability: r.ffscoutStartProbability,
     }));
     poolTotalCount = initialPool.totalCount;
     teams = teamNames;

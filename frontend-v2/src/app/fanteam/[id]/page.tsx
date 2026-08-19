@@ -3,6 +3,7 @@ import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo, getProjectionsForPlayerIds, type GameweekProjectionRow } from "@/lib/gameweek";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquadSaved } from "@/lib/gameweekHistory";
 import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
+import { fetchFfscoutStatusByPlayerIds } from "@/lib/ffscoutStatus";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import FanTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./FanTeamBoard";
@@ -246,6 +247,10 @@ export default async function FanTeamSquadPage({
       squadPlayers.map((p) => p.player_id),
       gwInfo.seasonStarted
     );
+    const ffscoutStatusByPlayerId = await fetchFfscoutStatusByPlayerIds(
+      supabase,
+      squadPlayers.map((p) => p.player_id)
+    );
 
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
     const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
@@ -276,6 +281,8 @@ export default async function FanTeamSquadPage({
       benchOrder: p.bench_order,
       fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
       rotationRisk: rotationRiskByPlayerId.get(p.player_id) ?? null,
+      ffscoutStatus: ffscoutStatusByPlayerId.get(p.player_id)?.status ?? null,
+      ffscoutStartProbability: ffscoutStatusByPlayerId.get(p.player_id)?.startProbability ?? null,
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 
@@ -317,6 +324,8 @@ export default async function FanTeamSquadPage({
       goalProjected: r.goalProjected,
       assistProjected: r.assistProjected,
       bonusProjected: r.bonusProjected,
+      ffscoutStatus: r.ffscoutStatus,
+      ffscoutStartProbability: r.ffscoutStartProbability,
     }));
     poolTotalCount = initialPool.totalCount;
     teams = teamNames;
