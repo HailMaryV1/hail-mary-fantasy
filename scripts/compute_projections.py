@@ -1503,7 +1503,7 @@ def start_share_from_avg_minutes(avg_minutes_per_appearance):
     return (avg_minutes_per_appearance - SUB_MINUTES_CEILING) / (START_MINUTES_FLOOR - SUB_MINUTES_CEILING)
 
 
-def compute_involvement_rates(players, historical_rows, season_games):
+def compute_involvement_rates(players, historical_rows, season_games, season_games_by_player_id=None):
     """
     players: [(game_player_id, position, player_id)]
     historical_rows: {player_id: {..., pt1, pt60, pt90}}
@@ -1527,11 +1527,30 @@ def compute_involvement_rates(players, historical_rows, season_games):
     minutes()'s proxy split since no real start/sub label exists in the
     data yet - see the Phase A implementation plan's "Risks, Assumptions &
     Technical Debt" table for this approximation's documented limits.
+
+    season_games_by_player_id: {player_id: effective_season_games} -
+    optional per-player override of the season_games denominator (see
+    main()'s games_elapsed_by_player_id). Real bug caught live 2026-08-19:
+    once EFL Fantasy's real current-season data started flowing in (most
+    players now carrying only 1 real gameweek of evidence instead of a
+    full ~38-game last-season baseline), summing every player's raw PT1
+    and dividing by ONE shared season_games silently diluted the whole
+    position's "appearance" prior toward near-zero - a player with 1 start
+    out of 1 real available game was being averaged in as if that 1 start
+    were out of 38 possible games, just like the bug in compute_
+    opportunity() itself that games_elapsed_by_player_id was built to fix.
+    Averaging each player's OWN rate (their pt1 divided by THEIR OWN
+    effective season length) instead of pooling raw counts against a
+    single denominator is what actually fixes it for a mixed pool of
+    some players still on last season's full baseline and others on this
+    season's tiny-but-real one.
     """
+    season_games_by_player_id = season_games_by_player_id or {}
     totals = {
         pos: {
             "pt1": 0.0, "pt60": 0.0, "pt90": 0.0, "minutes": 0.0, "players": 0,
             "start_pt1": 0.0, "sub_minutes_sum": 0.0, "sub_pt1_sum": 0.0,
+            "appearance_rate_sum": 0.0, "non_start_games_sum": 0.0,
         }
         for pos in POSITIONS
     }
@@ -1544,6 +1563,7 @@ def compute_involvement_rates(players, historical_rows, season_games):
         # the whole position's appearance rate downward.
         if not row or row["minutes_played"] <= 0:
             continue
+        effective_season_games = season_games_by_player_id.get(player_id, season_games)
         t = totals[position]
         t["pt1"] += row["pt1"]
         t["pt60"] += row["pt60"]
@@ -1551,9 +1571,12 @@ def compute_involvement_rates(players, historical_rows, season_games):
         t["minutes"] += row["minutes_played"]
         t["players"] += 1
         raw_pt1 = row["pt1"]
+        t["appearance_rate_sum"] += raw_pt1 / effective_season_games
+        start_share = 0.0
         if raw_pt1 > 0:
             avg_min = row["minutes_played"] / raw_pt1
-            t["start_pt1"] += raw_pt1 * start_share_from_avg_minutes(avg_min)
+            start_share = start_share_from_avg_minutes(avg_min)
+            t["start_pt1"] += raw_pt1 * start_share
             # This player's OWN average reads as "mostly a substitute" -
             # counts toward the sub-minutes cohort used for
             # avg_sub_minutes below. A real (if coarse) proxy cohort, not
@@ -1561,15 +1584,16 @@ def compute_involvement_rates(players, historical_rows, season_games):
             if avg_min <= SUB_MINUTES_CEILING:
                 t["sub_minutes_sum"] += row["minutes_played"]
                 t["sub_pt1_sum"] += raw_pt1
+        t["non_start_games_sum"] += max(effective_season_games - raw_pt1 * start_share, 0.0)
     out = {}
     for pos in POSITIONS:
         pt1_total = totals[pos]["pt1"]
         players_n = totals[pos]["players"]
         start_pt1 = totals[pos]["start_pt1"]
         non_start_pt1 = pt1_total - start_pt1
-        non_start_games = max(players_n * season_games - start_pt1, 1.0)
+        non_start_games = max(totals[pos]["non_start_games_sum"], 1.0)
         out[pos] = {
-            "appearance": (pt1_total / (players_n * season_games)) if players_n else 0.0,
+            "appearance": (totals[pos]["appearance_rate_sum"] / players_n) if players_n else 0.0,
             "cond60": (totals[pos]["pt60"] / pt1_total) if pt1_total else 0.0,
             "cond90": (totals[pos]["pt90"] / pt1_total) if pt1_total else 0.0,
             # 70.0 fallback only fires if literally every player at this
@@ -2570,28 +2594,43 @@ def main():
         )
         current_season_by_game_player_id = {r["game_player_id"]: r for r in cur_season_cur.fetchall()}
         cur_season_cur.close()
-        # See count_elapsed_gameweeks()'s docstring - the merged current-
-        # season row is scaled up to a season_games-equivalent BEFORE it
-        # reaches compute_opportunity()'s shrinkage math, which divides by
-        # the fixed weights["season_games"] regardless of how many of
-        # those games have actually happened. Only meaningful when this
-        # game actually has a current-season row to merge at all (v1 games/
-        # pre-season games never populate CURRENT_SEASON) - skip the query
-        # entirely rather than dividing by a number that means nothing yet.
-        season_games_scale = 1.0
-        if use_v2 and current_season_by_game_player_id:
-            games_elapsed = count_elapsed_gameweeks(cur, game_id, CURRENT_SEASON)
-            season_games_scale = weights["season_games"] / games_elapsed
-        scaled_fields = (
-            "total_points", "minutes_played", "goals", "assists", "clean_sheets", "saves",
-            "goals_conceded", "yellow_cards", "red_cards", "pt1", "pt60", "pt90",
-        )
+        # Real bug caught live 2026-08-19, second one in the same fix:
+        # scaling the merged row up to a season_games-equivalent (an
+        # earlier version of this code) fooled EVERY shrinkage formula
+        # that reads minutes_played/goals/etc into treating one real game
+        # as if it were 38 games of reliable evidence - a defender's
+        # single-game 9pt haul (a real goal + clean sheet) got projected
+        # forward at face value instead of being properly regressed toward
+        # the position average. Merged UNSCALED here - historical_shrunk_
+        # rate() (this file, ~line 790) already shrinks correctly on its
+        # own because it derives games90 from this player's own real
+        # minutes_played, not from season_games. Only compute_opportunity()
+        # needs help (see games_elapsed_by_player_id below) - it's the one
+        # function in this file that divides by weights["season_games"]
+        # (a fixed full-season length) instead of the player's own real
+        # sample size.
         for r in raw_players:
             current = current_season_by_game_player_id.get(r["game_player_id"])
             if current:
                 for key, value in current.items():
                     if key != "game_player_id":
-                        r[key] = float(value) * season_games_scale if key in scaled_fields else value
+                        r[key] = value
+        # See compute_opportunity()'s season_games usage - only ever
+        # consulted for a player whose historical_row came from
+        # CURRENT_SEASON (checked by game_player_id membership here),
+        # overriding weights["season_games"] with how many real gameweeks
+        # have actually been played so far, instead of the fixed full-
+        # season length. None (no override) for every other player -
+        # last season's real, complete baseline still means season_games
+        # exactly as it always has.
+        games_elapsed_by_player_id = {}
+        if use_v2 and current_season_by_game_player_id:
+            games_elapsed = count_elapsed_gameweeks(cur, game_id, CURRENT_SEASON)
+            games_elapsed_by_player_id = {
+                r["player_id"]: games_elapsed
+                for r in raw_players
+                if r["game_player_id"] in current_season_by_game_player_id
+            }
 
         players = [(r["game_player_id"], r["position"], r["player_id"]) for r in raw_players]
         full_name_by_game_player_id = {r["game_player_id"]: r["full_name"] for r in raw_players}
@@ -2734,7 +2773,8 @@ def main():
         # Only meaningful for v2 (weights["season_games"] doesn't exist on
         # v1's DEFAULT_WEIGHTS) - v1 never calls project_player_stats.
         position_involvement = (
-            compute_involvement_rates(players, historical_by_player_id, weights["season_games"]) if use_v2 else None
+            compute_involvement_rates(players, historical_by_player_id, weights["season_games"], games_elapsed_by_player_id)
+            if use_v2 else None
         )
         # Bonus Points' pass-completion PPM component (see
         # compute_bonus_points()) needs its own shrinkage prior, computed
@@ -2855,6 +2895,15 @@ def main():
             lineup, status = player_status.get(game_player_id, (None, None))
             is_transferred = player_id in transferred_player_ids
             is_backup_goalkeeper = game_player_id in backup_goalkeeper_ids
+            # See games_elapsed_by_player_id's docstring above - only
+            # overrides season_games for a player whose historical_row is
+            # this season's real (if still small) sample, so compute_
+            # opportunity()'s shrinkage weighs it against how many real
+            # gameweeks have actually happened, not the fixed full-season
+            # length. Every other player's runtime_weights is untouched.
+            player_runtime_weights = runtime_weights
+            if use_v2 and player_id in games_elapsed_by_player_id:
+                player_runtime_weights = {**runtime_weights, "season_games": games_elapsed_by_player_id[player_id]}
 
             if use_v2:
                 # A neutral-fixture (factor = 1.0 everywhere) baseline, priced
@@ -2873,7 +2922,7 @@ def main():
                 # fixture's team news, same "neutral" spirit as the
                 # attack/clean_sheet factors above.
                 neutral_stats, neutral_minutes_fraction, _, _ = project_player_stats(
-                    position, player_id, historical_row, neutral_fixture, runtime_weights, position_avg_rates,
+                    position, player_id, historical_row, neutral_fixture, player_runtime_weights, position_avg_rates,
                     position_involvement, hub_features, recent_form_rates,
                     None, None, is_transferred, False,
                     is_backup_goalkeeper,
@@ -2908,7 +2957,7 @@ def main():
                     fixture_status = status if fixture_index == 0 else None
                     fixture_is_congested = rotation_congestion.get(fx["fixture_id"], False)
                     projected_stats, expected_minutes_fraction, module_rates_by_stat, opportunity_detail = project_player_stats(
-                        position, player_id, historical_row, fx, runtime_weights, position_avg_rates,
+                        position, player_id, historical_row, fx, player_runtime_weights, position_avg_rates,
                         position_involvement, hub_features, recent_form_rates,
                         fixture_lineup, fixture_status, is_transferred, fixture_is_congested,
                         is_backup_goalkeeper,
