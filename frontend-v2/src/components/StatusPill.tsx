@@ -12,13 +12,24 @@ export default function StatusPill({
   status,
   ffscoutStatus,
   ffscoutStartProbability,
+  ffscoutDetail,
+  ffscoutExpectedReturnDate,
 }: {
   lineup?: string | null;
   status?: string | null;
   ffscoutStatus?: string | null;
   ffscoutStartProbability?: number | null;
+  ffscoutDetail?: string | null;
+  ffscoutExpectedReturnDate?: string | null;
 }) {
-  const badge = resolveStatusBadge(lineup ?? null, status ?? null, ffscoutStatus ?? null, ffscoutStartProbability ?? null);
+  const badge = resolveStatusBadge(
+    lineup ?? null,
+    status ?? null,
+    ffscoutStatus ?? null,
+    ffscoutStartProbability ?? null,
+    ffscoutDetail ?? null,
+    ffscoutExpectedReturnDate ?? null
+  );
   if (!badge) return null;
   return (
     <span

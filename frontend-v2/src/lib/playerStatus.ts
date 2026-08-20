@@ -26,15 +26,40 @@ const STATUS_BADGES: Record<string, StatusBadge> = {
 // adjustable later if that convention doesn't hold up.
 const FFSCOUT_INJURY_LIKE_THRESHOLD = 25;
 
-function resolveFfscoutBadge(ffscoutStatus: string | null, ffscoutStartProbability: number | null): StatusBadge | null {
-  if (ffscoutStatus === "out") return { code: "OUT", label: "Ruled out (FFScout)", tone: "red" };
-  if (ffscoutStatus === "banned") return { code: "BAN", label: "Suspended (FFScout)", tone: "red" };
+// Real injury type/description + expected return date (2026-08-20 user
+// request, see migration 0127) - appended to the badge's tooltip label
+// only, never a new badge/page (explicit user scope correction: "I just
+// want the data feeding into Ask Mary - the player pools with player
+// status... just like we have with the predicted lineups and the little
+// injury snippet. this is more extensive").
+function appendDetail(label: string, ffscoutDetail: string | null, ffscoutExpectedReturnDate: string | null): string {
+  const parts = [label];
+  if (ffscoutDetail) parts.push(ffscoutDetail);
+  if (ffscoutExpectedReturnDate) {
+    const [year, month, day] = ffscoutExpectedReturnDate.split("-");
+    parts.push(`Expected back ${day}/${month}/${year}`);
+  }
+  return parts.join(" — ");
+}
+
+function resolveFfscoutBadge(
+  ffscoutStatus: string | null,
+  ffscoutStartProbability: number | null,
+  ffscoutDetail: string | null = null,
+  ffscoutExpectedReturnDate: string | null = null
+): StatusBadge | null {
+  if (ffscoutStatus === "out") {
+    return { code: "OUT", label: appendDetail("Ruled out (FFScout)", ffscoutDetail, ffscoutExpectedReturnDate), tone: "red" };
+  }
+  if (ffscoutStatus === "banned") {
+    return { code: "BAN", label: appendDetail("Suspended (FFScout)", ffscoutDetail, ffscoutExpectedReturnDate), tone: "red" };
+  }
   if (ffscoutStatus === "doubt" && ffscoutStartProbability != null) {
     const pct = Math.round(ffscoutStartProbability);
-    if (pct <= FFSCOUT_INJURY_LIKE_THRESHOLD) {
-      return { code: "INJ", label: `Doubtful - ${pct}% chance of starting (FFScout)`, tone: "red" };
-    }
-    return { code: "DBT", label: `Doubtful - ${pct}% chance of starting (FFScout)`, tone: "amber" };
+    const base = `Doubtful - ${pct}% chance of starting (FFScout)`;
+    const label = appendDetail(base, ffscoutDetail, ffscoutExpectedReturnDate);
+    if (pct <= FFSCOUT_INJURY_LIKE_THRESHOLD) return { code: "INJ", label, tone: "red" };
+    return { code: "DBT", label, tone: "amber" };
   }
   return null;
 }
@@ -48,10 +73,12 @@ export function resolveStatusBadge(
   lineup: string | null,
   status: string | null,
   ffscoutStatus: string | null = null,
-  ffscoutStartProbability: number | null = null
+  ffscoutStartProbability: number | null = null,
+  ffscoutDetail: string | null = null,
+  ffscoutExpectedReturnDate: string | null = null
 ): StatusBadge | null {
   if (status && STATUS_BADGES[status]) return STATUS_BADGES[status];
-  const ffscoutBadge = resolveFfscoutBadge(ffscoutStatus, ffscoutStartProbability);
+  const ffscoutBadge = resolveFfscoutBadge(ffscoutStatus, ffscoutStartProbability, ffscoutDetail, ffscoutExpectedReturnDate);
   if (ffscoutBadge) return ffscoutBadge;
   if (lineup && LINEUP_BADGES[lineup]) return LINEUP_BADGES[lineup];
   return null;

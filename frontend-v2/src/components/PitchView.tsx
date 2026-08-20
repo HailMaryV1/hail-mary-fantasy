@@ -27,6 +27,10 @@ export type PitchPlayer = {
   // meaningful when ffscoutStatus is 'doubt'.
   ffscoutStatus?: string | null;
   ffscoutStartProbability?: number | null;
+  // Real injury type/description + expected return date (2026-08-20 user
+  // request, see migration 0127) - appended to the StatusPill tooltip only.
+  ffscoutDetail?: string | null;
+  ffscoutExpectedReturnDate?: string | null;
   formStatus?: FormStatus | null;
   // Solio Analytics lineup-probability data (migration 0110/0111) - null/
   // undefined whenever the player isn't covered by this week's screenshot
@@ -157,6 +161,8 @@ export default function PitchView({
               status={player.status}
               ffscoutStatus={player.ffscoutStatus}
               ffscoutStartProbability={player.ffscoutStartProbability}
+              ffscoutDetail={player.ffscoutDetail}
+              ffscoutExpectedReturnDate={player.ffscoutExpectedReturnDate}
             />
             <FormPill status={player.formStatus} />
             <RotationRiskBadge risk={player.rotationRisk} />

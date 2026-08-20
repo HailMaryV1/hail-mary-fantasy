@@ -279,6 +279,8 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       rotationRisk: rotationRiskByPlayerId.get(p.player_id) ?? null,
       ffscoutStatus: ffscoutStatusByPlayerId.get(p.player_id)?.status ?? null,
       ffscoutStartProbability: ffscoutStatusByPlayerId.get(p.player_id)?.startProbability ?? null,
+      ffscoutDetail: ffscoutStatusByPlayerId.get(p.player_id)?.detail ?? null,
+      ffscoutExpectedReturnDate: ffscoutStatusByPlayerId.get(p.player_id)?.expectedReturnDate ?? null,
       ...(statsByGamePlayerId.get(p.game_player_id) ?? emptyStats),
     }));
 
@@ -334,6 +336,8 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       ownershipPct: r.ownershipPct,
       ffscoutStatus: r.ffscoutStatus,
       ffscoutStartProbability: r.ffscoutStartProbability,
+      ffscoutDetail: r.ffscoutDetail,
+      ffscoutExpectedReturnDate: r.ffscoutExpectedReturnDate,
       rotationRisk: r.rotationRisk,
     }));
     poolTotalCount = initialPool.totalCount;

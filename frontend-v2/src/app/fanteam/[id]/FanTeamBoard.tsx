@@ -49,6 +49,8 @@ export type BoardPlayer = {
   // BoardPlayer today, so FFScout is this board's only status badge.
   ffscoutStatus?: string | null;
   ffscoutStartProbability?: number | null;
+  ffscoutDetail?: string | null;
+  ffscoutExpectedReturnDate?: string | null;
 };
 
 export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain" | "isStarting" | "benchOrder">;
@@ -399,6 +401,8 @@ export default function FanTeamBoard({
           bonusProjected: r.bonusProjected,
           ffscoutStatus: r.ffscoutStatus,
           ffscoutStartProbability: r.ffscoutStartProbability,
+          ffscoutDetail: r.ffscoutDetail,
+          ffscoutExpectedReturnDate: r.ffscoutExpectedReturnDate,
           rotationRisk: r.rotationRisk,
         }))
       );
@@ -489,6 +493,8 @@ export default function FanTeamBoard({
       rotationRisk: p.rotationRisk,
       ffscoutStatus: p.ffscoutStatus,
       ffscoutStartProbability: p.ffscoutStartProbability,
+      ffscoutDetail: p.ffscoutDetail,
+      ffscoutExpectedReturnDate: p.ffscoutExpectedReturnDate,
       statText: displayMode in fixtureModeCount ? undefined : statTextFor(display),
       statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(display.fixtures, fixtureModeCount[displayMode]) : undefined,
       isEmpty: false,
@@ -1163,7 +1169,12 @@ export default function FanTeamBoard({
                         <td className="py-1.5 pr-2">
                           <div className="flex items-center font-medium text-white">
                             {p.full_name}
-                            <StatusPill ffscoutStatus={p.ffscoutStatus} ffscoutStartProbability={p.ffscoutStartProbability} />
+                            <StatusPill
+                              ffscoutStatus={p.ffscoutStatus}
+                              ffscoutStartProbability={p.ffscoutStartProbability}
+                              ffscoutDetail={p.ffscoutDetail}
+                              ffscoutExpectedReturnDate={p.ffscoutExpectedReturnDate}
+                            />
                             <RotationRiskBadge risk={p.rotationRisk} />
                           </div>
                           <div className="text-[10px] text-navy-500">

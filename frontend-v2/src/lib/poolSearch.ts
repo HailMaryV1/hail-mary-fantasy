@@ -65,6 +65,11 @@ export type PoolSearchRow = {
    * Two, outside FFScout's coverage). */
   ffscoutStatus: string | null;
   ffscoutStartProbability: number | null;
+  /** Real injury type/description + expected return date (2026-08-20 user
+   * request, see migration 0127's docstring) - null whenever FFScout's
+   * injuries page has never captured anything for this player. */
+  ffscoutDetail: string | null;
+  ffscoutExpectedReturnDate: string | null;
   /** Predicted-lineup rotation-battle data (2026-08-19 user request, see
    * migration 0124's docstring) - null whenever this player isn't covered
    * by the screenshot batch or the batch has gone stale. Real Premier
@@ -156,6 +161,8 @@ export async function searchPool(params: {
     last_gw_points: number | string | null;
     ffscout_status: string | null;
     ffscout_start_probability: number | string | null;
+    ffscout_detail: string | null;
+    ffscout_expected_return_date: string | null;
     rotation_start_probability: number | string | null;
     rotation_contender_name: string | null;
     rotation_contender_probability: number | string | null;
@@ -192,6 +199,8 @@ export async function searchPool(params: {
     lastGwPoints: r.last_gw_points != null ? Number(r.last_gw_points) : null,
     ffscoutStatus: r.ffscout_status,
     ffscoutStartProbability: r.ffscout_start_probability != null ? Number(r.ffscout_start_probability) : null,
+    ffscoutDetail: r.ffscout_detail,
+    ffscoutExpectedReturnDate: r.ffscout_expected_return_date,
     rotationRisk:
       r.rotation_start_probability != null && r.rotation_risk_level != null
         ? {
