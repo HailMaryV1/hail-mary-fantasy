@@ -250,11 +250,40 @@ def link_fixtures(cur, api_key, window_days):
             if not starting_at:
                 continue
             fixture_date = starting_at[:10]
+
+            # Real failure 2026-08-20 (Refresh - shared odds, twice): our
+            # own fixtures table can carry more than one row for the same
+            # real match - a placeholder-kickoff import and a later one
+            # with the real confirmed broadcast time, sometimes even on
+            # DIFFERENT calendar dates (a real Bradford City vs Burnley
+            # EFL Cup tie held rows dated both Aug 25 and Aug 26) - same
+            # duplication compute_projections.py already dedupes at read
+            # time for scoring, just not caught by a same-date check here.
+            # Whichever duplicate the live feed matched first already
+            # holds this SportMonks id from an earlier run; a later run
+            # matching against the OTHER duplicate (different date, so a
+            # single UPDATE's own row-scoping can't see both at once)
+            # would violate fixtures_sportmonks_fixture_id_key. Skip
+            # outright once any row already holds this id - a plain
+            # SELECT can't itself violate a constraint, so this can't
+            # abort the transaction the way a failed UPDATE would.
+            cur.execute("select 1 from fixtures where sportmonks_fixture_id = %s", (fx["id"],))
+            if cur.fetchone():
+                continue
+
+            # Still scoped to exactly one row via a subquery, not a bare
+            # multi-row WHERE, in case two same-dated duplicates remain -
+            # see the block comment above for why duplicates exist at all.
             cur.execute(
                 """
                 update fixtures set sportmonks_fixture_id = %s
-                where home_team_id = %s and away_team_id = %s
-                  and kickoff_at::date = %s and sportmonks_fixture_id is null
+                where id = (
+                    select id from fixtures
+                    where home_team_id = %s and away_team_id = %s
+                      and kickoff_at::date = %s and sportmonks_fixture_id is null
+                    order by created_at desc
+                    limit 1
+                )
                 """,
                 (fx["id"], home_id, away_id, fixture_date),
             )
