@@ -120,6 +120,11 @@ export type PlayerCardInput = {
   teamName: string;
   position: string;
   price: number;
+  // False for EFL Fantasy (see lib/gameConfig.ts's hasBudget) - it has no
+  // real price/budget system at all, so `price` here is always a
+  // meaningless 0 for that game. Hides the "· £X.Xm" segment rather than
+  // showing a fake £0.0m (2026-08-21 user report).
+  hasBudget: boolean;
   gameweek: number | null;
   finalScore: number;
   confidenceLabel: "High" | "Medium" | "Low";
@@ -170,6 +175,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
     teamName,
     position,
     price,
+    hasBudget,
     gameweek,
     finalScore,
     confidenceLabel,
@@ -424,7 +430,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
         heading({ marginTop: s(14), fontSize: s(62), color: "#ffffff", textAlign: "center", letterSpacing: s(-1) }, fullName.toUpperCase()),
         label(
           { marginTop: s(6), fontSize: s(22), color: NAVY[300], letterSpacing: s(2) },
-          `${position} · ${teamName} · £${price.toFixed(1)}m`
+          hasBudget ? `${position} · ${teamName} · £${price.toFixed(1)}m` : `${position} · ${teamName}`
         )
       )
     ),

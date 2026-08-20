@@ -5,6 +5,7 @@ import { ImageResponse } from "next/og";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { fetchEngineExplanation, fetchEngineExplanationForGameweek, competitionLabel } from "@/lib/engineExplainability";
 import { getKitImage } from "@/lib/kitImages";
+import { hasBudget } from "@/lib/gameConfig";
 import { getPlayerProjectionTrend } from "@/lib/projectionTrend";
 import { buildPlayerCardElement, PLAYER_CARD_SIZE } from "@/lib/playerCard";
 
@@ -142,6 +143,7 @@ export async function GET(request: NextRequest) {
       teamName: data.teamName,
       position: data.position,
       price: data.price,
+      hasBudget: hasBudget(gameSlug),
       gameweek: data.gameweek,
       finalScore: data.finalScore,
       confidenceLabel: data.dataConfidence.label,
