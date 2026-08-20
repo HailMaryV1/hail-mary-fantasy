@@ -953,6 +953,7 @@ export default function EFLFantasyBoard({
               gamePlayerId={infoPlayerId}
               onBack={() => setInfoPlayerId(null)}
               fixtures={fixturesForInfoPanel(infoPlayerId)}
+              viewedGameweek={viewedGameweek}
             />
           ) : (
             <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">

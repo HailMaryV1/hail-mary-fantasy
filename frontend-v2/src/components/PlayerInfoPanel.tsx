@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getPlayerExplanation, getPlayerProjectionTrendAction, getPlayerRealStatsAction, type PlayerRealStats } from "@/lib/playerExplanationActions";
+import {
+  getPlayerExplanation,
+  getPlayerExplanationForGameweek,
+  getPlayerProjectionTrendAction,
+  getPlayerRealStatsAction,
+  type PlayerRealStats,
+} from "@/lib/playerExplanationActions";
 import {
   MODULAR_STATS,
   EXPECTED_STAT_DISPLAY_NAMES,
@@ -33,6 +39,7 @@ export default function PlayerInfoPanel({
   gamePlayerId,
   onBack,
   fixtures,
+  viewedGameweek,
 }: {
   gameSlug: string;
   gamePlayerId: number;
@@ -41,6 +48,14 @@ export default function PlayerInfoPanel({
   // EFLFantasyBoard.tsx's fixtureTilesFor). Omitted by games that don't
   // pass it, so this stays a no-op change for them.
   fixtures?: { label: string; colorClass: string }[];
+  // Explicit gameweek override (EFL Fantasy only, 2026-08-21 user report) -
+  // EFL Fantasy's own per-player locking (eflFixtureLocking.ts) can hold a
+  // gameweek "current" after the shared player_projection_summary view's
+  // own min-kickoff current_gw has already moved on, which showed the
+  // wrong gameweek's projection/fixture here even while the pool/squad
+  // board correctly stayed put. Omitted by every other game, which keeps
+  // reading whatever the shared view considers current, unchanged.
+  viewedGameweek?: number;
 }) {
   // undefined = loading, null = no projection exists yet for this player
   const [data, setData] = useState<EngineExplanation | null | undefined>(undefined);
@@ -52,7 +67,9 @@ export default function PlayerInfoPanel({
     setData(undefined);
     setTrend(undefined);
     setRealStats(undefined);
-    getPlayerExplanation(gameSlug, gamePlayerId).then((result) => {
+    const explanationPromise =
+      viewedGameweek != null ? getPlayerExplanationForGameweek(gameSlug, gamePlayerId, viewedGameweek) : getPlayerExplanation(gameSlug, gamePlayerId);
+    explanationPromise.then((result) => {
       if (cancelled) return;
       setData(result);
       if (result?.gameweek != null) {
@@ -67,7 +84,7 @@ export default function PlayerInfoPanel({
     return () => {
       cancelled = true;
     };
-  }, [gameSlug, gamePlayerId]);
+  }, [gameSlug, gamePlayerId, viewedGameweek]);
 
   return (
     <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">

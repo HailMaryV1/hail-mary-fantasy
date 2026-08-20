@@ -314,7 +314,7 @@ type RawInputs = {
   } | null;
 };
 
-type SummaryRow = {
+export type SummaryRow = {
   game_player_id: number;
   full_name: string;
   position: string;
@@ -504,6 +504,57 @@ export async function fetchEngineExplanation(
     .maybeSingle<SummaryRow>();
   if (!data) return null;
   return parseEngineExplanation(gameSlug, data);
+}
+
+/**
+ * Same shape as fetchEngineExplanation, but for an EXPLICIT gameweek
+ * rather than whatever player_projection_summary's own current_gw lateral
+ * considers "current" (migration 0129 - the smallest gameweek whose
+ * EARLIEST fixture hasn't kicked off). Real user report 2026-08-21: EFL
+ * Fantasy's own per-player locking (eflFixtureLocking.ts) can legitimately
+ * disagree with that shared view - a single rearranged fixture kicking
+ * off doesn't end the gameweek for EFL Fantasy the way it does for the
+ * other 3 games - so the pool/squad board correctly held on GW2 while
+ * this panel, reading the shared view, jumped ahead to GW3.
+ *
+ * Bypasses player_projection_summary entirely (two plain queries instead
+ * of its current_gw join) rather than editing that view - it's shared by
+ * every game, and only EFL Fantasy's own callers pass a gameweek here.
+ */
+export async function fetchEngineExplanationForGameweek(
+  supabase: SupabaseClient,
+  gameSlug: string,
+  gamePlayerId: number,
+  gameweek: number
+): Promise<EngineExplanation | null> {
+  const [{ data: playerRow }, { data: projRow }] = await Promise.all([
+    supabase
+      .from("game_players")
+      .select("id, position_code, price, players(full_name, teams(name))")
+      .eq("id", gamePlayerId)
+      .single<{ id: number; position_code: string; price: number; players: { full_name: string; teams: { name: string } } }>(),
+    supabase
+      .from("projections")
+      .select("hail_mary_score, gameweek, inputs")
+      .eq("game_player_id", gamePlayerId)
+      .eq("gameweek", gameweek)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle<{ hail_mary_score: number; gameweek: number; inputs: RawInputs | null }>(),
+  ]);
+  if (!playerRow || !projRow) return null;
+
+  const row: SummaryRow = {
+    game_player_id: playerRow.id,
+    full_name: playerRow.players.full_name,
+    position: playerRow.position_code,
+    team_name: playerRow.players.teams.name,
+    price: Number(playerRow.price),
+    hail_mary_score: Number(projRow.hail_mary_score),
+    gameweek: projRow.gameweek,
+    inputs: projRow.inputs,
+  };
+  return parseEngineExplanation(gameSlug, row);
 }
 
 export type PlayerOption = { gamePlayerId: number; fullName: string; teamName: string; position: string; price: number };

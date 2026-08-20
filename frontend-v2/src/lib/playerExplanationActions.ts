@@ -1,7 +1,7 @@
 "use server";
 
 import { createAuthServerClient } from "./supabaseServerClient";
-import { fetchEngineExplanation, type EngineExplanation } from "./engineExplainability";
+import { fetchEngineExplanation, fetchEngineExplanationForGameweek, type EngineExplanation } from "./engineExplainability";
 import { getPlayerProjectionTrend, type TrendPoint } from "./projectionTrend";
 
 /**
@@ -23,6 +23,26 @@ export async function getPlayerExplanation(gameSlug: string, gamePlayerId: numbe
   } = await supabase.auth.getUser();
   if (!user) return null;
   return fetchEngineExplanation(supabase, gameSlug, gamePlayerId);
+}
+
+/**
+ * Same as getPlayerExplanation, but for an explicit gameweek - see
+ * fetchEngineExplanationForGameweek's docstring. Only EFL Fantasy's board
+ * calls this today (its per-player locking can legitimately diverge from
+ * the shared view's own "current gameweek" guess); every other game keeps
+ * calling getPlayerExplanation unchanged.
+ */
+export async function getPlayerExplanationForGameweek(
+  gameSlug: string,
+  gamePlayerId: number,
+  gameweek: number
+): Promise<EngineExplanation | null> {
+  const supabase = await createAuthServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return null;
+  return fetchEngineExplanationForGameweek(supabase, gameSlug, gamePlayerId, gameweek);
 }
 
 /**
