@@ -61,3 +61,16 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python scripts/capture_ffscout_player_status.py
+
+      # 2026-08-20 user request: real injury type/description + expected
+      # return date, feeding the same ffscout_player_status table under
+      # source='ffscout_injuries' (migration 0127) - no recompute step of
+      # its own needed. detail/expected_return_date are read live by the
+      # game_player_pool view (no precomputed/stored score depends on
+      # them); any out/doubt/banned status this step captures rides on
+      # the NEXT run's own team-news recompute above, same eventually-
+      # consistent model already used for the team-news source itself.
+      - name: Capture FFScout injury detail
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/capture_ffscout_injury_detail.py
