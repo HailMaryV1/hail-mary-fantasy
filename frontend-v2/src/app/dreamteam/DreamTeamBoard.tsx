@@ -13,6 +13,7 @@ import SaveTeamButton from "@/components/SaveTeamButton";
 import TrendChart from "@/components/TrendChart";
 import type { TrendPoint } from "@/lib/projectionTrend";
 import { searchPool } from "@/lib/poolSearch";
+import { isLegalFormationPick, countByPosition, DREAMTEAM_FORMATIONS } from "@/lib/squadFormation";
 import { setBooster, setCaptain, saveTeamForGameweek } from "./actions";
 import { applyRecommendation } from "./ask-mary/actions";
 
@@ -505,20 +506,33 @@ export default function DreamTeamBoard({
   // askMaryEngine.ts's optimalXITotal).
   const optimisticTotalPoints = optimisticSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
 
-  // Which sold slot clicking `p` would fill: only a genuinely unassigned
-  // same-position slot. Deliberately NOT falling back to silently
-  // replacing an already-assigned slot's pick here - that produced
-  // exactly the "it just keeps swapping" confusion once every matching
-  // slot already had a pick, with no visible reason why. Changing a pick
-  // is the pitch-tap-to-unassign flow below, not a second pool click.
+  // Which sold slot clicking `p` would fill - any currently-open slot,
+  // not just one matching p's own position (2026-08-20 user report: "if
+  // I take out a 4m player and a 5m player it won't let me bring in a
+  // 6m player" - selling a MID and a FWD blocked buying a DEF outright,
+  // even though the shared pot could afford it and the resulting XI
+  // would still be a real formation). isLegalFormationPick checks that
+  // committing to p's position still leaves at least one of Dream Team's
+  // 7 real formations reachable once the OTHER still-open slots (whatever
+  // positions they end up being) are filled too - see squadFormation.ts.
+  // Deliberately NOT falling back to silently replacing an already-
+  // assigned slot's pick here - that produced exactly the "it just keeps
+  // swapping" confusion once every slot already had a pick, with no
+  // visible reason why. Changing a pick is the pitch-tap-to-unassign flow
+  // below, not a second pool click.
+  const keptCounts = countByPosition(optimisticSquad.filter((p) => !pendingOutIds.has(p.game_player_id)));
+  const stagedCounts = countByPosition(Array.from(pendingSwaps.values()));
+  const openSlots = pendingOutPlayers.filter((o) => !pendingSwaps.has(o.game_player_id));
   function pickSlotFor(p: PoolPlayer): BoardPlayer | null {
     // Already staged into another slot - must be unassigned (tap its
     // pitch slot) before it can be picked again, so one player can never
     // land in two slots at once.
     if (Array.from(pendingSwaps.values()).some((v) => v.game_player_id === p.game_player_id)) return null;
-    const unassigned = pendingOutPlayers.find((o) => o.position === p.position && !pendingSwaps.has(o.game_player_id));
-    if (!unassigned) return null;
-    return poolBudget >= p.price ? unassigned : null;
+    if (openSlots.length === 0 || poolBudget < p.price) return null;
+    if (!isLegalFormationPick(keptCounts, stagedCounts, p.position, openSlots.length, DREAMTEAM_FORMATIONS)) return null;
+    // Prefer a same-position slot when one's open, so a plain like-for-
+    // like swap never spends a different slot than the obvious one.
+    return openSlots.find((o) => o.position === p.position) ?? openSlots[0];
   }
   const legalPoolIds = new Set(canTransfer ? pagedPool.filter((p) => pickSlotFor(p) !== null).map((p) => p.game_player_id) : []);
 
