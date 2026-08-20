@@ -39,6 +39,13 @@ const s = (n: number) => Math.round(n * SCALE);
 // live in without crowding the panels.
 const FRAME_X = 130;
 const FRAME_Y = 45;
+const CONTENT_PAD_X = 44;
+const CONTENT_PAD_Y = 36;
+// The card's own inner content width in 1200-design-space - every panel
+// below implicitly fills this (flex column with no explicit width), but
+// the trend chart's embedded SVG needs an explicit pixel width up front
+// to lay out its points, so this is computed once and reused.
+const CONTENT_WIDTH = 1200 - FRAME_X * 2 - CONTENT_PAD_X * 2;
 
 const NAVY = { 950: "#050b16", 900: "#0b1524", 850: "#0f1c30", 800: "#14203a", 700: "#1e2e45", 500: "#46617f", 300: "#a8b8cc" };
 const SKY = { 400: "#38bdf8" };
@@ -61,6 +68,8 @@ export type PlayerCardFixture = {
   isHome: boolean;
 };
 
+export type PlayerCardTrendPoint = { gameweek: number; score: number };
+
 export type PlayerCardInput = {
   fullName: string;
   teamName: string;
@@ -73,9 +82,16 @@ export type PlayerCardInput = {
   kitDataUri: string | null;
   primaryFixture: PlayerCardFixture | null;
   competitionLabel: (competition: string | null) => string;
-  lastGw: number | null;
-  lastGwPoints: number | string | null;
-  statTiles: [string, number | string][];
+  // 2026-08-20 user request ("we want these cards to be projecting into
+  // the future... replace last season's stats with the projection
+  // trend"): the real-season stat tiles that used to live here are gone -
+  // upcoming-gameweek projections (from the `projections` table, not
+  // player_projection_summary's single "current" row) instead.
+  trend: PlayerCardTrendPoint[];
+  // Same request's "if you can fit on the second game warning/info too" -
+  // the additional-fixtures note PlayerInfoPanel already shows (Carabao
+  // Cup etc.), condensed to one line - null when the player has none.
+  additionalFixturesNote: string | null;
   // 2026-08-20 user request - real model output, not real-world results:
   // team win probability (team_fixture_difficulty.team_win_prob) is
   // fixture/team-level so it applies to every position; clean sheet is
@@ -194,6 +210,31 @@ function tacticsBoardSvg() {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
 }
 
+// Trend line + area fill only, drawn as SVG (pure vector shapes, no text -
+// resvg's handling of text baked into an embedded SVG-as-image is
+// unverified, unlike satori's own text layer which every other word on
+// this card already goes through) - the numeric/gameweek labels are real
+// sibling <span> elements absolutely-positioned on top of this image in
+// buildPlayerCardElement, using the exact same point coordinates, so they
+// share the card's actual Oswald font instead of an SVG fallback font.
+function trendLineSvg(points: { x: number; y: number }[], width: number, height: number) {
+  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+  const areaPath = `${linePath} L ${points[points.length - 1].x} ${height} L ${points[0].x} ${height} Z`;
+  const dots = points.map((p) => `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#38bdf8" stroke="#0b1524" stroke-width="2.5"/>`).join("");
+  const svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.32"/>
+        <stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <path d="${areaPath}" fill="url(#trendFill)"/>
+    <path d="${linePath}" stroke="#38bdf8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}
+  </svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+}
+
 export function buildPlayerCardElement(input: PlayerCardInput) {
   const {
     fullName,
@@ -207,9 +248,8 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
     kitDataUri,
     primaryFixture,
     competitionLabel,
-    lastGw,
-    lastGwPoints,
-    statTiles,
+    trend,
+    additionalFixturesNote,
     teamWinProbability,
     cleanSheetProbability,
     goalProbability,
@@ -252,6 +292,92 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
 
   const label = (style: Record<string, unknown>, text: string) =>
     h("span", { style: { fontFamily: "Oswald", fontWeight: 500, textTransform: "uppercase", ...style } }, text);
+
+  // Projection trend chart - a small area+line chart of upcoming
+  // gameweek scores, with real Oswald-rendered value/gameweek labels
+  // absolutely positioned over a pure-vector SVG line (see trendLineSvg).
+  const CHART_PAD_X = 24;
+  const CHART_H = 64;
+  const chartInnerWidth = CONTENT_WIDTH - 2 * CHART_PAD_X;
+  const trendChart =
+    trend.length >= 2
+      ? (() => {
+          const scores = trend.map((t) => t.score);
+          const minScore = Math.min(...scores);
+          const maxScore = Math.max(...scores);
+          const range = maxScore - minScore || 1;
+          const points = trend.map((t, i) => ({
+            x: (i / (trend.length - 1)) * chartInnerWidth,
+            y: CHART_H - ((t.score - minScore) / range) * (CHART_H - 12) - 6,
+          }));
+          // Deterministic absolute positions, not a flex spacer - a flex:1
+          // spacer inside an absolutely-positioned column turned out
+          // unreliable in satori's layout engine (the gameweek label
+          // didn't consistently pin to the container's bottom edge, so a
+          // steeply descending line segment could visually cross right
+          // through it). The value label sits just above its own point;
+          // the gameweek label sits on a single fixed row well below the
+          // entire chart image, so neither can ever intersect the line.
+          const VALUE_LABEL_H = 24;
+          const GW_LABEL_TOP = CHART_H + 12;
+          return panel(
+            { flexDirection: "column", marginTop: s(16), padding: `${s(14)}px ${s(CHART_PAD_X)}px` },
+            [
+              label({ fontSize: s(14), color: NAVY[500], letterSpacing: s(2) }, "Projection Trend"),
+              h(
+                "div",
+                {
+                  style: {
+                    display: "flex",
+                    position: "relative",
+                    width: s(chartInnerWidth),
+                    height: s(GW_LABEL_TOP + 20),
+                    marginTop: s(6),
+                  },
+                },
+                h("img", {
+                  src: trendLineSvg(points, chartInnerWidth, CHART_H),
+                  width: s(chartInnerWidth),
+                  height: s(CHART_H),
+                  style: { position: "absolute", top: 0, left: 0 },
+                }),
+                ...trend.flatMap((t, i) => [
+                  h(
+                    "div",
+                    {
+                      key: `v${i}`,
+                      style: {
+                        display: "flex",
+                        justifyContent: "center",
+                        position: "absolute",
+                        top: s(Math.max(0, points[i].y - VALUE_LABEL_H)),
+                        left: s(points[i].x - 40),
+                        width: s(80),
+                      },
+                    },
+                    heading({ fontSize: s(17), color: "#ffffff", textAlign: "center" }, t.score.toFixed(1))
+                  ),
+                  h(
+                    "div",
+                    {
+                      key: `g${i}`,
+                      style: {
+                        display: "flex",
+                        justifyContent: "center",
+                        position: "absolute",
+                        top: s(GW_LABEL_TOP),
+                        left: s(points[i].x - 40),
+                        width: s(80),
+                      },
+                    },
+                    label({ fontSize: s(12), color: NAVY[500], textAlign: "center" }, `GW${t.gameweek}`)
+                  ),
+                ])
+              ),
+            ]
+          );
+        })()
+      : null;
 
   return h(
     "div",
@@ -310,7 +436,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
           left: s(FRAME_X),
           right: s(FRAME_X),
           bottom: s(FRAME_Y),
-          padding: `${s(40)}px ${s(46)}px`,
+          padding: `${s(CONTENT_PAD_Y)}px ${s(CONTENT_PAD_X)}px`,
         },
       },
 
@@ -340,12 +466,24 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
           : null
       ),
 
-      // player identity
+      // player identity - the kit PNGs are real but low-resolution source
+      // art (2026-08-20 user report: "tidy up the kit images... small
+      // outer glow that hides the jagged edges") - filter: drop-shadow()
+      // (confirmed via a standalone render test to hug the PNG's actual
+      // alpha silhouette, not just its rectangular bounding box, unlike a
+      // plain CSS box-shadow) puts a soft club-colour halo right at the
+      // jersey's real edge, drawing the eye there instead of to the
+      // upscaled pixel edge itself.
       h(
         "div",
-        { style: { display: "flex", flexDirection: "column", alignItems: "center", marginTop: s(20) } },
+        { style: { display: "flex", flexDirection: "column", alignItems: "center", marginTop: s(18) } },
         kitDataUri
-          ? h("img", { src: kitDataUri, width: s(208), height: s(224), style: { objectFit: "contain" } })
+          ? h("img", {
+              src: kitDataUri,
+              width: s(208),
+              height: s(224),
+              style: { objectFit: "contain", filter: `drop-shadow(0px 0px ${s(14)}px ${colors.primary}99)` },
+            })
           : h(
               "div",
               {
@@ -362,9 +500,9 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
               },
               heading({ fontSize: s(52), color: colors.secondary }, colors.abbr)
             ),
-        heading({ marginTop: s(24), fontSize: s(66), color: "#ffffff", textAlign: "center", letterSpacing: s(-1) }, fullName.toUpperCase()),
+        heading({ marginTop: s(20), fontSize: s(62), color: "#ffffff", textAlign: "center", letterSpacing: s(-1) }, fullName.toUpperCase()),
         label(
-          { marginTop: s(10), fontSize: s(23), color: NAVY[300], letterSpacing: s(2) },
+          { marginTop: s(8), fontSize: s(22), color: NAVY[300], letterSpacing: s(2) },
           `${position} · ${teamName} · £${price.toFixed(1)}m`
         )
       ),
@@ -372,7 +510,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
       // fixture
       primaryFixture
         ? panel(
-            { alignItems: "center", gap: s(20), marginTop: s(32), padding: `${s(20)}px ${s(26)}px` },
+            { alignItems: "center", gap: s(20), marginTop: s(24), padding: `${s(18)}px ${s(24)}px` },
             [
               opponentColors
                 ? h(
@@ -380,8 +518,8 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
                     {
                       style: {
                         display: "flex",
-                        width: s(52),
-                        height: s(52),
+                        width: s(48),
+                        height: s(48),
                         borderRadius: 999,
                         alignItems: "center",
                         justifyContent: "center",
@@ -389,18 +527,18 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
                         color: opponentColors.secondary,
                       },
                     },
-                    heading({ fontSize: s(18), color: opponentColors.secondary }, opponentColors.abbr)
+                    heading({ fontSize: s(17), color: opponentColors.secondary }, opponentColors.abbr)
                   )
                 : null,
               h(
                 "div",
                 { style: { display: "flex", flexDirection: "column" } },
                 heading(
-                  { fontSize: s(27), color: "#ffffff" },
+                  { fontSize: s(25), color: "#ffffff" },
                   `${primaryFixture.isHome ? "vs " : "at "}${primaryFixture.opponentTeamName ?? "Unknown opponent"}`
                 ),
                 label(
-                  { fontSize: s(19), color: NAVY[500], marginTop: s(2) },
+                  { fontSize: s(18), color: NAVY[500], marginTop: s(2) },
                   `${formatKickoff(primaryFixture.kickoffAt)} · ${competitionLabel(primaryFixture.competition)}`
                 )
               ),
@@ -410,21 +548,21 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
 
       // projected points
       panel(
-        { alignItems: "center", justifyContent: "space-between", marginTop: s(24), padding: `${s(26)}px ${s(34)}px` },
+        { alignItems: "center", justifyContent: "space-between", marginTop: s(18), padding: `${s(22)}px ${s(30)}px` },
         [
           h(
             "div",
             { style: { display: "flex", flexDirection: "column" } },
-            label({ fontSize: s(20), color: NAVY[500], letterSpacing: s(2) }, "Projected Points"),
-            heading({ fontSize: s(104), color: SKY[400], lineHeight: 1 }, finalScore.toFixed(1))
+            label({ fontSize: s(19), color: NAVY[500], letterSpacing: s(2) }, "Projected Points"),
+            heading({ fontSize: s(92), color: SKY[400], lineHeight: 1 }, finalScore.toFixed(1))
           ),
           label(
             {
-              fontSize: s(22),
+              fontSize: s(21),
               color: confidence.fg,
               backgroundColor: confidence.bg,
               borderRadius: 999,
-              padding: `${s(11)}px ${s(22)}px`,
+              padding: `${s(10)}px ${s(20)}px`,
               display: "flex",
             },
             `${confidenceLabel} confidence`
@@ -432,41 +570,30 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
         ]
       ),
 
+      // additional-fixtures note (e.g. Carabao Cup) - condensed one-liner
+      additionalFixturesNote
+        ? h(
+            "div",
+            { style: { display: "flex", marginTop: s(10), padding: `${s(8)}px ${s(4)}px` } },
+            label({ fontSize: s(15), color: "#fbbf24", textTransform: "none", lineHeight: 1.3 }, additionalFixturesNote)
+          )
+        : null,
+
       // model insight tiles - team win / clean sheet / goal / assist %
       insightTiles.length > 0
         ? h(
             "div",
-            { style: { display: "flex", gap: s(14), marginTop: s(18) } },
+            { style: { display: "flex", gap: s(14), marginTop: s(14) } },
             ...insightTiles.map(([tileLabel, tileValue]) =>
-              panel({ flexDirection: "column", alignItems: "center", flex: 1, padding: `${s(14)}px ${s(8)}px` }, [
-                heading({ fontSize: s(28), color: SKY[400] }, tileValue),
-                label({ fontSize: s(14), color: NAVY[500], marginTop: s(3) }, tileLabel),
+              panel({ flexDirection: "column", alignItems: "center", flex: 1, padding: `${s(12)}px ${s(8)}px` }, [
+                heading({ fontSize: s(26), color: SKY[400] }, tileValue),
+                label({ fontSize: s(13), color: NAVY[500], marginTop: s(3) }, tileLabel),
               ])
             )
           )
         : null,
 
-      // stat tiles
-      lastGwPoints != null || statTiles.length > 0
-        ? h(
-            "div",
-            { style: { display: "flex", gap: s(16), marginTop: s(22) } },
-            ...(lastGwPoints != null
-              ? [
-                  panel({ flexDirection: "column", alignItems: "center", flex: 1, padding: `${s(18)}px ${s(10)}px` }, [
-                    heading({ fontSize: s(34), color: "#ffffff" }, Number(lastGwPoints).toFixed(1)),
-                    label({ fontSize: s(16), color: NAVY[500], marginTop: s(4) }, `GW${lastGw} pts`),
-                  ]),
-                ]
-              : []),
-            ...statTiles.map(([statLabel, value]) =>
-              panel({ flexDirection: "column", alignItems: "center", flex: 1, padding: `${s(18)}px ${s(10)}px` }, [
-                heading({ fontSize: s(34), color: "#ffffff" }, String(value)),
-                label({ fontSize: s(16), color: NAVY[500], marginTop: s(4) }, statLabel),
-              ])
-            )
-          )
-        : null,
+      trendChart,
 
       h("div", { style: { display: "flex", flex: 1 } }),
 
@@ -474,7 +601,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
       h(
         "div",
         { style: { display: "flex", justifyContent: "center" } },
-        label({ fontSize: s(18), color: NAVY[500], letterSpacing: s(4) }, "Hail Mary Projections")
+        label({ fontSize: s(17), color: NAVY[500], letterSpacing: s(4) }, "Hail Mary Projections")
       )
     )
   );

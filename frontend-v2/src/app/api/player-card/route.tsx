@@ -5,6 +5,7 @@ import { ImageResponse } from "next/og";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { fetchEngineExplanation, competitionLabel } from "@/lib/engineExplainability";
 import { getKitImage } from "@/lib/kitImages";
+import { getPlayerProjectionTrend } from "@/lib/projectionTrend";
 import { buildPlayerCardElement, PLAYER_CARD_SIZE } from "@/lib/playerCard";
 
 export const runtime = "nodejs";
@@ -24,18 +25,7 @@ async function loadFont(fileName: string): Promise<ArrayBuffer> {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
-type RealStatsRow = {
-  real_total_points: number | string | null;
-  real_goals: number | null;
-  real_assists: number | null;
-  real_clean_sheets: number | null;
-  real_saves: number | null;
-  real_tackles: number | null;
-  real_appearances: number | null;
-  last_gw: number | null;
-  last_gw_points: number | string | null;
-  team_id: number;
-};
+type TeamRow = { team_id: number };
 
 /**
  * Shareable "Hail Mary Projection Card" PNG - 2026-08-20 user request
@@ -74,14 +64,12 @@ export async function GET(request: NextRequest) {
   const data = await fetchEngineExplanation(supabase, gameSlug, gamePlayerId);
   if (!data) return new Response("No projection available for this player yet.", { status: 404 });
 
-  const { data: realStatsRow } = await supabase
+  const { data: teamRow } = await supabase
     .from("game_player_pool")
-    .select(
-      "real_total_points, real_goals, real_assists, real_clean_sheets, real_saves, real_tackles, real_appearances, last_gw, last_gw_points, team_id"
-    )
+    .select("team_id")
     .eq("game_slug", gameSlug)
     .eq("game_player_id", gamePlayerId)
-    .maybeSingle<RealStatsRow>();
+    .maybeSingle<TeamRow>();
 
   // 2026-08-20 user request ("Find the players team win probability and
   // put that on there... C/S probability for keeper and defenders...
@@ -94,14 +82,14 @@ export async function GET(request: NextRequest) {
   // carry different rows per fantasy game (separate compute runs), so the
   // fantasy_games.id lookup below isn't optional.
   let teamWinProbability: number | null = null;
-  if (realStatsRow?.team_id != null && data.primaryFixture) {
+  if (teamRow?.team_id != null && data.primaryFixture) {
     const { data: gameRow } = await supabase.from("fantasy_games").select("id").eq("slug", gameSlug).maybeSingle<{ id: number }>();
     if (gameRow) {
       const { data: difficultyRow } = await supabase
         .from("team_fixture_difficulty")
         .select("team_win_prob")
         .eq("game_id", gameRow.id)
-        .eq("team_id", realStatsRow.team_id)
+        .eq("team_id", teamRow.team_id)
         .eq("fixture_id", data.primaryFixture.fixtureId)
         .maybeSingle<{ team_win_prob: number | string }>();
       teamWinProbability = difficultyRow ? Number(difficultyRow.team_win_prob) : null;
@@ -120,6 +108,24 @@ export async function GET(request: NextRequest) {
   const goalProbability = data.moduleDetail?.goal ? toProbability(data.moduleDetail.goal.finalRate) : null;
   const assistProbability = data.moduleDetail?.assist ? toProbability(data.moduleDetail.assist.finalRate) : null;
 
+  // 2026-08-20 user request ("we want these cards to be projecting into
+  // the future... replace last season's stats with the projection
+  // trend"). Reuses the exact same helper PlayerInfoPanel's own trend
+  // chart already calls (lib/projectionTrend.ts) - same dedup-by-gameweek
+  // semantics, same 5-gameweek default window, so the card never disagrees
+  // with what the player's own detail page already shows.
+  const trend = await getPlayerProjectionTrend(supabase, gamePlayerId, data.gameweek ?? 1, 5);
+
+  // Same request's "if you can fit on the second game warning/info too" -
+  // condensed to one line, same wording PlayerInfoPanel uses for the
+  // Carabao-Cup-style extra-fixture note.
+  const additionalFixturesNote =
+    data.additionalFixtures.count > 0
+      ? `+${data.additionalFixtures.combinedContribution.toFixed(1)} more if also selected for ${data.additionalFixtures.fixtures
+          .map((fx) => competitionLabel(fx.competition))
+          .join(" & ")} - total ~${(data.finalScore + data.additionalFixtures.combinedContribution).toFixed(1)} across both games`
+      : null;
+
   const [logoDataUri, kitDataUri, oswaldMedium, oswaldBold] = await Promise.all([
     loadPublicImageAsDataUri("logo.png"),
     (() => {
@@ -129,25 +135,6 @@ export async function GET(request: NextRequest) {
     loadFont("Oswald-Medium.ttf"),
     loadFont("Oswald-Bold.ttf"),
   ]);
-
-  // Same field order/priority as PlayerInfoPanel's own Fantasy Stats grid
-  // (see components/PlayerInfoPanel.tsx) - a card only has room for 3
-  // tiles, so this takes the first 3 the real data actually has, rather
-  // than a fixed set that could be all-empty for some positions (e.g.
-  // "Goals/Assists" for a keeper).
-  const statTiles: [string, number | string][] = (
-    [
-      ["Total Pts", realStatsRow?.real_total_points],
-      ["Goals", realStatsRow?.real_goals],
-      ["Assists", realStatsRow?.real_assists],
-      ["Clean Sheets", realStatsRow?.real_clean_sheets],
-      ["Tackles", realStatsRow?.real_tackles],
-      ["Saves", realStatsRow?.real_saves],
-      ["Appearances", realStatsRow?.real_appearances],
-    ] as [string, number | string | null | undefined][]
-  )
-    .filter((entry): entry is [string, number | string] => entry[1] != null)
-    .slice(0, 3);
 
   return new ImageResponse(
     buildPlayerCardElement({
@@ -162,9 +149,8 @@ export async function GET(request: NextRequest) {
       kitDataUri,
       primaryFixture: data.primaryFixture,
       competitionLabel,
-      lastGw: realStatsRow?.last_gw ?? null,
-      lastGwPoints: realStatsRow?.last_gw_points ?? null,
-      statTiles,
+      trend,
+      additionalFixturesNote,
       teamWinProbability,
       cleanSheetProbability,
       goalProbability,
