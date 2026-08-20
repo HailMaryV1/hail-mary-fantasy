@@ -101,7 +101,7 @@ export default function PlayerInfoPanel({
             <div className="flex items-start justify-between gap-2">
               <h2 className="text-base font-semibold text-white">{data.fullName}</h2>
               <a
-                href={`/api/player-card?gameSlug=${gameSlug}&gamePlayerId=${gamePlayerId}`}
+                href={`/api/player-card?gameSlug=${gameSlug}&gamePlayerId=${gamePlayerId}${viewedGameweek != null ? `&gameweek=${viewedGameweek}` : ""}`}
                 download={`hail-mary-${data.fullName.toLowerCase().replace(/\s+/g, "-")}.png`}
                 className="flex shrink-0 items-center gap-1 rounded-full border border-navy-700 bg-navy-950 px-2.5 py-1 text-[10px] font-semibold text-sky-400 hover:border-sky-500 hover:text-sky-300"
                 title="Download a shareable projection card for socials"

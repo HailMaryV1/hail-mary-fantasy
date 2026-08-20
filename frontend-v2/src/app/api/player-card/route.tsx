@@ -3,7 +3,7 @@ import path from "path";
 import { NextRequest } from "next/server";
 import { ImageResponse } from "next/og";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { fetchEngineExplanation, competitionLabel } from "@/lib/engineExplainability";
+import { fetchEngineExplanation, fetchEngineExplanationForGameweek, competitionLabel } from "@/lib/engineExplainability";
 import { getKitImage } from "@/lib/kitImages";
 import { getPlayerProjectionTrend } from "@/lib/projectionTrend";
 import { buildPlayerCardElement, PLAYER_CARD_SIZE } from "@/lib/playerCard";
@@ -54,6 +54,14 @@ export async function GET(request: NextRequest) {
   if (!gameSlug || !Number.isFinite(gamePlayerId)) {
     return new Response("Missing gameSlug or gamePlayerId.", { status: 400 });
   }
+  // Explicit gameweek override (EFL Fantasy only, 2026-08-21 user report -
+  // same mismatch as PlayerInfoPanel.tsx: the shared player_projection_summary
+  // view's own current_gw guess can disagree with EFL Fantasy's per-player
+  // locking, so the downloaded card showed a different fixture/projection
+  // than the panel the user just looked at). Every other game's download
+  // link omits this param, unchanged.
+  const gameweekParam = request.nextUrl.searchParams.get("gameweek");
+  const gameweek = gameweekParam ? Number(gameweekParam) : NaN;
 
   const supabase = await createAuthServerClient();
   const {
@@ -61,7 +69,9 @@ export async function GET(request: NextRequest) {
   } = await supabase.auth.getUser();
   if (!user) return new Response("Not signed in.", { status: 401 });
 
-  const data = await fetchEngineExplanation(supabase, gameSlug, gamePlayerId);
+  const data = Number.isFinite(gameweek)
+    ? await fetchEngineExplanationForGameweek(supabase, gameSlug, gamePlayerId, gameweek)
+    : await fetchEngineExplanation(supabase, gameSlug, gamePlayerId);
   if (!data) return new Response("No projection available for this player yet.", { status: 404 });
 
   const { data: teamRow } = await supabase
