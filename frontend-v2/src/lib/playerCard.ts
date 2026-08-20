@@ -76,6 +76,16 @@ export type PlayerCardInput = {
   lastGw: number | null;
   lastGwPoints: number | string | null;
   statTiles: [string, number | string][];
+  // 2026-08-20 user request - real model output, not real-world results:
+  // team win probability (team_fixture_difficulty.team_win_prob) is
+  // fixture/team-level so it applies to every position; clean sheet is
+  // shown for GK/DEF, goal/assist for MID/FWD - all straight off the
+  // engine's own Bookmaker Intelligence blend (moduleDetail), same figures
+  // Engine Validation already shows, just surfaced here too.
+  teamWinProbability: number | null;
+  cleanSheetProbability: number | null;
+  goalProbability: number | null;
+  assistProbability: number | null;
 };
 
 // Tactics-board backdrop: a passing-network of dashed arcs, connector
@@ -200,7 +210,22 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
     lastGw,
     lastGwPoints,
     statTiles,
+    teamWinProbability,
+    cleanSheetProbability,
+    goalProbability,
+    assistProbability,
   } = input;
+
+  const isDefensivePosition = position === "GK" || position === "DEF";
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  const insightTiles: [string, string][] = [
+    ...(teamWinProbability != null ? ([["Team Win", pct(teamWinProbability)]] as [string, string][]) : []),
+    ...(isDefensivePosition && cleanSheetProbability != null
+      ? ([["Clean Sheet", pct(cleanSheetProbability)]] as [string, string][])
+      : []),
+    ...(!isDefensivePosition && goalProbability != null ? ([["Goal Chance", pct(goalProbability)]] as [string, string][]) : []),
+    ...(!isDefensivePosition && assistProbability != null ? ([["Assist Chance", pct(assistProbability)]] as [string, string][]) : []),
+  ];
 
   const colors = getTeamColors(teamName);
   const confidence = CONFIDENCE_COLORS[confidenceLabel] ?? CONFIDENCE_COLORS.Low;
@@ -406,6 +431,20 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
           ),
         ]
       ),
+
+      // model insight tiles - team win / clean sheet / goal / assist %
+      insightTiles.length > 0
+        ? h(
+            "div",
+            { style: { display: "flex", gap: s(14), marginTop: s(18) } },
+            ...insightTiles.map(([tileLabel, tileValue]) =>
+              panel({ flexDirection: "column", alignItems: "center", flex: 1, padding: `${s(14)}px ${s(8)}px` }, [
+                heading({ fontSize: s(28), color: SKY[400] }, tileValue),
+                label({ fontSize: s(14), color: NAVY[500], marginTop: s(3) }, tileLabel),
+              ])
+            )
+          )
+        : null,
 
       // stat tiles
       lastGwPoints != null || statTiles.length > 0

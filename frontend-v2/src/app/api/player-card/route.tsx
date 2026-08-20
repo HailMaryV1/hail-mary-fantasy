@@ -34,6 +34,7 @@ type RealStatsRow = {
   real_appearances: number | null;
   last_gw: number | null;
   last_gw_points: number | string | null;
+  team_id: number;
 };
 
 /**
@@ -75,10 +76,49 @@ export async function GET(request: NextRequest) {
 
   const { data: realStatsRow } = await supabase
     .from("game_player_pool")
-    .select("real_total_points, real_goals, real_assists, real_clean_sheets, real_saves, real_tackles, real_appearances, last_gw, last_gw_points")
+    .select(
+      "real_total_points, real_goals, real_assists, real_clean_sheets, real_saves, real_tackles, real_appearances, last_gw, last_gw_points, team_id"
+    )
     .eq("game_slug", gameSlug)
     .eq("game_player_id", gamePlayerId)
     .maybeSingle<RealStatsRow>();
+
+  // 2026-08-20 user request ("Find the players team win probability and
+  // put that on there... C/S probability for keeper and defenders...
+  // goal and/or assist probability on mids and forwards"). Goal/assist/
+  // clean-sheet come straight off the engine's own Bookmaker Intelligence
+  // blend (data.moduleDetail) - already computed, no new query. Team win
+  // probability isn't part of that per-player blend (it's a team-level
+  // figure), so it's the one extra lookup here: team_fixture_difficulty
+  // is keyed by (game_id, team_id, fixture_id) - the same real fixture can
+  // carry different rows per fantasy game (separate compute runs), so the
+  // fantasy_games.id lookup below isn't optional.
+  let teamWinProbability: number | null = null;
+  if (realStatsRow?.team_id != null && data.primaryFixture) {
+    const { data: gameRow } = await supabase.from("fantasy_games").select("id").eq("slug", gameSlug).maybeSingle<{ id: number }>();
+    if (gameRow) {
+      const { data: difficultyRow } = await supabase
+        .from("team_fixture_difficulty")
+        .select("team_win_prob")
+        .eq("game_id", gameRow.id)
+        .eq("team_id", realStatsRow.team_id)
+        .eq("fixture_id", data.primaryFixture.fixtureId)
+        .maybeSingle<{ team_win_prob: number | string }>();
+      teamWinProbability = difficultyRow ? Number(difficultyRow.team_win_prob) : null;
+    }
+  }
+  // clean_sheet_60min's finalRate is already a bounded probability (0-1).
+  // goal/assist's finalRate is an expected COUNT for the fixture (can
+  // legitimately exceed 1 for a high-volume striker at home to a weak
+  // side - e.g. Haaland's real finalRate here is 1.19) - converting via
+  // the standard Poisson P(at least one) = 1 - e^-rate turns that into an
+  // honest bounded probability instead of a ">100%" figure, same
+  // Poisson-calibration approach scripts/compute_expected_goals.py
+  // already uses elsewhere in this engine.
+  const toProbability = (rate: number) => 1 - Math.exp(-rate);
+  const cleanSheetProbability = data.moduleDetail?.clean_sheet_60min?.finalRate ?? null;
+  const goalProbability = data.moduleDetail?.goal ? toProbability(data.moduleDetail.goal.finalRate) : null;
+  const assistProbability = data.moduleDetail?.assist ? toProbability(data.moduleDetail.assist.finalRate) : null;
 
   const [logoDataUri, kitDataUri, oswaldMedium, oswaldBold] = await Promise.all([
     loadPublicImageAsDataUri("logo.png"),
@@ -125,6 +165,10 @@ export async function GET(request: NextRequest) {
       lastGw: realStatsRow?.last_gw ?? null,
       lastGwPoints: realStatsRow?.last_gw_points ?? null,
       statTiles,
+      teamWinProbability,
+      cleanSheetProbability,
+      goalProbability,
+      assistProbability,
     }) as ConstructorParameters<typeof ImageResponse>[0],
     {
       width: PLAYER_CARD_SIZE,
