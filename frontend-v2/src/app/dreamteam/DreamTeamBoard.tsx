@@ -389,11 +389,19 @@ export default function DreamTeamBoard({
     // Tentative incoming pick (not yet submitted) shows in place of the
     // sold player - same id (the ORIGINAL squad member's) so PitchView's
     // onSelect below can still tell which sale/pick this slot belongs to.
+    // position must be the INCOMING pick's real position once staged, not
+    // the sold player's - PitchView groups pitch rows strictly by position
+    // (FWD/MID/DEF/GK), so a staged cross-position pick (e.g. selling a
+    // MID, buying a FWD - the whole point of pickSlotFor/isLegalFormationPick
+    // allowing it) needs to visually land in its own real row, or the
+    // formation never appears to change even though the pick is legal -
+    // real user report 2026-08-21: "i can[']t manually change formations
+    // and you wont set the auto formation change."
     const display = swap ?? p;
     return {
       game_player_id: p.game_player_id,
       full_name: display.full_name,
-      position: p.position,
+      position: display.position,
       team_name: display.team_name,
       is_starting: true,
       price: display.price,
