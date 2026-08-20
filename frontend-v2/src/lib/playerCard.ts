@@ -51,6 +51,27 @@ const NAVY = { 950: "#050b16", 900: "#0b1524", 850: "#0f1c30", 800: "#14203a", 7
 const SKY = { 400: "#38bdf8" };
 const INK = "#03050b";
 
+// Picks which of a club's two colors should glow behind the kit render.
+// 2026-08-20 user report ("white shirts still struggling"): for a white-
+// primary club (Fulham, Tottenham, Derby, Bromley, 12 in total - see
+// teamColors.ts) the drop-shadow below used to always glow with `primary`,
+// i.e. white behind a white shirt on the dark backdrop - that doesn't add a
+// rim of contrast the way it does for a colored kit, it just smears the
+// low-res PNG's already-jagged edge into visible white noise (confirmed
+// against a real rendered Bromley card). Falls back to `secondary` whenever
+// primary is near-white, giving a dark rim that actually hides the jaggies
+// instead of amplifying them.
+function isNearWhite(hex: string): boolean {
+  const n = parseInt(hex.replace("#", ""), 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return (r * 299 + g * 587 + b * 114) / 1000 > 235;
+}
+function kitGlowColor(colors: { primary: string; secondary: string }): string {
+  return isNearWhite(colors.primary) ? colors.secondary : colors.primary;
+}
+
 const CONFIDENCE_COLORS: Record<string, { bg: string; fg: string }> = {
   High: { bg: "#0f3d2e", fg: "#34d399" },
   Medium: { bg: "#4a2c06", fg: "#fbbf24" },
@@ -482,7 +503,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
               src: kitDataUri,
               width: s(208),
               height: s(224),
-              style: { objectFit: "contain", filter: `drop-shadow(0px 0px ${s(14)}px ${colors.primary}99)` },
+              style: { objectFit: "contain", filter: `drop-shadow(0px 0px ${s(14)}px ${kitGlowColor(colors)}99)` },
             })
           : h(
               "div",
