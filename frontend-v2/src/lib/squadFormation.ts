@@ -1,13 +1,13 @@
 export type SquadPosition = "GK" | "DEF" | "MID" | "FWD";
 export type Formation = { GK: number; DEF: number; MID: number; FWD: number };
 
-/** Dream Team's 7 real formations (migration 0106's game_formations,
- * uses_formations=true, no-bench 11-a-side - see game_squad_rules) -
- * every squad member always starts, so these 7 shapes are the only
- * legal DEF/MID/FWD/GK splits for the whole 11, not just a starting XI
- * chosen from a bigger bench. Cloud FF shares this exact same list
- * (confirmed live via game_formations) but isn't wired to it yet. */
-export const DREAMTEAM_FORMATIONS: Formation[] = [
+/** Dream Team AND Cloud FF's 7 real formations (migration 0106/game_
+ * formations, uses_formations=true, no-bench 11-a-side - see game_
+ * squad_rules; confirmed identical for both games live via game_
+ * formations) - every squad member always starts, so these 7 shapes are
+ * the only legal DEF/MID/FWD/GK splits for the whole 11, not just a
+ * starting XI chosen from a bigger bench. */
+export const ELEVEN_A_SIDE_FORMATIONS: Formation[] = [
   { GK: 1, DEF: 4, MID: 4, FWD: 2 },
   { GK: 1, DEF: 4, MID: 3, FWD: 3 },
   { GK: 1, DEF: 4, MID: 5, FWD: 1 },

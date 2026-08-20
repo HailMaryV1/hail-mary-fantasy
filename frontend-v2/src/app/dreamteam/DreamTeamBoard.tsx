@@ -13,7 +13,7 @@ import SaveTeamButton from "@/components/SaveTeamButton";
 import TrendChart from "@/components/TrendChart";
 import type { TrendPoint } from "@/lib/projectionTrend";
 import { searchPool } from "@/lib/poolSearch";
-import { isLegalFormationPick, countByPosition, DREAMTEAM_FORMATIONS } from "@/lib/squadFormation";
+import { isLegalFormationPick, countByPosition, ELEVEN_A_SIDE_FORMATIONS } from "@/lib/squadFormation";
 import { setBooster, setCaptain, saveTeamForGameweek } from "./actions";
 import { applyRecommendation } from "./ask-mary/actions";
 
@@ -529,7 +529,7 @@ export default function DreamTeamBoard({
     // land in two slots at once.
     if (Array.from(pendingSwaps.values()).some((v) => v.game_player_id === p.game_player_id)) return null;
     if (openSlots.length === 0 || poolBudget < p.price) return null;
-    if (!isLegalFormationPick(keptCounts, stagedCounts, p.position, openSlots.length, DREAMTEAM_FORMATIONS)) return null;
+    if (!isLegalFormationPick(keptCounts, stagedCounts, p.position, openSlots.length, ELEVEN_A_SIDE_FORMATIONS)) return null;
     // Prefer a same-position slot when one's open, so a plain like-for-
     // like swap never spends a different slot than the obvious one.
     return openSlots.find((o) => o.position === p.position) ?? openSlots[0];

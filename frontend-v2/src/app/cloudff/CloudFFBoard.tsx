@@ -11,7 +11,9 @@ import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import SaveTeamButton from "@/components/SaveTeamButton";
 import { searchPool } from "@/lib/poolSearch";
-import { makeTransfer, saveTeamForGameweek } from "./actions";
+import { saveTeamForGameweek } from "./actions";
+import { applyRecommendation } from "./ask-mary/actions";
+import { isLegalFormationPick, countByPosition, ELEVEN_A_SIDE_FORMATIONS } from "@/lib/squadFormation";
 
 export const POOL_PAGE_SIZE = 15;
 
@@ -177,13 +179,14 @@ export default function CloudFFBoard({
 }) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
-  // Multiple squad members can be marked for sale at once - each becomes
-  // an empty placeholder on the pitch, so a player unaffordable on any
-  // single sale can become affordable once a cheaper swap elsewhere has
-  // actually landed and grown the real bank - see DreamTeamBoard.tsx's
-  // identical pattern/rationale (no fictional shared pot, legality always
-  // reflects what the next real makeTransfer call can actually validate).
+  // Multiple squad members can be marked for sale at once, sharing one
+  // budget pot and staged locally until Confirm - same batched pattern as
+  // DreamTeamBoard.tsx (2026-08-20: switched from Cloud FF's old
+  // immediate-per-click makeTransfer, which required each replacement to
+  // match its own sale's price AND position individually, blocking a
+  // pricier or cross-position pick the shared pot could genuinely afford).
   const [pendingOutIds, setPendingOutIds] = useState<Set<number>>(new Set());
+  const [pendingSwaps, setPendingSwaps] = useState<Map<number, PoolPlayer>>(new Map());
   const [isTransferPending, startTransferTransition] = useTransition();
   const [transferError, setTransferError] = useState<string | null>(null);
   // Action-menu state (Transfer Out / Player Info) - opens on a plain
@@ -321,24 +324,47 @@ export default function CloudFFBoard({
 
   const pendingOutPlayers = optimisticSquad.filter((p) => pendingOutIds.has(p.game_player_id));
 
-  const pitchPlayers: PitchPlayer[] = optimisticSquad.map((p) => ({
-    game_player_id: p.game_player_id,
-    full_name: p.full_name,
-    position: p.position,
-    team_name: p.team_name,
-    is_starting: true,
-    price: p.price,
-    score: p.score,
-    rotationRisk: p.rotationRisk,
-    ffscoutStatus: p.ffscoutStatus,
-    ffscoutStartProbability: p.ffscoutStartProbability,
-    ffscoutDetail: p.ffscoutDetail,
-    ffscoutExpectedReturnDate: p.ffscoutExpectedReturnDate,
-    statText: displayMode in fixtureModeCount ? undefined : statTextFor(p),
-    statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(p.fixtures, fixtureModeCount[displayMode]) : undefined,
-    isEmpty: pendingOutIds.has(p.game_player_id),
-    emptyLabel: `Sold ${p.full_name}`,
-  }));
+  const pitchPlayers: PitchPlayer[] = optimisticSquad.map((p) => {
+    const swap = pendingSwaps.get(p.game_player_id);
+    if (pendingOutIds.has(p.game_player_id) && !swap) {
+      return {
+        game_player_id: p.game_player_id,
+        full_name: p.full_name,
+        position: p.position,
+        team_name: p.team_name,
+        is_starting: true,
+        price: p.price,
+        score: p.score,
+        isEmpty: true,
+        emptyLabel: `Sold ${p.full_name}`,
+      };
+    }
+    // Tentative incoming pick (not yet submitted) shows in place of the
+    // sold player - same id (the ORIGINAL squad member's) so PitchView's
+    // onSelect below can still tell which sale/pick this slot belongs to.
+    // position deliberately comes from `display`, not `p` - a cross-
+    // position pick renders in ITS OWN row (PitchView groups dynamically
+    // by each player's own position), which is what lets the pitch show
+    // the new formation shape without any layout changes.
+    const display = swap ?? p;
+    return {
+      game_player_id: p.game_player_id,
+      full_name: display.full_name,
+      position: display.position,
+      team_name: display.team_name,
+      is_starting: true,
+      price: display.price,
+      score: display.score,
+      rotationRisk: p.rotationRisk,
+      ffscoutStatus: p.ffscoutStatus,
+      ffscoutStartProbability: p.ffscoutStartProbability,
+      ffscoutDetail: p.ffscoutDetail,
+      ffscoutExpectedReturnDate: p.ffscoutExpectedReturnDate,
+      statText: displayMode in fixtureModeCount ? undefined : statTextFor(display),
+      statTiles: displayMode in fixtureModeCount ? fixtureTilesFor(display.fixtures, fixtureModeCount[displayMode]) : undefined,
+      isEmpty: false,
+    };
+  });
 
   const menuPlayer = menuPlayerId != null ? (menuIsSquadMember ? optimisticSquad : pagedPool).find((p) => p.game_player_id === menuPlayerId) : undefined;
   const menuActions: PlayerAction[] = !menuPlayer
@@ -361,34 +387,60 @@ export default function CloudFFBoard({
   const budget = bank + teamValue;
   const optimisticTeamValue = optimisticSquad.reduce((sum, p) => sum + p.price, 0);
   const optimisticBank = budget - optimisticTeamValue;
-  const displayBank = optimisticBank + pendingOutPlayers.reduce((sum, p) => sum + p.price, 0);
+  // Every pending sale's price is one shared pot: real bank, plus every
+  // sold player's price, minus whatever's already tentatively spent on
+  // picks staged so far - see DreamTeamBoard.tsx's identical poolBudget.
+  // Nothing is sent to the server until Confirm.
+  const poolBudget =
+    optimisticBank +
+    pendingOutPlayers.reduce((sum, p) => sum + p.price, 0) -
+    Array.from(pendingSwaps.values()).reduce((sum, p) => sum + p.price, 0);
+  const displayBank = poolBudget;
 
-  // Real legality, matching exactly what a single makeTransfer call will
-  // itself validate server-side: each empty slot only has its OWN sale's
-  // price to spend, plus whatever's already really in the bank - a second
-  // pending sale's cash isn't real until that swap actually lands. No
-  // transfer cap and no club-limit check - Cloud FF's transfers are always
-  // free and its game_squad_rules.max_per_club is null (see ./actions.ts).
-  function legalOutgoingFor(p: PoolPlayer): BoardPlayer[] {
-    return pendingOutPlayers.filter((o) => o.position === p.position && optimisticBank + o.price >= p.price);
+  // Which sold slot clicking `p` would fill - any currently-open slot, not
+  // just one matching p's own position, as long as committing to p's
+  // position still leaves one of Cloud FF's 7 real formations reachable
+  // once the other open slots are filled too - see squadFormation.ts and
+  // DreamTeamBoard.tsx's identical pickSlotFor (2026-08-20 fix, ported here).
+  const keptCounts = countByPosition(optimisticSquad.filter((p) => !pendingOutIds.has(p.game_player_id)));
+  const stagedCounts = countByPosition(Array.from(pendingSwaps.values()));
+  const openSlots = pendingOutPlayers.filter((o) => !pendingSwaps.has(o.game_player_id));
+  function pickSlotFor(p: PoolPlayer): BoardPlayer | null {
+    if (Array.from(pendingSwaps.values()).some((v) => v.game_player_id === p.game_player_id)) return null;
+    if (openSlots.length === 0 || poolBudget < p.price) return null;
+    if (!isLegalFormationPick(keptCounts, stagedCounts, p.position, openSlots.length, ELEVEN_A_SIDE_FORMATIONS)) return null;
+    return openSlots.find((o) => o.position === p.position) ?? openSlots[0];
   }
-  const legalPoolIds = new Set(pagedPool.filter((p) => legalOutgoingFor(p).length > 0).map((p) => p.game_player_id));
+  const legalPoolIds = new Set(pagedPool.filter((p) => pickSlotFor(p) !== null).map((p) => p.game_player_id));
 
-  function handleTransfer(inGamePlayerId: number) {
-    const incomingPoolPlayer = pagedPool.find((p) => p.game_player_id === inGamePlayerId);
-    if (!incomingPoolPlayer) return;
-    // Of the empty slots this player can actually afford, fill the
-    // cheapest-outgoing one first - that leaves the more valuable pending
-    // sale(s) still available to help fund a pricier pick later.
-    const outgoing = legalOutgoingFor(incomingPoolPlayer).sort((a, b) => a.price - b.price)[0];
-    if (!outgoing) return;
+  function handlePoolClick(inPlayer: PoolPlayer) {
+    const slot = pickSlotFor(inPlayer);
+    if (!slot) return;
+    setPendingSwaps((prev) => {
+      const next = new Map(prev);
+      next.set(slot.game_player_id, inPlayer);
+      return next;
+    });
+  }
+
+  function handleConfirmTransfers() {
+    const legs = Array.from(pendingSwaps.entries()).map(([outGamePlayerId, inPlayer]) => {
+      const outPlayer = pendingOutPlayers.find((o) => o.game_player_id === outGamePlayerId)!;
+      return { outGamePlayerId, inGamePlayerId: inPlayer.game_player_id, outPrice: outPlayer.price, inPrice: inPlayer.price };
+    });
+    if (legs.length === 0) return;
     setTransferError(null);
     startTransferTransition(async () => {
-      applyOptimisticSquad(optimisticTransfer(optimisticSquad, outgoing.game_player_id, incomingPoolPlayer));
-      const result = await makeTransfer({ squadId, outGamePlayerId: outgoing.game_player_id, inGamePlayerId });
+      const newSquad = legs.reduce(
+        (sq, leg) => optimisticTransfer(sq, leg.outGamePlayerId, pendingSwaps.get(leg.outGamePlayerId)!),
+        optimisticSquad
+      );
+      applyOptimisticSquad(newSquad);
+      const result = await applyRecommendation({ squadId, legs });
       if (result?.error) setTransferError(result.error);
       else {
-        setPendingOutIds((prev) => { const next = new Set(prev); next.delete(outgoing.game_player_id); return next; });
+        setPendingOutIds(new Set());
+        setPendingSwaps(new Map());
         setRefreshKey((k) => k + 1);
       }
     });
@@ -432,14 +484,29 @@ export default function CloudFFBoard({
         {pendingOutPlayers.length > 0 && (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-700 bg-sky-950/40 px-4 py-2.5">
             <p className="text-sm text-sky-200">
-              Selling <span className="font-semibold text-white">{pendingOutPlayers.map((p) => p.full_name).join(", ")}</span>. Fill each empty
-              slot with a same-position replacement - picking a cheaper one for one slot frees real budget for a pricier pick in another, so a
-              player you couldn&apos;t afford alone can become affordable once you&apos;ve banked a saving elsewhere. Tap an empty slot on the pitch
-              to cancel that sale.
+              Selling <span className="font-semibold text-white">{pendingOutPlayers.map((p) => p.full_name).join(", ")}</span>. Their combined
+              £{pendingOutPlayers.reduce((sum, p) => sum + p.price, 0).toFixed(1)}m is one shared pot - pick replacements for each slot in any
+              order, any combination. Tap a filled slot on the pitch to change that pick, an empty one to cancel that sale, then Confirm once
+              every slot has a pick.
             </p>
-            <button onClick={() => setPendingOutIds(new Set())} className="text-xs font-medium text-sky-400 hover:text-sky-300">
-              Cancel all
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleConfirmTransfers}
+                disabled={pendingSwaps.size !== pendingOutPlayers.length || isTransferPending}
+                className="rounded-full bg-sky-500 px-3 py-1.5 text-xs font-semibold text-navy-950 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {isTransferPending ? "Confirming…" : `Confirm ${pendingOutPlayers.length} transfer${pendingOutPlayers.length === 1 ? "" : "s"}`}
+              </button>
+              <button
+                onClick={() => {
+                  setPendingOutIds(new Set());
+                  setPendingSwaps(new Map());
+                }}
+                className="text-xs font-medium text-sky-400 hover:text-sky-300"
+              >
+                Cancel all
+              </button>
+            </div>
           </div>
         )}
         {transferError && <p className="mt-2 text-xs text-red-400">{transferError}</p>}
@@ -520,6 +587,17 @@ export default function CloudFFBoard({
               onSelect={(p) => {
                 if (isTransferPending) return;
                 if (pendingOutIds.has(p.game_player_id)) {
+                  if (pendingSwaps.has(p.game_player_id)) {
+                    // A tentative pick is already staged here - unassign
+                    // just the pick, keep the sale itself pending so the
+                    // user can choose a different replacement.
+                    setPendingSwaps((prev) => {
+                      const next = new Map(prev);
+                      next.delete(p.game_player_id);
+                      return next;
+                    });
+                    return;
+                  }
                   setPendingOutIds((prev) => {
                     const next = new Set(prev);
                     next.delete(p.game_player_id);
@@ -626,7 +704,7 @@ export default function CloudFFBoard({
                           key={p.game_player_id}
                           onClick={() => {
                             if (rowClickable) {
-                              handleTransfer(p.game_player_id);
+                              handlePoolClick(p);
                               return;
                             }
                             if (pendingOutPlayers.length === 0) {

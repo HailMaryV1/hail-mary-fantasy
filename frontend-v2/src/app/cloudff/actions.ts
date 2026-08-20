@@ -10,6 +10,7 @@ import { getMatchDaysForSquad, ensureAutoPicks, fetchScoresForMatchDays } from "
 // the calendar than the page the user would otherwise visit by hand.
 const CAPTAIN_REFILL_WINDOW_GAMEWEEKS = 3;
 import { saveSquadGameweekLock } from "@/lib/gameweekHistory";
+import { isLegalFormationPick, countByPosition, ELEVEN_A_SIDE_FORMATIONS, type SquadPosition } from "@/lib/squadFormation";
 
 /**
  * A real like-for-like transfer (out one squad player, in one pool player
@@ -56,17 +57,27 @@ export async function makeTransfer({
     .eq("id", inGamePlayerId)
     .single<{ id: number; price: number; is_active: boolean; position_code: string }>();
   if (!incoming || !incoming.is_active) return { error: "That player isn't available." };
-  // Cloud FF's OWN classification (position_code), not the shared
-  // players.position which can genuinely disagree between games (2026-08-08 fix).
-  if (incoming.position_code !== squadPlayerRow.game_players.position_code) {
-    return { error: "Replacement must be the same position." };
-  }
 
   const { data: allSquadPlayers } = await supabase
     .from("squad_players")
-    .select("game_players(price)")
+    .select("game_player_id, game_players(price, position_code)")
     .eq("squad_id", squadId)
-    .returns<{ game_players: { price: number } }[]>();
+    .returns<{ game_player_id: number; game_players: { price: number; position_code: string } }[]>();
+  // 2026-08-20 user report (same fix as Dream Team's makeTransfer): a
+  // replacement was always required to match its outgoing player's OWN
+  // position, blocking a swap that would still leave the squad on one of
+  // Cloud FF's 7 real formations (identical shapes to Dream Team's - see
+  // squadFormation.ts). isLegalFormationPick with totalOpenSlots=1 is
+  // exactly "does this single swap still reach a real formation."
+  const keptCounts = countByPosition(
+    (allSquadPlayers ?? [])
+      .filter((p) => p.game_player_id !== outGamePlayerId)
+      .map((p) => ({ position: p.game_players.position_code as SquadPosition }))
+  );
+  if (!isLegalFormationPick(keptCounts, { GK: 0, DEF: 0, MID: 0, FWD: 0 }, incoming.position_code as SquadPosition, 1, ELEVEN_A_SIDE_FORMATIONS)) {
+    return { error: "That swap would leave the squad off every real formation (needs exactly 1 GK plus a legal DEF/MID/FWD split, e.g. 4-4-2 or 3-5-2)." };
+  }
+
   const teamValue = (allSquadPlayers ?? []).reduce((sum, p) => sum + Number(p.game_players.price), 0);
   const { data: rules } = await supabase.from("game_squad_rules").select("budget").eq("game_id", squad.game_id).single();
   const bank = Number(rules?.budget ?? 100) - teamValue;

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming, getGameweekInfo } from "@/lib/gameweek";
 import { saveSquadGameweekLock } from "@/lib/gameweekHistory";
-import { isLegalFormationPick, countByPosition, DREAMTEAM_FORMATIONS, type SquadPosition } from "@/lib/squadFormation";
+import { isLegalFormationPick, countByPosition, ELEVEN_A_SIDE_FORMATIONS, type SquadPosition } from "@/lib/squadFormation";
 
 type Booster = "goal_bonus" | "twelfth_man" | "max_captain";
 
@@ -133,7 +133,7 @@ export async function makeTransfer({
       .filter((p) => p.game_player_id !== outGamePlayerId)
       .map((p) => ({ position: p.game_players.position_code as SquadPosition }))
   );
-  if (!isLegalFormationPick(keptCounts, { GK: 0, DEF: 0, MID: 0, FWD: 0 }, incoming.position_code as SquadPosition, 1, DREAMTEAM_FORMATIONS)) {
+  if (!isLegalFormationPick(keptCounts, { GK: 0, DEF: 0, MID: 0, FWD: 0 }, incoming.position_code as SquadPosition, 1, ELEVEN_A_SIDE_FORMATIONS)) {
     return { error: "That swap would leave the squad off every real formation (needs exactly 1 GK plus a legal DEF/MID/FWD split, e.g. 4-4-2 or 3-5-2)." };
   }
 
