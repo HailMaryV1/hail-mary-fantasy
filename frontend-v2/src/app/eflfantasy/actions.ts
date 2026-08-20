@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getSeasonTiming, getGameweekInfo } from "@/lib/gameweek";
+import { getEflGameweekInfo, getTeamKickoffMap, isTeamLocked } from "@/lib/eflFixtureLocking";
 import { getClubPickCounts, CLUB_CAP } from "@/lib/eflClubCapCheck";
 import { isLegalPositionSwap, type OutfieldPosition, type SquadPosition } from "@/lib/eflFormation";
 import { saveSquadGameweekLock } from "@/lib/gameweekHistory";
@@ -49,19 +49,35 @@ export async function makeTransfer({
 
   const { data: squadPlayerRows } = await supabase
     .from("squad_players")
-    .select("id, game_player_id, game_players(position_code)")
+    .select("id, game_player_id, game_players(position_code, players(team_id))")
     .eq("squad_id", squadId)
-    .returns<{ id: number; game_player_id: number; game_players: { position_code: string } }[]>();
+    .returns<{ id: number; game_player_id: number; game_players: { position_code: string; players: { team_id: number } } }[]>();
   const squadPlayerRow = squadPlayerRows?.find((r) => r.game_player_id === outGamePlayerId);
   if (!squadPlayerRow) return { error: "That player isn't in your squad." };
 
   const { data: incoming } = await supabase
     .from("game_players")
-    .select("id, is_active, position_code")
+    .select("id, is_active, position_code, players(team_id)")
     .eq("id", inGamePlayerId)
-    .single<{ id: number; is_active: boolean; position_code: string }>();
+    .single<{ id: number; is_active: boolean; position_code: string; players: { team_id: number } }>();
   if (!incoming || !incoming.is_active) return { error: "That player isn't available." };
   if (incoming.position_code === "CLUB") return { error: "Use the club transfer flow for CLUB picks." };
+
+  // Real EFL Fantasy rule (user-confirmed 2026-08-20): a player locks the
+  // moment their own team's fixture kicks off, "game by game" - not the
+  // whole gameweek at once (see eflFixtureLocking.ts). Checked server-side,
+  // not just hidden client-side, since a stale page load could otherwise
+  // let a transfer through after kickoff.
+  const gwInfo = await getEflGameweekInfo(supabase, squad.game_id);
+  if (gwInfo.planningGameweek != null) {
+    const kickoffMap = await getTeamKickoffMap(supabase, squad.game_id, gwInfo.planningGameweek);
+    if (isTeamLocked(kickoffMap, squadPlayerRow.game_players.players.team_id)) {
+      return { error: "That player's match has already kicked off - they're locked for this gameweek." };
+    }
+    if (isTeamLocked(kickoffMap, incoming.players.team_id)) {
+      return { error: "That player's match has already kicked off - they can't be brought in this gameweek." };
+    }
+  }
 
   // EFL Fantasy's OWN classification (position_code), not the shared
   // players.position which can genuinely disagree between games (2026-08-08 fix).
@@ -79,7 +95,7 @@ export async function makeTransfer({
   const { error: updateError } = await supabase.from("squad_players").update({ game_player_id: inGamePlayerId }).eq("id", squadPlayerRow.id);
   if (updateError) return { error: updateError.message };
 
-  const { planningGameweek } = await getSeasonTiming(supabase, squad.game_id);
+  const { planningGameweek } = gwInfo;
   await supabase.from("squad_transfers").insert({
     squad_id: squadId,
     gameweek: planningGameweek ?? 1,
@@ -121,21 +137,35 @@ export async function makeClubTransfer({
 
   const { data: squadPlayerRow } = await supabase
     .from("squad_players")
-    .select("id, game_players(position_code)")
+    .select("id, game_players(position_code, players(team_id))")
     .eq("squad_id", squadId)
     .eq("game_player_id", outGamePlayerId)
-    .single<{ id: number; game_players: { position_code: string } }>();
+    .single<{ id: number; game_players: { position_code: string; players: { team_id: number } } }>();
   if (!squadPlayerRow || squadPlayerRow.game_players.position_code !== "CLUB") {
     return { error: "That club isn't in your squad." };
   }
 
   const { data: incoming } = await supabase
     .from("game_players")
-    .select("id, is_active, position_code")
+    .select("id, is_active, position_code, players(team_id)")
     .eq("id", inGamePlayerId)
-    .single<{ id: number; is_active: boolean; position_code: string }>();
+    .single<{ id: number; is_active: boolean; position_code: string; players: { team_id: number } }>();
   if (!incoming || !incoming.is_active || incoming.position_code !== "CLUB") {
     return { error: "That club isn't available." };
+  }
+
+  // Real EFL Fantasy rule (user-confirmed 2026-08-20): a club locks the
+  // moment its own fixture kicks off, game by game - see makeTransfer's
+  // identical check above and eflFixtureLocking.ts.
+  const gwInfo = await getEflGameweekInfo(supabase, squad.game_id);
+  if (gwInfo.planningGameweek != null) {
+    const kickoffMap = await getTeamKickoffMap(supabase, squad.game_id, gwInfo.planningGameweek);
+    if (isTeamLocked(kickoffMap, squadPlayerRow.game_players.players.team_id)) {
+      return { error: "That club's fixture has already kicked off - they're locked for this gameweek." };
+    }
+    if (isTeamLocked(kickoffMap, incoming.players.team_id)) {
+      return { error: "That club's fixture has already kicked off - they can't be brought in this gameweek." };
+    }
   }
 
   const pickCounts = await getClubPickCounts(supabase, squadId);
@@ -146,7 +176,7 @@ export async function makeClubTransfer({
   const { error: updateError } = await supabase.from("squad_players").update({ game_player_id: inGamePlayerId }).eq("id", squadPlayerRow.id);
   if (updateError) return { error: updateError.message };
 
-  const { planningGameweek } = await getSeasonTiming(supabase, squad.game_id);
+  const { planningGameweek } = gwInfo;
   await supabase.from("squad_transfers").insert({
     squad_id: squadId,
     gameweek: planningGameweek ?? 1,
@@ -281,7 +311,7 @@ export async function saveTeamForGameweek({ squadId }: { squadId: number }) {
   const { data: squadPlayers } = await supabase.from("squad_players").select("game_player_id").eq("squad_id", squadId);
   if (!squadPlayers || squadPlayers.length === 0) return { error: "Your squad is empty - nothing to save." };
 
-  const gwInfo = await getGameweekInfo(supabase, squad.game_id);
+  const gwInfo = await getEflGameweekInfo(supabase, squad.game_id);
   if (gwInfo.planningGameweek == null) return { error: "No upcoming gameweek to save a team for yet." };
   const deadline = gwInfo.gameweeks.find((g) => g.gameweek === gwInfo.planningGameweek)?.deadline ?? null;
 

@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { getGameweekInfo, getProjectionsForPlayerIds, fetchAllPaginated } from "@/lib/gameweek";
+import { getProjectionsForPlayerIds, fetchAllPaginated } from "@/lib/gameweek";
+import { getEflGameweekInfo, getTeamKickoffMap, isTeamLocked } from "@/lib/eflFixtureLocking";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquadSaved, getSquadActualPointsForGameweek } from "@/lib/gameweekHistory";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
 import { buildSquadSummary } from "@/lib/squadSummary";
@@ -128,7 +129,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       .select("game_player_id, game_players(position_code, players(id, full_name, team_id, teams!players_team_id_fkey(name)))")
       .eq("squad_id", squadId)
       .returns<SquadPlayerRow[]>(),
-    getGameweekInfo(supabase, game.id),
+    getEflGameweekInfo(supabase, game.id),
     supabase
       .from("game_player_stats")
       .select("game_player_id, total_points, game_players!inner(game_id, position_code)")
@@ -250,6 +251,9 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   // only ever populated in the planning branch below.
   let boardReserves: Record<ReservePosition, ReservePick[]> = { DEF: [], MID: [], FWD: [] };
   let isTeamSaved = false;
+  // Teams whose own fixture in the viewed gameweek has already kicked off -
+  // only meaningful on the planning branch below (see eflFixtureLocking.ts).
+  let lockedTeamIds: number[] = [];
 
   if (isPastView) {
     const [lock, poolRaw] = await Promise.all([getSquadGameweekLock(supabase, squadId, viewedGameweek), fetchAllPoolRows(supabase, "eflfantasy")]);
@@ -292,6 +296,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           full_name: id.full_name,
           position: id.position as "GK" | "DEF" | "MID" | "FWD",
           team_name: id.team_name,
+          teamId: id.team_id,
           score: scoreFor(id.game_player_id),
           fixtures: buildFixtures(id.team_id),
         }));
@@ -300,6 +305,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         .map((id) => ({
           game_player_id: id.game_player_id,
           club_name: id.team_name,
+          teamId: id.team_id,
           score: actuals.get(id.game_player_id)?.points ?? null,
           fixtures: buildFixtures(id.team_id),
           nextFixtureLabel: nextFixtureLabelByTeamId.get(id.team_id) ?? null,
@@ -314,6 +320,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           full_name: p.full_name,
           position: p.position as "GK" | "DEF" | "MID" | "FWD",
           team_name: p.team_name,
+          teamId: p.team_id,
           score: actuals.get(p.game_player_id)?.points ?? null,
           // Raw code (e.g. "efl_league_one"), not the friendly label - the
           // league <select>'s option values are raw codes too (see
@@ -332,6 +339,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         .map((p) => ({
           game_player_id: p.game_player_id,
           club_name: p.team_name,
+          teamId: p.team_id,
           score: actuals.get(p.game_player_id)?.points ?? null,
           competition: p.competition,
           fixtures: buildFixtures(p.team_id),
@@ -347,7 +355,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
     // pool's browse table gets its scores from search_game_player_pool
     // instead (via EFLFantasyBoard's own on-demand fetch), never a
     // whole-pool read here.
-    const [scoreRows, initialPool, initialClubPool, teamNames, { data: reserveRowsRaw }] = await Promise.all([
+    const [scoreRows, initialPool, initialClubPool, teamNames, { data: reserveRowsRaw }, teamKickoffMap] = await Promise.all([
       getProjectionsForPlayerIds(supabase, viewedGameweek, squadIds),
       searchPool({
         gameSlug: "eflfantasy",
@@ -373,8 +381,16 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         .order("position")
         .order("rank")
         .returns<ReservePickRow[]>(),
+      getTeamKickoffMap(supabase, game.id, viewedGameweek),
     ]);
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+    // Per-player locking (real EFL Fantasy rule, user-confirmed 2026-08-20:
+    // "a player is locked once they kick off ... it locks game by game") -
+    // a team_id whose own fixture in the viewed gameweek has already kicked
+    // off, not the gameweek-wide cutoff planningGameweek uses. Only
+    // computed on the planning branch - past/locked-snapshot gameweeks are
+    // already fully read-only for a different reason.
+    lockedTeamIds = Array.from(teamKickoffMap.keys()).filter((teamId) => isTeamLocked(teamKickoffMap, teamId));
 
     // Reserve scores are a separate small fetch (not part of the squad's
     // score call above) since the reserve player ids aren't known until
@@ -389,6 +405,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         game_player_id: r.game_player_id,
         full_name: r.game_players.players.full_name,
         team_name: r.game_players.players.teams.name,
+        teamId: r.game_players.players.team_id,
         score: reserveScoreByGamePlayerId.get(r.game_player_id) ?? null,
         fixtures: buildFixtures(r.game_players.players.team_id),
       });
@@ -401,6 +418,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         full_name: p.full_name,
         position: p.position as "GK" | "DEF" | "MID" | "FWD",
         team_name: p.team_name,
+        teamId: p.team_id,
         score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
         fixtures: buildFixtures(p.team_id),
       }));
@@ -413,6 +431,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         // "Team" suffix exists only to disambiguate the DB row, never meant
         // for display.
         club_name: p.team_name,
+        teamId: p.team_id,
         score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
         fixtures: buildFixtures(p.team_id),
         nextFixtureLabel: nextFixtureLabelByTeamId.get(p.team_id) ?? null,
@@ -424,6 +443,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       full_name: r.full_name,
       position: r.position as "GK" | "DEF" | "MID" | "FWD",
       team_name: r.team_name,
+      teamId: r.team_id,
       score: r.hail_mary_score,
       competition: r.competition,
       fixtures: buildFixtures(r.team_id),
@@ -446,6 +466,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
     boardClubPool = initialClubPool.rows.map((r) => ({
       game_player_id: r.game_player_id,
       club_name: r.team_name,
+      teamId: r.team_id,
       score: r.hail_mary_score,
       competition: r.competition,
       fixtures: buildFixtures(r.team_id),
@@ -528,6 +549,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       pastViewState={pastViewState}
       minGameweek={gwInfo.minGameweek}
       maxGameweek={gwInfo.maxGameweek}
+      lockedTeamIds={lockedTeamIds}
       squad={boardSquad}
       pool={boardPool}
       poolTotalCount={poolTotalCount}

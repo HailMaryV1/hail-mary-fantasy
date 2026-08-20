@@ -51,6 +51,7 @@ export type BoardPlayer = RealPlayerStats & {
   full_name: string;
   position: "GK" | "DEF" | "MID" | "FWD";
   team_name: string;
+  teamId: number;
   score: number | null;
   fixtures: (FixtureTile | null)[];
   competition?: string | null;
@@ -68,6 +69,7 @@ export type PoolPlayer = BoardPlayer;
 export type BoardClub = {
   game_player_id: number;
   club_name: string;
+  teamId: number;
   score: number | null;
   fixtures: (FixtureTile | null)[];
   // Full (non-abbreviated) opponent name for the "Why These Clubs" prose
@@ -88,6 +90,7 @@ export type ReservePick = {
   game_player_id: number;
   full_name: string;
   team_name: string;
+  teamId: number;
   score: number | null;
   fixtures: (FixtureTile | null)[];
 };
@@ -167,6 +170,7 @@ export default function EFLFantasyBoard({
   pastViewState,
   minGameweek,
   maxGameweek,
+  lockedTeamIds: lockedTeamIdsProp,
   squad,
   pool: initialPool,
   poolTotalCount: initialPoolTotalCount,
@@ -191,6 +195,10 @@ export default function EFLFantasyBoard({
   pastViewState: "not_locked" | "no_results_yet" | null;
   minGameweek: number;
   maxGameweek: number;
+  // Real EFL Fantasy rule (user-confirmed 2026-08-20): a player locks
+  // individually once their own team's fixture kicks off, not the whole
+  // gameweek at once - see eflFixtureLocking.ts.
+  lockedTeamIds: number[];
   squad: BoardPlayer[];
   pool: PoolPlayer[];
   poolTotalCount: number;
@@ -225,6 +233,7 @@ export default function EFLFantasyBoard({
   // one.
   reserves: Record<ReservePosition, ReservePick[]>;
 }) {
+  const lockedTeamIds = new Set(lockedTeamIdsProp);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
   // Multiple squad members can be marked for sale at once - see
@@ -315,6 +324,7 @@ export default function EFLFantasyBoard({
             full_name: r.full_name,
             position: r.position as PoolPlayer["position"],
             team_name: r.team_name,
+            teamId: r.team_id,
             score: r.hail_mary_score,
             competition: r.competition,
             fixtures: buildFixtures(r.team_id),
@@ -353,6 +363,7 @@ export default function EFLFantasyBoard({
           result.rows.map((r) => ({
             game_player_id: r.game_player_id,
             club_name: r.team_name,
+            teamId: r.team_id,
             score: r.hail_mary_score,
             competition: r.competition,
             fixtures: buildFixtures(r.team_id),
@@ -482,9 +493,9 @@ export default function EFLFantasyBoard({
       ? menuIsSquadMember
         ? [
             {
-              label: "Transfer Out",
+              label: lockedTeamIds.has(menuClub.teamId) ? "Transfer Out (locked - already kicked off)" : "Transfer Out",
               onClick: () => setPendingOutClubIds((prev) => new Set(prev).add(menuClub.game_player_id)),
-              disabled: !isPlanningView || pendingOutClubIds.has(menuClub.game_player_id),
+              disabled: !isPlanningView || pendingOutClubIds.has(menuClub.game_player_id) || lockedTeamIds.has(menuClub.teamId),
             },
           ]
         : []
@@ -493,9 +504,9 @@ export default function EFLFantasyBoard({
       ? menuIsSquadMember
         ? [
             {
-              label: "Transfer Out",
+              label: lockedTeamIds.has(menuPlayer.teamId) ? "Transfer Out (locked - already kicked off)" : "Transfer Out",
               onClick: () => setPendingOutIds((prev) => new Set(prev).add(menuPlayer.game_player_id)),
-              disabled: !isPlanningView || pendingOutIds.has(menuPlayer.game_player_id),
+              disabled: !isPlanningView || pendingOutIds.has(menuPlayer.game_player_id) || lockedTeamIds.has(menuPlayer.teamId),
             },
             { label: "Player Info", onClick: () => setInfoPlayerId(menuPlayer.game_player_id) },
           ]
@@ -514,6 +525,7 @@ export default function EFLFantasyBoard({
                         game_player_id: menuPlayer.game_player_id,
                         full_name: menuPlayer.full_name,
                         team_name: menuPlayer.team_name,
+                        teamId: menuPlayer.teamId,
                         score: menuPlayer.score,
                         fixtures: menuPlayer.fixtures,
                       }),
@@ -537,7 +549,9 @@ export default function EFLFantasyBoard({
       .filter((o) => isLegalPositionSwap(o.position, p.position, currentCounts))
       .sort((a, b) => (a.position === p.position ? 0 : 1) - (b.position === p.position ? 0 : 1));
   }
-  const legalPoolIds = new Set(pagedPool.filter((p) => legalOutgoingFor(p).length > 0).map((p) => p.game_player_id));
+  const legalPoolIds = new Set(
+    pagedPool.filter((p) => !lockedTeamIds.has(p.teamId) && legalOutgoingFor(p).length > 0).map((p) => p.game_player_id)
+  );
 
   function handleTransfer(inGamePlayerId: number) {
     const incomingPoolPlayer = pagedPool.find((p) => p.game_player_id === inGamePlayerId);
@@ -638,6 +652,7 @@ export default function EFLFantasyBoard({
       game_player_id: outgoing.game_player_id,
       full_name: outgoing.full_name,
       team_name: outgoing.team_name,
+      teamId: outgoing.teamId,
       score: outgoing.score,
       fixtures: outgoing.fixtures,
     };
@@ -1061,7 +1076,14 @@ export default function EFLFantasyBoard({
                               <div className="flex items-center gap-1.5">
                                 <Kit teamName={p.team_name} size="sm" />
                                 <div>
-                                  <div className="font-medium text-white">{p.full_name}</div>
+                                  <div className="flex items-center gap-1 font-medium text-white">
+                                    {p.full_name}
+                                    {lockedTeamIds.has(p.teamId) && (
+                                      <span className="rounded bg-navy-800 px-1 py-0.5 text-[9px] font-semibold text-navy-400" title="Kicked off already - can't be transferred this gameweek">
+                                        🔒
+                                      </span>
+                                    )}
+                                  </div>
                                   <div className="text-[10px] text-navy-500">
                                     {p.team_name} · {p.position}
                                   </div>
@@ -1108,7 +1130,7 @@ export default function EFLFantasyBoard({
                     <tbody>
                       {pagedClubPool.map((c) => {
                         const alreadyInSquad = optimisticClubs.some((sc) => sc.game_player_id === c.game_player_id);
-                        const rowClickable = pendingOutClubs.length > 0 && !alreadyInSquad && !isTransferPending;
+                        const rowClickable = pendingOutClubs.length > 0 && !alreadyInSquad && !isTransferPending && !lockedTeamIds.has(c.teamId);
                         return (
                           <tr
                             key={c.game_player_id}
