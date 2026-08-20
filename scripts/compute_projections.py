@@ -3258,11 +3258,27 @@ def main():
                     # fetch_rotation_congestion()/ROTATION_CONGESTION_DISCOUNT,
                     # since cup/short-turnaround fixtures are flagged
                     # is_congested there regardless of fixture_index.
-                    "additional_fixtures": {
-                        "count": len(fixture_breakdown) - 1 if fixture_breakdown else 0,
-                        "fixtures": fixture_breakdown[1:],
-                        "combined_contribution": additional_fixtures_total,
-                    },
+                    #
+                    # Real user report 2026-08-20: this was surfacing for
+                    # EVERY game, including EFL Fantasy (whose real rules
+                    # score league fixtures only - there is no "second cup
+                    # game" concept there at all) and FanTeam/Cloud FF. Only
+                    # Dream Team's real rules give a genuine second-fixture
+                    # upside (an FA/Carabao Cup tie landing in the same
+                    # gameweek window) - every other game's "planner and
+                    # projections" should never show this. fixture_breakdown
+                    # itself still covers every real fixture for reconciliation
+                    # math below regardless of game - only what gets SURFACED
+                    # to the frontend is gated here.
+                    "additional_fixtures": (
+                        {
+                            "count": len(fixture_breakdown) - 1 if fixture_breakdown else 0,
+                            "fixtures": fixture_breakdown[1:],
+                            "combined_contribution": additional_fixtures_total,
+                        }
+                        if game_slug == "dreamteam"
+                        else {"count": 0, "fixtures": [], "combined_contribution": 0.0}
+                    ),
                     # Real user feedback 2026-08-17: this used to always
                     # read build_explanation(neutral_priced) - the SAME
                     # fixture-neutral text regardless of opponent (confirmed
