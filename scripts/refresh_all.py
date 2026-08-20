@@ -231,6 +231,12 @@ def run_eflfantasy():
     results.append(run_step("Import EFL Fantasy players + clubs + fixtures", ["import_eflfantasy.py"]))
     results.append(run_step("EFL Fantasy real match odds (SportMonks)", ["scripts/import_sportmonks_match_odds.py"]))
     results.append(run_step("Fixture probabilities (post-EFL-odds)", ["scripts/compute_fixture_probabilities.py"]))
+    # Real user request 2026-08-20: EFL-only "Market Odds" page needs a
+    # genuine per-team goals figure, not the win-probability-only attack_
+    # score - see that script's own docstring. Needs to run AFTER the
+    # fixture_probabilities pass just above, same "post-EFL-odds" timing
+    # reason.
+    results.append(run_step("Expected goals (EFL)", ["scripts/compute_expected_goals.py"]))
     results.extend(recompute_section("eflfantasy", "EFL Fantasy"))
     return results
 
