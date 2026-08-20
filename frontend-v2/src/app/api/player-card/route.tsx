@@ -5,6 +5,7 @@ import { ImageResponse } from "next/og";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { fetchEngineExplanation, fetchEngineExplanationForGameweek, competitionLabel } from "@/lib/engineExplainability";
 import { getKitImage } from "@/lib/kitImages";
+import { getPlayerProjectionTrend } from "@/lib/projectionTrend";
 import { buildPlayerCardElement, PLAYER_CARD_SIZE } from "@/lib/playerCard";
 
 export const runtime = "nodejs";
@@ -117,6 +118,13 @@ export async function GET(request: NextRequest) {
   const goalProbability = data.moduleDetail?.goal ? toProbability(data.moduleDetail.goal.finalRate) : null;
   const assistProbability = data.moduleDetail?.assist ? toProbability(data.moduleDetail.assist.finalRate) : null;
 
+  // 2026-08-21 user addition: a 4th slot on the real card background art
+  // (card-bg.png) specifically for this - reuses the exact same helper
+  // PlayerInfoPanel's own trend chart already calls (lib/projectionTrend.ts)
+  // - same dedup-by-gameweek semantics, same 5-gameweek default window, so
+  // the card never disagrees with what the player's own detail page shows.
+  const trend = await getPlayerProjectionTrend(supabase, gamePlayerId, data.gameweek ?? 1, 5);
+
   const [logoDataUri, kitDataUri, backgroundDataUri, oswaldMedium, oswaldBold] = await Promise.all([
     loadPublicImageAsDataUri("logo.png"),
     (() => {
@@ -142,6 +150,7 @@ export async function GET(request: NextRequest) {
       backgroundDataUri,
       primaryFixture: data.primaryFixture,
       competitionLabel,
+      trend,
       teamWinProbability,
       cleanSheetProbability,
       goalProbability,

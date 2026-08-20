@@ -12,18 +12,18 @@ import { getTeamColors } from "./teamColors";
  * Visual direction (2026-08-21 user-supplied background art, public/card-
  * bg.png): a chrome phone-bezel frame pre-rendered onto a dark tactics-
  * board backdrop (diagonal light streaks, dashed pass lines, bar-chart
- * flourishes, a blue rim-light on the frame's left edge), with THREE
- * pre-drawn empty panel slots baked into the image itself - one wide bar,
- * one taller wide bar below it, then a row of 3 equal tiles. Replaces the
- * previous hand-drawn SVG tactics-board + CSS bezel outline entirely - the
- * real image supplies both now. Every content panel below is positioned to
- * land exactly inside one of those pre-drawn slots (coordinates measured
- * directly off the real PNG via a pixel scan - see the FIXTURE_PANEL_TOP
- * etc. constants), so panels render transparent: the image's own fill/
- * border is the panel, this file only places text on top of it. The
- * previous design's projection-trend chart and additional-fixtures note
- * have no slot in the new 3-panel template and are dropped rather than
- * stretching the template to fit them.
+ * flourishes, a blue rim-light on the frame's left edge), with FOUR pre-
+ * drawn empty panel slots baked into the image itself - fixture, a taller
+ * projected-points bar, a row of 3 tiles, then a 4th bar the user added
+ * specifically to hold the projection-trend chart (first version of this
+ * background only had 3 slots and the trend chart was dropped for lack of
+ * room - restored once the 4th slot arrived). Every content panel below is
+ * positioned to land exactly inside one of those pre-drawn slots
+ * (coordinates measured directly off the real PNG via a pixel scan - see
+ * the FIXTURE_PANEL_TOP etc. constants, re-measured from scratch after the
+ * user's edit since the whole layout shifted to make room for the 4th
+ * slot), so panels render transparent: the image's own fill/border is the
+ * panel, this file only places content on top of it.
  *
  * All layout numbers are authored in a 1200x1200 "design space" and run
  * through s() to a SCALE-d final canvas - confirmed via a standalone
@@ -43,28 +43,33 @@ export const PLAYER_CARD_SIZE = Math.round(1200 * SCALE);
 const s = (n: number) => Math.round(n * SCALE);
 
 // Chrome-frame inset, measured off the real card-bg.png (1254x1254): the
-// frame's inner clear edge sits at x=[235,1015] y=[80,1178] in image-space
-// - scaled to this file's 1200-design-space (*1200/1254) and rounded.
-const FRAME_X = 227;
-const FRAME_Y = 75;
+// frame's inner clear edge sits at x=218 y=60 (top-left) - scaled to this
+// file's 1200-design-space (*1200/1254) and rounded. Only used to position
+// the open "hero" area (header + kit + name) - the panels below use their
+// own directly-measured PANEL_LEFT/PANEL_WIDTH instead.
+const FRAME_X = 209;
+const FRAME_Y = 57;
 const CONTENT_PAD_X = 26;
 const CONTENT_PAD_Y = 40;
 // Left edge + width every content panel shares - matches the pre-drawn
-// panel rectangles' measured left/right edges (x=262..989 in image-space,
+// panel rectangles' measured left/right edges (x=245..1001 in image-space,
 // scaled) so panel text lands inside the image's own fill/border instead
 // of a second CSS-drawn box misaligned a few pixels off it.
-const PANEL_LEFT = FRAME_X + CONTENT_PAD_X;
-const PANEL_WIDTH = 1200 - PANEL_LEFT * 2;
-// Top offset (design-space) + height of each of the 3 pre-drawn panel
+const PANEL_LEFT = 235;
+const PANEL_WIDTH = 723;
+// Top offset (design-space) + height of each of the 4 pre-drawn panel
 // slots, measured the same way (brightness-transition scan down the
-// image's vertical center / through each panel).
-const FIXTURE_PANEL_TOP = 668;
-const FIXTURE_PANEL_H = 92;
-const POINTS_PANEL_TOP = 777;
-const POINTS_PANEL_H = 185;
-const TILES_PANEL_TOP = 973;
-const TILES_PANEL_H = 103;
-const FOOTER_TOP = 1150;
+// image's vertical center / through each panel, cross-checked by
+// overlaying the computed boxes back onto the real PNG).
+const FIXTURE_PANEL_TOP = 490;
+const FIXTURE_PANEL_H = 115;
+const POINTS_PANEL_TOP = 622;
+const POINTS_PANEL_H = 197;
+const TILES_PANEL_TOP = 835;
+const TILES_PANEL_H = 119;
+const TREND_PANEL_TOP = 969;
+const TREND_PANEL_H = 146;
+const FOOTER_TOP = 1160;
 
 const NAVY = { 950: "#050b16", 900: "#0b1524", 850: "#0f1c30", 800: "#14203a", 700: "#1e2e45", 500: "#46617f", 300: "#a8b8cc" };
 const SKY = { 400: "#38bdf8" };
@@ -108,6 +113,8 @@ export type PlayerCardFixture = {
   isHome: boolean;
 };
 
+export type PlayerCardTrendPoint = { gameweek: number; score: number };
+
 export type PlayerCardInput = {
   fullName: string;
   teamName: string;
@@ -123,17 +130,39 @@ export type PlayerCardInput = {
   backgroundDataUri: string | null;
   primaryFixture: PlayerCardFixture | null;
   competitionLabel: (competition: string | null) => string;
-  // 2026-08-20 user request - real model output, not real-world results:
-  // team win probability (team_fixture_difficulty.team_win_prob) is
-  // fixture/team-level so it applies to every position; clean sheet is
-  // shown for GK/DEF, goal/assist for MID/FWD - all straight off the
-  // engine's own Bookmaker Intelligence blend (moduleDetail), same figures
-  // Engine Validation already shows, just surfaced here too.
+  // Upcoming-gameweek projections (from the `projections` table) - drawn
+  // into the 4th pre-drawn panel slot the user added specifically for this.
+  trend: PlayerCardTrendPoint[];
   teamWinProbability: number | null;
   cleanSheetProbability: number | null;
   goalProbability: number | null;
   assistProbability: number | null;
 };
+
+// Trend line + area fill only, drawn as SVG (pure vector shapes, no text -
+// resvg's handling of text baked into an embedded SVG-as-image is
+// unverified, unlike satori's own text layer which every other word on
+// this card already goes through) - the numeric/gameweek labels are real
+// sibling <span> elements absolutely-positioned on top of this image in
+// buildPlayerCardElement, using the exact same point coordinates, so they
+// share the card's actual Oswald font instead of an SVG fallback font.
+function trendLineSvg(points: { x: number; y: number }[], width: number, height: number) {
+  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
+  const areaPath = `${linePath} L ${points[points.length - 1].x} ${height} L ${points[0].x} ${height} Z`;
+  const dots = points.map((p) => `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#38bdf8" stroke="#0b1524" stroke-width="2.5"/>`).join("");
+  const svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.32"/>
+        <stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <path d="${areaPath}" fill="url(#trendFill)"/>
+    <path d="${linePath}" stroke="#38bdf8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    ${dots}
+  </svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+}
 
 export function buildPlayerCardElement(input: PlayerCardInput) {
   const {
@@ -149,6 +178,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
     backgroundDataUri,
     primaryFixture,
     competitionLabel,
+    trend,
     teamWinProbability,
     cleanSheetProbability,
     goalProbability,
@@ -182,7 +212,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
   const label = (style: Record<string, unknown>, text: string) =>
     h("span", { style: { fontFamily: "Oswald", fontWeight: 500, textTransform: "uppercase", ...style } }, text);
 
-  // A content panel positioned exactly over one of card-bg.png's 3 pre-
+  // A content panel positioned exactly over one of card-bg.png's 4 pre-
   // drawn slots - transparent (no CSS fill/border of its own), just lays
   // text/children on top of the image's real panel art.
   const slot = (top: number, height: number, style: Record<string, unknown>, children: ReactNode[]) =>
@@ -201,6 +231,90 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
       },
       ...children
     );
+
+  // Projection trend chart - lands in the 4th pre-drawn slot. Same shape
+  // as before this design's background swap: a small area+line chart of
+  // upcoming gameweek scores, with real Oswald-rendered value/gameweek
+  // labels absolutely positioned over a pure-vector SVG line.
+  const CHART_PAD_X = 24;
+  const CHART_H = 62;
+  const chartInnerWidth = PANEL_WIDTH - 2 * CHART_PAD_X;
+  const trendChart =
+    trend.length >= 2
+      ? (() => {
+          const scores = trend.map((t) => t.score);
+          const minScore = Math.min(...scores);
+          const maxScore = Math.max(...scores);
+          const range = maxScore - minScore || 1;
+          const points = trend.map((t, i) => ({
+            x: (i / (trend.length - 1)) * chartInnerWidth,
+            y: CHART_H - ((t.score - minScore) / range) * (CHART_H - 12) - 6,
+          }));
+          // Deterministic absolute positions, not a flex spacer - a flex:1
+          // spacer inside an absolutely-positioned column turned out
+          // unreliable in satori's layout engine (the gameweek label
+          // didn't consistently pin to the container's bottom edge, so a
+          // steeply descending line segment could visually cross right
+          // through it). The value label sits just above its own point;
+          // the gameweek label sits on a single fixed row well below the
+          // entire chart image, so neither can ever intersect the line.
+          const VALUE_LABEL_H = 22;
+          const GW_LABEL_TOP = CHART_H + 10;
+          return slot(TREND_PANEL_TOP, TREND_PANEL_H, { flexDirection: "column", padding: `${s(14)}px ${s(24)}px` }, [
+            label({ fontSize: s(14), color: NAVY[500], letterSpacing: s(2) }, "Projection Trend"),
+            h(
+              "div",
+              {
+                style: {
+                  display: "flex",
+                  position: "relative",
+                  width: s(chartInnerWidth),
+                  height: s(GW_LABEL_TOP + 18),
+                  marginTop: s(6),
+                },
+              },
+              h("img", {
+                src: trendLineSvg(points, chartInnerWidth, CHART_H),
+                width: s(chartInnerWidth),
+                height: s(CHART_H),
+                style: { position: "absolute", top: 0, left: 0 },
+              }),
+              ...trend.flatMap((t, i) => [
+                h(
+                  "div",
+                  {
+                    key: `v${i}`,
+                    style: {
+                      display: "flex",
+                      justifyContent: "center",
+                      position: "absolute",
+                      top: s(Math.max(0, points[i].y - VALUE_LABEL_H)),
+                      left: s(points[i].x - 40),
+                      width: s(80),
+                    },
+                  },
+                  heading({ fontSize: s(16), color: "#ffffff", textAlign: "center" }, t.score.toFixed(1))
+                ),
+                h(
+                  "div",
+                  {
+                    key: `g${i}`,
+                    style: {
+                      display: "flex",
+                      justifyContent: "center",
+                      position: "absolute",
+                      top: s(GW_LABEL_TOP),
+                      left: s(points[i].x - 40),
+                      width: s(80),
+                    },
+                  },
+                  label({ fontSize: s(11), color: NAVY[500], textAlign: "center" }, `GW${t.gameweek}`)
+                ),
+              ])
+            ),
+          ]);
+        })()
+      : null;
 
   return h(
     "div",
@@ -273,7 +387,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
       // built-in spotlight behind this area.
       h(
         "div",
-        { style: { display: "flex", flexDirection: "column", alignItems: "center", marginTop: s(48) } },
+        { style: { display: "flex", flexDirection: "column", alignItems: "center", marginTop: s(20) } },
         kitDataUri
           ? h("img", {
               src: kitDataUri,
@@ -364,7 +478,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
 
     // model insight tiles - team win / clean sheet / goal / assist %,
     // third pre-drawn slot's row of 3 equal boxes
-    slot(TILES_PANEL_TOP, TILES_PANEL_H, { gap: s(13) }, [
+    slot(TILES_PANEL_TOP, TILES_PANEL_H, { gap: s(15) }, [
       ...insightTiles.map((tile, i) =>
         h(
           "div",
@@ -376,6 +490,8 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
         )
       ),
     ]),
+
+    trendChart,
 
     // footer - below the chrome frame's own bottom edge, in the plain
     // background margin (same placement idea as the previous design)
