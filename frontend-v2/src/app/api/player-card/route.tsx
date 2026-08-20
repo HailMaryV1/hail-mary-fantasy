@@ -3,25 +3,11 @@ import path from "path";
 import { NextRequest } from "next/server";
 import { ImageResponse } from "next/og";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { fetchEngineExplanation, competitionLabel, confidenceTone } from "@/lib/engineExplainability";
+import { fetchEngineExplanation, competitionLabel } from "@/lib/engineExplainability";
 import { getKitImage } from "@/lib/kitImages";
-import { getTeamColors } from "@/lib/teamColors";
+import { buildPlayerCardElement, PLAYER_CARD_SIZE } from "@/lib/playerCard";
 
 export const runtime = "nodejs";
-
-const SIZE = 1080;
-
-// Real Tailwind hex values (ImageResponse/satori has no Tailwind runtime -
-// only inline styles reach it) - navy scale from globals.css, sky/emerald/
-// amber/red from Tailwind's own default palette, same shades this app's
-// className strings already reference everywhere else.
-const NAVY = { 950: "#050b16", 900: "#0b1524", 800: "#14203a", 700: "#1e2e45", 500: "#46617f", 300: "#a8b8cc" };
-const SKY = { 300: "#7dd3fc", 400: "#38bdf8" };
-const CONFIDENCE_COLORS: Record<string, { bg: string; fg: string }> = {
-  High: { bg: "#022c22", fg: "#34d399" },
-  Medium: { bg: "#451a03", fg: "#fbbf24" },
-  Low: { bg: "#450a0a", fg: "#f87171" },
-};
 
 async function loadPublicImageAsDataUri(relativePath: string): Promise<string | null> {
   try {
@@ -33,8 +19,9 @@ async function loadPublicImageAsDataUri(relativePath: string): Promise<string | 
   }
 }
 
-function formatKickoff(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+async function loadFont(fileName: string): Promise<ArrayBuffer> {
+  const buf = await readFile(path.join(process.cwd(), "public", "fonts", fileName));
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
 type RealStatsRow = {
@@ -56,12 +43,18 @@ type RealStatsRow = {
  * the players table) - the club Kit render (frontend-v2/public/kits/,
  * real crest artwork, same asset PlayerInfoPanel's fixture badge already
  * falls back to) stands in for "player image if applicable" instead of a
- * fabricated headshot. Built with next/og's ImageResponse (bundled in
- * Next.js, no new dependency) rather than html2canvas - a server-rendered
- * PNG matches this app's own navy/sky palette exactly and needs no client
- * bundle. Deliberately node runtime, not edge - lets the logo/kit PNGs be
- * read straight off disk (readFile) instead of a self-referential network
- * fetch back into this same app.
+ * fabricated headshot. Those source PNGs are themselves only ~100-120px -
+ * buildPlayerCardElement (lib/playerCard.ts) keeps the kit close to its
+ * native size against a hand-drawn tactics-board backdrop, rather than
+ * upscaling the raster far past native and looking soft. Built with
+ * next/og's ImageResponse (bundled in Next.js, no new dependency) rather
+ * than html2canvas - a server-rendered PNG matches this app's own navy/sky
+ * palette exactly and needs no client bundle. Deliberately node runtime,
+ * not edge - lets the logo/kit PNGs be read straight off disk (readFile)
+ * instead of a self-referential network fetch back into this same app.
+ * Element tree lives in lib/playerCard.ts (not inline JSX here) so a
+ * standalone verification script can render the exact same code path
+ * against real fetched data - see that file's own docstring.
  */
 export async function GET(request: NextRequest) {
   const gameSlug = request.nextUrl.searchParams.get("gameSlug");
@@ -87,15 +80,15 @@ export async function GET(request: NextRequest) {
     .eq("game_player_id", gamePlayerId)
     .maybeSingle<RealStatsRow>();
 
-  const [logoDataUri, kitDataUri] = await Promise.all([
+  const [logoDataUri, kitDataUri, oswaldMedium, oswaldBold] = await Promise.all([
     loadPublicImageAsDataUri("logo.png"),
     (() => {
       const kitPath = getKitImage(data.teamName);
       return kitPath ? loadPublicImageAsDataUri(kitPath.replace(/^\//, "")) : Promise.resolve(null);
     })(),
+    loadFont("Oswald-Medium.ttf"),
+    loadFont("Oswald-Bold.ttf"),
   ]);
-
-  const confidence = CONFIDENCE_COLORS[data.dataConfidence.label] ?? CONFIDENCE_COLORS.Low;
 
   // Same field order/priority as PlayerInfoPanel's own Fantasy Stats grid
   // (see components/PlayerInfoPanel.tsx) - a card only has room for 3
@@ -116,193 +109,30 @@ export async function GET(request: NextRequest) {
     .filter((entry): entry is [string, number | string] => entry[1] != null)
     .slice(0, 3);
 
-  const opponentColors = data.primaryFixture?.opponentTeamName ? getTeamColors(data.primaryFixture.opponentTeamName) : null;
-
   return new ImageResponse(
-    (
-      <div
-        style={{
-          width: "100%",
-          height: "100%",
-          display: "flex",
-          flexDirection: "column",
-          backgroundColor: NAVY[950],
-          fontFamily: "sans-serif",
-          padding: 56,
-        }}
-      >
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            {logoDataUri && <img src={logoDataUri} width={44} height={45} />}
-            <span style={{ fontSize: 28, fontWeight: 700, color: "#ffffff", letterSpacing: 1 }}>HAIL MARY</span>
-          </div>
-          {data.gameweek != null && (
-            <span
-              style={{
-                fontSize: 22,
-                fontWeight: 700,
-                color: NAVY[300],
-                backgroundColor: NAVY[800],
-                borderRadius: 999,
-                padding: "8px 20px",
-              }}
-            >
-              GW{data.gameweek}
-            </span>
-          )}
-        </div>
-
-        {/* Player identity */}
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginTop: 44 }}>
-          {kitDataUri ? (
-            <img src={kitDataUri} width={220} height={220} style={{ objectFit: "contain" }} />
-          ) : (
-            <div
-              style={{
-                width: 180,
-                height: 180,
-                borderRadius: 999,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: getTeamColors(data.teamName).primary,
-                color: getTeamColors(data.teamName).secondary,
-                fontSize: 56,
-                fontWeight: 800,
-              }}
-            >
-              {getTeamColors(data.teamName).abbr}
-            </div>
-          )}
-          <span style={{ marginTop: 24, fontSize: 52, fontWeight: 800, color: "#ffffff", textAlign: "center" }}>{data.fullName}</span>
-          <span style={{ marginTop: 8, fontSize: 26, color: NAVY[300] }}>
-            {data.position} · {data.teamName} · £{data.price.toFixed(1)}m
-          </span>
-        </div>
-
-        {/* Fixture */}
-        {data.primaryFixture && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 16,
-              marginTop: 40,
-              backgroundColor: NAVY[900],
-              border: `1px solid ${NAVY[700]}`,
-              borderRadius: 16,
-              padding: "18px 24px",
-            }}
-          >
-            {opponentColors && (
-              <div
-                style={{
-                  width: 48,
-                  height: 48,
-                  borderRadius: 999,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  backgroundColor: opponentColors.primary,
-                  color: opponentColors.secondary,
-                  fontSize: 18,
-                  fontWeight: 800,
-                }}
-              >
-                {opponentColors.abbr}
-              </div>
-            )}
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              <span style={{ fontSize: 26, fontWeight: 700, color: "#ffffff" }}>
-                {data.primaryFixture.isHome ? "vs " : "at "}
-                {data.primaryFixture.opponentTeamName ?? "Unknown opponent"}
-              </span>
-              <span style={{ fontSize: 20, color: NAVY[500] }}>
-                {formatKickoff(data.primaryFixture.kickoffAt)} · {competitionLabel(data.primaryFixture.competition)}
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* Projected points */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginTop: 28,
-            backgroundColor: NAVY[900],
-            borderRadius: 16,
-            padding: "24px 32px",
-          }}
-        >
-          <div style={{ display: "flex", flexDirection: "column" }}>
-            <span style={{ fontSize: 20, fontWeight: 600, letterSpacing: 1, color: NAVY[500], textTransform: "uppercase" }}>
-              Projected Points
-            </span>
-            <span style={{ fontSize: 96, fontWeight: 800, color: SKY[400], lineHeight: 1 }}>{data.finalScore.toFixed(1)}</span>
-          </div>
-          <span
-            style={{
-              fontSize: 22,
-              fontWeight: 700,
-              color: confidence.fg,
-              backgroundColor: confidence.bg,
-              borderRadius: 999,
-              padding: "10px 22px",
-            }}
-          >
-            {data.dataConfidence.label} confidence
-          </span>
-        </div>
-
-        {/* Stat tiles */}
-        {(realStatsRow?.last_gw_points != null || statTiles.length > 0) && (
-          <div style={{ display: "flex", gap: 16, marginTop: 24 }}>
-            {realStatsRow?.last_gw_points != null && (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  flex: 1,
-                  backgroundColor: NAVY[900],
-                  borderRadius: 14,
-                  padding: "18px 10px",
-                }}
-              >
-                <span style={{ fontSize: 34, fontWeight: 800, color: "#ffffff" }}>{Number(realStatsRow.last_gw_points).toFixed(1)}</span>
-                <span style={{ fontSize: 16, color: NAVY[500], textTransform: "uppercase", marginTop: 4 }}>GW{realStatsRow.last_gw} pts</span>
-              </div>
-            )}
-            {statTiles.map(([label, value]) => (
-              <div
-                key={label}
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  flex: 1,
-                  backgroundColor: NAVY[900],
-                  borderRadius: 14,
-                  padding: "18px 10px",
-                }}
-              >
-                <span style={{ fontSize: 34, fontWeight: 800, color: "#ffffff" }}>{value}</span>
-                <span style={{ fontSize: 16, color: NAVY[500], textTransform: "uppercase", marginTop: 4 }}>{label}</span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Footer */}
-        <div style={{ display: "flex", flex: 1 }} />
-        <div style={{ display: "flex", justifyContent: "center" }}>
-          <span style={{ fontSize: 18, color: NAVY[500], letterSpacing: 2, textTransform: "uppercase" }}>Hail Mary Projections</span>
-        </div>
-      </div>
-    ),
-    { width: SIZE, height: SIZE }
+    buildPlayerCardElement({
+      fullName: data.fullName,
+      teamName: data.teamName,
+      position: data.position,
+      price: data.price,
+      gameweek: data.gameweek,
+      finalScore: data.finalScore,
+      confidenceLabel: data.dataConfidence.label,
+      logoDataUri,
+      kitDataUri,
+      primaryFixture: data.primaryFixture,
+      competitionLabel,
+      lastGw: realStatsRow?.last_gw ?? null,
+      lastGwPoints: realStatsRow?.last_gw_points ?? null,
+      statTiles,
+    }) as ConstructorParameters<typeof ImageResponse>[0],
+    {
+      width: PLAYER_CARD_SIZE,
+      height: PLAYER_CARD_SIZE,
+      fonts: [
+        { name: "Oswald", data: oswaldMedium, weight: 500, style: "normal" },
+        { name: "Oswald", data: oswaldBold, weight: 700, style: "normal" },
+      ],
+    }
   );
 }
