@@ -58,6 +58,14 @@ export type PlayerRealStats = {
   shotsOnTarget: number | null;
   lastGw: number | null;
   lastGwPoints: number | null;
+  /** Literal season this row's real stats belong to (e.g. "2025/26") -
+   * 2026-08-20 user report: this panel was always mislabeled "this
+   * season" even when it had fallen back to last season's row because no
+   * 2026/27 result exists yet for that player (see migration 0128's
+   * docstring). Shown verbatim rather than compared against a hardcoded
+   * "current season" constant, so the label stays correct on its own
+   * once real current-season rows start landing. */
+  season: string | null;
 };
 
 /**
@@ -81,7 +89,7 @@ export async function getPlayerRealStatsAction(gamePlayerId: number): Promise<Pl
   const { data, error } = await supabase
     .from("game_player_pool")
     .select(
-      "real_total_points, real_appearances, real_goals, real_assists, real_clean_sheets, real_saves, real_tackles, real_clearances, real_blocks, real_interceptions, real_key_passes, real_shots_on_target, last_gw, last_gw_points"
+      "real_total_points, real_appearances, real_goals, real_assists, real_clean_sheets, real_saves, real_tackles, real_clearances, real_blocks, real_interceptions, real_key_passes, real_shots_on_target, last_gw, last_gw_points, real_season"
     )
     .eq("game_player_id", gamePlayerId)
     .maybeSingle();
@@ -102,5 +110,6 @@ export async function getPlayerRealStatsAction(gamePlayerId: number): Promise<Pl
     shotsOnTarget: data.real_shots_on_target,
     lastGw: data.last_gw,
     lastGwPoints: data.last_gw_points != null ? Number(data.last_gw_points) : null,
+    season: data.real_season,
   };
 }

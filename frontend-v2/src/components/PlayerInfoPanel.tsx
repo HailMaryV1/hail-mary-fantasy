@@ -135,7 +135,9 @@ export default function PlayerInfoPanel({
           {realStats && (
             <div className="rounded-lg border border-navy-800 bg-navy-950 p-3 text-xs">
               <p className="font-semibold text-white">Fantasy Stats</p>
-              <p className="mt-0.5 text-navy-500">Real results this season, not a projection.</p>
+              <p className="mt-0.5 text-navy-500">
+                {realStats.season ? `Real ${realStats.season} season results, not a projection.` : "Real results, not a projection."}
+              </p>
               {realStats.lastGwPoints != null && (
                 <div className="mt-2 flex items-center justify-between rounded bg-navy-900 px-2 py-1.5">
                   <span className="text-navy-300">GW{realStats.lastGw} points</span>
