@@ -140,6 +140,21 @@ export async function makeTransfer({
   // with totalOpenSlots=1 is exactly "does this single swap still reach a
   // real formation" - see squadFormation.ts's docstring (same relaxation
   // already shipped for EFL Fantasy's own transfer flow, eflFormation.ts).
+  //
+  // Real user report 2026-08-21: a 2-leg bundle that was legal end-to-end
+  // (visually confirmed correct on the pitch) still failed on leg 1 every
+  // time, rolling back the whole thing. Root cause: totalOpenSlots was
+  // `1 + batchLegs.length`, treating every OTHER leg as a still-
+  // undetermined slot of unknown position - but batchLegs' positions are
+  // already final (the client only calls this once every slot in the
+  // bundle has a real pick) and are already folded into stagedCounts. That
+  // double-counted them: once as an already-satisfied requirement (via
+  // stagedCounts) and again as "one more slot of unknown position still
+  // needed" (via totalOpenSlots), which is unsatisfiable whenever the
+  // bundle exactly completes a formation - i.e. every legal bundle. This
+  // call only ever decides ONE leg's position at a time (this one);
+  // totalOpenSlots is always 1, regardless of how many other already-
+  // decided legs ride along in batchLegs.
   const otherOutIds = new Set((batchLegs ?? []).map((l) => l.outGamePlayerId));
   const keptCounts = countByPosition(
     (allSquadPlayers ?? [])
@@ -147,8 +162,7 @@ export async function makeTransfer({
       .map((p) => ({ position: p.game_players.position_code as SquadPosition }))
   );
   const stagedCounts = countByPosition((batchLegs ?? []).map((l) => ({ position: l.inPosition })));
-  const totalOpenSlots = 1 + (batchLegs?.length ?? 0);
-  if (!isLegalFormationPick(keptCounts, stagedCounts, incoming.position_code as SquadPosition, totalOpenSlots, ELEVEN_A_SIDE_FORMATIONS)) {
+  if (!isLegalFormationPick(keptCounts, stagedCounts, incoming.position_code as SquadPosition, 1, ELEVEN_A_SIDE_FORMATIONS)) {
     return { error: "That swap would leave the squad off every real formation (needs exactly 1 GK plus a legal DEF/MID/FWD split, e.g. 4-4-2 or 3-5-2)." };
   }
 
