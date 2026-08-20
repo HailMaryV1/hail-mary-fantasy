@@ -429,7 +429,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       fixtures: buildFixtures(r.team_id),
       ownershipPct: r.ownershipPct,
       realTotalPoints: r.realTotalPoints,
-      realAppearances: r.realAppearances,
+      realMinutesPlayed: r.realMinutesPlayed,
       realGoals: r.realGoals,
       realAssists: r.realAssists,
       realCleanSheets: r.realCleanSheets,

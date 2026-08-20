@@ -45,7 +45,7 @@ export async function getPlayerProjectionTrendAction(gamePlayerId: number, fromG
 
 export type PlayerRealStats = {
   totalPoints: number | null;
-  appearances: number | null;
+  minutesPlayed: number | null;
   goals: number | null;
   assists: number | null;
   cleanSheets: number | null;
@@ -89,7 +89,7 @@ export async function getPlayerRealStatsAction(gamePlayerId: number): Promise<Pl
   const { data, error } = await supabase
     .from("game_player_pool")
     .select(
-      "real_total_points, real_appearances, real_goals, real_assists, real_clean_sheets, real_saves, real_tackles, real_clearances, real_blocks, real_interceptions, real_key_passes, real_shots_on_target, last_gw, last_gw_points, real_season"
+      "real_total_points, real_minutes_played, real_goals, real_assists, real_clean_sheets, real_saves, real_tackles, real_clearances, real_blocks, real_interceptions, real_key_passes, real_shots_on_target, last_gw, last_gw_points, real_season"
     )
     .eq("game_player_id", gamePlayerId)
     .maybeSingle();
@@ -97,7 +97,7 @@ export async function getPlayerRealStatsAction(gamePlayerId: number): Promise<Pl
 
   return {
     totalPoints: data.real_total_points != null ? Number(data.real_total_points) : null,
-    appearances: data.real_appearances,
+    minutesPlayed: data.real_minutes_played,
     goals: data.real_goals,
     assists: data.real_assists,
     cleanSheets: data.real_clean_sheets,

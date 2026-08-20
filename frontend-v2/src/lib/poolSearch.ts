@@ -43,7 +43,7 @@ export type PoolSearchRow = {
    * "absence of data is never treated as a real value" convention
    * ownershipPct already documents. */
   realTotalPoints: number | null;
-  realAppearances: number | null;
+  realMinutesPlayed: number | null;
   realGoals: number | null;
   realAssists: number | null;
   realCleanSheets: number | null;
@@ -146,7 +146,7 @@ export async function searchPool(params: {
     bonus_projected: number | string;
     ownership_pct: number | string | null;
     real_total_points: number | string | null;
-    real_appearances: number | null;
+    real_minutes_played: number | null;
     real_goals: number | null;
     real_assists: number | null;
     real_clean_sheets: number | null;
@@ -184,7 +184,7 @@ export async function searchPool(params: {
     bonusProjected: Number(r.bonus_projected),
     ownershipPct: r.ownership_pct != null ? Number(r.ownership_pct) : null,
     realTotalPoints: r.real_total_points != null ? Number(r.real_total_points) : null,
-    realAppearances: r.real_appearances,
+    realMinutesPlayed: r.real_minutes_played,
     realGoals: r.real_goals,
     realAssists: r.real_assists,
     realCleanSheets: r.real_clean_sheets,

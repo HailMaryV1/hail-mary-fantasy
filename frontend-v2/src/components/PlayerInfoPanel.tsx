@@ -158,16 +158,25 @@ export default function PlayerInfoPanel({
                 {(
                   [
                     ["Total Pts", realStats.totalPoints],
-                    ["Appearances", realStats.appearances],
+                    ["Minutes", realStats.minutesPlayed],
                     ["Goals", realStats.goals],
                     ["Assists", realStats.assists],
                     ["Clean Sheets", realStats.cleanSheets],
                     ["Saves", realStats.saves],
                     ["Tackles", realStats.tackles],
-                    ["Clearances", realStats.clearances],
-                    ["Blocks", realStats.blocks],
-                    ["Interceptions", realStats.interceptions],
-                    ["Key Passes", realStats.keyPasses],
+                    // Clearances/Blocks/Interceptions/Key Passes are only
+                    // ever real for EFL Fantasy (confirmed via
+                    // game_scoring_rules - dreamteam/fanteam/cloudff don't
+                    // score these at all) - showing them on Premier League
+                    // player cards was real user-reported clutter.
+                    ...(gameSlug === "eflfantasy"
+                      ? ([
+                          ["Clearances", realStats.clearances],
+                          ["Blocks", realStats.blocks],
+                          ["Interceptions", realStats.interceptions],
+                          ["Key Passes", realStats.keyPasses],
+                        ] as [string, number | null][])
+                      : []),
                     ["Shots on Target", realStats.shotsOnTarget],
                   ] as [string, number | null][]
                 )

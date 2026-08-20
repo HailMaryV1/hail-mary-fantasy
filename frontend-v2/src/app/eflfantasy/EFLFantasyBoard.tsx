@@ -31,7 +31,7 @@ export type FixtureTile = { opponentAbbr: string; isHome: boolean; difficulty: n
 // featured in a real gameweek.
 export type RealPlayerStats = {
   realTotalPoints?: number | null;
-  realAppearances?: number | null;
+  realMinutesPlayed?: number | null;
   realGoals?: number | null;
   realAssists?: number | null;
   realCleanSheets?: number | null;
@@ -320,7 +320,7 @@ export default function EFLFantasyBoard({
             fixtures: buildFixtures(r.team_id),
             ownershipPct: r.ownershipPct,
             realTotalPoints: r.realTotalPoints,
-            realAppearances: r.realAppearances,
+            realMinutesPlayed: r.realMinutesPlayed,
             realGoals: r.realGoals,
             realAssists: r.realAssists,
             realCleanSheets: r.realCleanSheets,
