@@ -385,14 +385,24 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
       // eye there instead of to the upscaled pixel edge itself - and now
       // doubles as a bit of extra glow inside the background art's own
       // built-in spotlight behind this area.
+      //
+      // Real user report 2026-08-21: with the new 4th trend-chart slot
+      // pushing FIXTURE_PANEL_TOP up to 490 (design-space), this block's
+      // natural flow height (header + kit + name + position line) landed
+      // at ~516 - past the fixture panel's own top, so the position/team/
+      // price label rendered underneath (overlapping) "vs Opponent". Sizes
+      // trimmed here (kit block marginTop 20->4, kit 208x224->186x200,
+      // name marginTop 20->14, label marginTop 8->6) bring the real total
+      // to ~468, clearing the fixture panel with margin instead of
+      // colliding with it.
       h(
         "div",
-        { style: { display: "flex", flexDirection: "column", alignItems: "center", marginTop: s(20) } },
+        { style: { display: "flex", flexDirection: "column", alignItems: "center", marginTop: s(4) } },
         kitDataUri
           ? h("img", {
               src: kitDataUri,
-              width: s(208),
-              height: s(224),
+              width: s(186),
+              height: s(200),
               style: { objectFit: "contain", filter: `drop-shadow(0px 0px ${s(14)}px ${kitGlowColor(colors)}99)` },
             })
           : h(
@@ -411,9 +421,9 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
               },
               heading({ fontSize: s(52), color: colors.secondary }, colors.abbr)
             ),
-        heading({ marginTop: s(20), fontSize: s(62), color: "#ffffff", textAlign: "center", letterSpacing: s(-1) }, fullName.toUpperCase()),
+        heading({ marginTop: s(14), fontSize: s(62), color: "#ffffff", textAlign: "center", letterSpacing: s(-1) }, fullName.toUpperCase()),
         label(
-          { marginTop: s(8), fontSize: s(22), color: NAVY[300], letterSpacing: s(2) },
+          { marginTop: s(6), fontSize: s(22), color: NAVY[300], letterSpacing: s(2) },
           `${position} · ${teamName} · £${price.toFixed(1)}m`
         )
       )
