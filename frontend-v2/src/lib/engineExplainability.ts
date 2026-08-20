@@ -530,7 +530,7 @@ export async function fetchEngineExplanationForGameweek(
   const [{ data: playerRow }, { data: projRow }] = await Promise.all([
     supabase
       .from("game_players")
-      .select("id, position_code, price, players(full_name, teams(name))")
+      .select("id, position_code, price, players(full_name, teams!players_team_id_fkey(name))")
       .eq("id", gamePlayerId)
       .single<{ id: number; position_code: string; price: number; players: { full_name: string; teams: { name: string } } }>(),
     supabase
