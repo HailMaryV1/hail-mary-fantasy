@@ -5,7 +5,6 @@ import { ImageResponse } from "next/og";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { fetchEngineExplanation, fetchEngineExplanationForGameweek, competitionLabel } from "@/lib/engineExplainability";
 import { getKitImage } from "@/lib/kitImages";
-import { getPlayerProjectionTrend } from "@/lib/projectionTrend";
 import { buildPlayerCardElement, PLAYER_CARD_SIZE } from "@/lib/playerCard";
 
 export const runtime = "nodejs";
@@ -118,30 +117,13 @@ export async function GET(request: NextRequest) {
   const goalProbability = data.moduleDetail?.goal ? toProbability(data.moduleDetail.goal.finalRate) : null;
   const assistProbability = data.moduleDetail?.assist ? toProbability(data.moduleDetail.assist.finalRate) : null;
 
-  // 2026-08-20 user request ("we want these cards to be projecting into
-  // the future... replace last season's stats with the projection
-  // trend"). Reuses the exact same helper PlayerInfoPanel's own trend
-  // chart already calls (lib/projectionTrend.ts) - same dedup-by-gameweek
-  // semantics, same 5-gameweek default window, so the card never disagrees
-  // with what the player's own detail page already shows.
-  const trend = await getPlayerProjectionTrend(supabase, gamePlayerId, data.gameweek ?? 1, 5);
-
-  // Same request's "if you can fit on the second game warning/info too" -
-  // condensed to one line, same wording PlayerInfoPanel uses for the
-  // Carabao-Cup-style extra-fixture note.
-  const additionalFixturesNote =
-    data.additionalFixtures.count > 0
-      ? `+${data.additionalFixtures.combinedContribution.toFixed(1)} more if also selected for ${data.additionalFixtures.fixtures
-          .map((fx) => competitionLabel(fx.competition))
-          .join(" & ")} - total ~${(data.finalScore + data.additionalFixtures.combinedContribution).toFixed(1)} across both games`
-      : null;
-
-  const [logoDataUri, kitDataUri, oswaldMedium, oswaldBold] = await Promise.all([
+  const [logoDataUri, kitDataUri, backgroundDataUri, oswaldMedium, oswaldBold] = await Promise.all([
     loadPublicImageAsDataUri("logo.png"),
     (() => {
       const kitPath = getKitImage(data.teamName);
       return kitPath ? loadPublicImageAsDataUri(kitPath.replace(/^\//, "")) : Promise.resolve(null);
     })(),
+    loadPublicImageAsDataUri("card-bg.png"),
     loadFont("Oswald-Medium.ttf"),
     loadFont("Oswald-Bold.ttf"),
   ]);
@@ -157,10 +139,9 @@ export async function GET(request: NextRequest) {
       confidenceLabel: data.dataConfidence.label,
       logoDataUri,
       kitDataUri,
+      backgroundDataUri,
       primaryFixture: data.primaryFixture,
       competitionLabel,
-      trend,
-      additionalFixturesNote,
       teamWinProbability,
       cleanSheetProbability,
       goalProbability,
