@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getSeasonTiming } from "@/lib/gameweek";
+import type { SquadPosition } from "@/lib/squadFormation";
 import { makeTransfer } from "../actions";
 
 /**
@@ -31,19 +32,50 @@ import { makeTransfer } from "../actions";
  * cap the rollback exists to recover from, since a failed 3rd leg often
  * means free_transfers just hit 0). A revert isn't a new transfer the
  * user is spending, it's undoing one that shouldn't have gone through.
+ *
+ * Real user report 2026-08-21: selling a MID and a DEF, then buying a
+ * FWD, silently rolled back the WHOLE bundle even though the client had
+ * already validated that exact combination as a legal formation. Root
+ * cause: makeTransfer's own formation check only ever saw ITS OWN leg,
+ * against a squad that STILL had the other outgoing player in it (not
+ * sold yet) - a real final formation could look temporarily illegal
+ * purely from sequencing. Each call below now passes batchLegs (every
+ * OTHER leg in this bundle) so makeTransfer validates against the SAME
+ * full shared-pot picture the client already confirmed was legal,
+ * instead of a misleading partial one.
  */
 export async function applyRecommendation({
   squadId,
   legs,
 }: {
   squadId: number;
-  legs: { outGamePlayerId: number; inGamePlayerId: number; outPrice: number; inPrice: number }[];
+  legs: { outGamePlayerId: number; inGamePlayerId: number; outPrice: number; inPrice: number; inPosition: SquadPosition }[];
 }) {
+  // Real user report 2026-08-21: a 2-leg bundle with only 1 free transfer
+  // left partially applied (leg 1 spent the last transfer) then rolled
+  // back entirely once leg 2 hit the cap - the user saw the failed
+  // attempt on the pitch with no clear explanation of why it didn't
+  // stick. Dream Team's real rule is a hard cap with no points-hit
+  // option (see makeTransfer's own docstring) - a bundle that needs more
+  // transfers than are currently available should never be allowed to
+  // start, not fail partway through and unwind.
+  const supabase = await createAuthServerClient();
+  const { data: squad } = await supabase.from("squads").select("game_id, free_transfers").eq("id", squadId).single();
+  if (squad) {
+    const { seasonStarted } = await getSeasonTiming(supabase, squad.game_id);
+    if (seasonStarted && legs.length > squad.free_transfers) {
+      return {
+        error: `Only ${squad.free_transfers} free transfer${squad.free_transfers === 1 ? "" : "s"} left this gameweek - can't apply a ${legs.length}-transfer bundle. Dream Team has a hard cap, no points-hit option.`,
+      };
+    }
+  }
+
   const applied: { outGamePlayerId: number; inGamePlayerId: number }[] = [];
   const orderedLegs = legs.slice().sort((a, b) => a.inPrice - a.outPrice - (b.inPrice - b.outPrice));
 
   for (const leg of orderedLegs) {
-    const result = await makeTransfer({ squadId, outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId });
+    const batchLegs = legs.filter((l) => l.outGamePlayerId !== leg.outGamePlayerId).map((l) => ({ outGamePlayerId: l.outGamePlayerId, inPosition: l.inPosition }));
+    const result = await makeTransfer({ squadId, outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId, batchLegs });
     if (result.error) {
       for (const done of applied.reverse()) {
         await revertTransfer({ squadId, outGamePlayerId: done.outGamePlayerId, inGamePlayerId: done.inGamePlayerId });

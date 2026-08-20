@@ -77,10 +77,22 @@ export async function makeTransfer({
   squadId,
   outGamePlayerId,
   inGamePlayerId,
+  batchLegs,
 }: {
   squadId: number;
   outGamePlayerId: number;
   inGamePlayerId: number;
+  // The OTHER legs of the same multi-player sale (2026-08-21 user report -
+  // see applyRecommendation's docstring). Without this, a 2+-leg bundle
+  // validated as legal by the client (which sees the whole shared pot at
+  // once) could still fail here: this function only ever sees ITS OWN
+  // leg's position, against a squad that STILL has the other outgoing
+  // players in it (they haven't been sold yet) - so a genuinely legal
+  // final formation can look illegal mid-sequence purely from ordering,
+  // spuriously rolling back the entire bundle. Omitted for a normal
+  // single 1-for-1 swap (the pool-row-click flow), which keeps today's
+  // exact behaviour (totalOpenSlots=1, no staged positions).
+  batchLegs?: { outGamePlayerId: number; inPosition: SquadPosition }[];
 }) {
   const supabase = await createAuthServerClient();
   const {
@@ -128,12 +140,15 @@ export async function makeTransfer({
   // with totalOpenSlots=1 is exactly "does this single swap still reach a
   // real formation" - see squadFormation.ts's docstring (same relaxation
   // already shipped for EFL Fantasy's own transfer flow, eflFormation.ts).
+  const otherOutIds = new Set((batchLegs ?? []).map((l) => l.outGamePlayerId));
   const keptCounts = countByPosition(
     (allSquadPlayers ?? [])
-      .filter((p) => p.game_player_id !== outGamePlayerId)
+      .filter((p) => p.game_player_id !== outGamePlayerId && !otherOutIds.has(p.game_player_id))
       .map((p) => ({ position: p.game_players.position_code as SquadPosition }))
   );
-  if (!isLegalFormationPick(keptCounts, { GK: 0, DEF: 0, MID: 0, FWD: 0 }, incoming.position_code as SquadPosition, 1, ELEVEN_A_SIDE_FORMATIONS)) {
+  const stagedCounts = countByPosition((batchLegs ?? []).map((l) => ({ position: l.inPosition })));
+  const totalOpenSlots = 1 + (batchLegs?.length ?? 0);
+  if (!isLegalFormationPick(keptCounts, stagedCounts, incoming.position_code as SquadPosition, totalOpenSlots, ELEVEN_A_SIDE_FORMATIONS)) {
     return { error: "That swap would leave the squad off every real formation (needs exactly 1 GK plus a legal DEF/MID/FWD split, e.g. 4-4-2 or 3-5-2)." };
   }
 

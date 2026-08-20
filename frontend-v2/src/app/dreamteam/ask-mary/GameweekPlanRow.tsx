@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { applyRecommendation } from "./actions";
 import FormPill from "@/components/FormPill";
 import type { GameweekPlanStep, BundleTransfer } from "@/lib/dreamteamAskMaryEngine";
+import type { SquadPosition } from "@/lib/squadFormation";
 
 const RISK_TONE: Record<BundleTransfer["risk"], string> = {
   low: "bg-emerald-950 text-emerald-400",
@@ -31,7 +32,13 @@ export default function GameweekPlanRow({ step, squadId }: { step: GameweekPlanS
     startTransition(async () => {
       const result = await applyRecommendation({
         squadId,
-        legs: step.transfers.map((t) => ({ outGamePlayerId: t.outGamePlayerId, inGamePlayerId: t.inGamePlayerId, outPrice: t.outPrice, inPrice: t.inPrice })),
+        legs: step.transfers.map((t) => ({
+          outGamePlayerId: t.outGamePlayerId,
+          inGamePlayerId: t.inGamePlayerId,
+          outPrice: t.outPrice,
+          inPrice: t.inPrice,
+          inPosition: t.position as SquadPosition,
+        })),
       });
       if (result?.error) setError(result.error);
       else setApplied(true);

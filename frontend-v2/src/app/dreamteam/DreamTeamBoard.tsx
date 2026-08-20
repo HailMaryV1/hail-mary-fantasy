@@ -13,7 +13,7 @@ import SaveTeamButton from "@/components/SaveTeamButton";
 import TrendChart from "@/components/TrendChart";
 import type { TrendPoint } from "@/lib/projectionTrend";
 import { searchPool } from "@/lib/poolSearch";
-import { isLegalFormationPick, countByPosition, ELEVEN_A_SIDE_FORMATIONS } from "@/lib/squadFormation";
+import { isLegalFormationPick, countByPosition, ELEVEN_A_SIDE_FORMATIONS, type SquadPosition } from "@/lib/squadFormation";
 import { setBooster, setCaptain, saveTeamForGameweek } from "./actions";
 import { applyRecommendation } from "./ask-mary/actions";
 
@@ -551,7 +551,13 @@ export default function DreamTeamBoard({
   function handleConfirmTransfers() {
     const legs = Array.from(pendingSwaps.entries()).map(([outGamePlayerId, inPlayer]) => {
       const outPlayer = pendingOutPlayers.find((o) => o.game_player_id === outGamePlayerId)!;
-      return { outGamePlayerId, inGamePlayerId: inPlayer.game_player_id, outPrice: outPlayer.price, inPrice: inPlayer.price };
+      return {
+        outGamePlayerId,
+        inGamePlayerId: inPlayer.game_player_id,
+        outPrice: outPlayer.price,
+        inPrice: inPlayer.price,
+        inPosition: inPlayer.position as SquadPosition,
+      };
     });
     if (legs.length === 0) return;
     setTransferError(null);
@@ -562,12 +568,16 @@ export default function DreamTeamBoard({
       );
       applyOptimisticSquad(newSquad);
       const result = await applyRecommendation({ squadId, legs });
+      // Real user report 2026-08-21: on failure, the pitch kept showing the
+      // attempted (never-persisted) pick, and Save Team could be pressed
+      // against that phantom state. Clearing pending state + bumping
+      // refreshKey here too (not just on success) forces a real resync
+      // instead of leaving the failed optimistic guess on screen
+      // indefinitely.
+      setPendingOutIds(new Set());
+      setPendingSwaps(new Map());
+      setRefreshKey((k) => k + 1);
       if (result?.error) setTransferError(result.error);
-      else {
-        setPendingOutIds(new Set());
-        setPendingSwaps(new Map());
-        setRefreshKey((k) => k + 1);
-      }
     });
   }
 
