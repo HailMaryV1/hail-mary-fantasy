@@ -71,6 +71,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
+from psycopg2.extras import execute_values
 
 ROOT = Path(__file__).resolve().parent.parent
 SPORTMONKS_BASE = "https://api.sportmonks.com/v3/football"
@@ -587,6 +588,36 @@ def _upcoming_team_fixtures(cur, team_id):
     return cur.fetchall()
 
 
+def _fetch_existing_flags(cur, pairs, column):
+    """Batch lookup of bookmaker_player_features.<column> for a set of
+    (player_id, fixture_id) pairs, in one round trip via unnest - shared
+    by both estimated-hub-row passes below.
+
+    Real bottleneck found live 2026-08-21 investigating the "shared
+    odds" refresh timing out past its 2hr CI limit: a real run wrote
+    123,464 hub rows, and the old code before this fix did 2 sequential
+    round trips PER row (a SELECT to check for an existing real
+    observation, then an upsert) plus re-ran _upcoming_team_fixtures()
+    once per BASELINE PLAYER instead of once per team - together good
+    for a quarter-million+ round trips against a remote DB, easily
+    accounting for the whole multi-hour runtime on its own. This
+    collapses the existence check to one query for the whole batch."""
+    if not pairs:
+        return {}
+    player_ids = [p for p, _ in pairs]
+    fixture_ids = [f for _, f in pairs]
+    cur.execute(
+        f"""
+        select bpf.player_id, bpf.fixture_id, bpf.{column}
+        from bookmaker_player_features bpf
+        join unnest(%s::bigint[], %s::bigint[]) as pairs(player_id, fixture_id)
+          on bpf.player_id = pairs.player_id and bpf.fixture_id = pairs.fixture_id
+        """,
+        (player_ids, fixture_ids),
+    )
+    return {(player_id, fixture_id): value for player_id, fixture_id, value in cur.fetchall()}
+
+
 def _populate_estimated_goal_rows(cur):
     """For every player with a real observed 'Anytime' goalscorer
     baseline, upserts an ESTIMATED score_probability row for every
@@ -602,41 +633,58 @@ def _populate_estimated_goal_rows(cur):
         """
     )
     baselines = cur.fetchall()
-    written = 0
+
+    # Fetch each team's upcoming fixtures once (not once per baseline
+    # player sharing that team) - see _fetch_existing_flags docstring.
+    team_ids = {team_id for _, _, _, team_id in baselines}
+    fixtures_by_team = {team_id: _upcoming_team_fixtures(cur, team_id) for team_id in team_ids}
+
+    candidates = []
     for player_id, observed_prob, baseline_attack, team_id in baselines:
         baseline_attack = float(baseline_attack)
         if baseline_attack <= 0:
             continue
-
-        for fixture_id, home_team_id, home_win_prob, away_win_prob in _upcoming_team_fixtures(cur, team_id):
+        for fixture_id, home_team_id, home_win_prob, away_win_prob in fixtures_by_team[team_id]:
             attack_score = float(home_win_prob) if team_id == home_team_id else float(away_win_prob)
+            candidates.append((player_id, fixture_id, observed_prob, baseline_attack, attack_score))
 
-            cur.execute(
-                "select is_estimated from bookmaker_player_features where player_id = %s and fixture_id = %s",
-                (player_id, fixture_id),
-            )
-            existing = cur.fetchone()
-            if existing is not None and not existing[0]:
-                continue  # never overwrite a real observation with an estimate
+    existing = _fetch_existing_flags(cur, [(c[0], c[1]) for c in candidates], "is_estimated")
 
-            scaled = max(0.01, min(0.9, float(observed_prob) * (attack_score / baseline_attack)))
-            cur.execute(
-                """
-                insert into bookmaker_player_features
-                    (player_id, fixture_id, score_probability, is_estimated, source, confidence, market_observed_at)
-                values (%s, %s, %s, true, 'sportmonks_baseline_scaled', 0.5, now())
-                on conflict (player_id, fixture_id) do update set
-                    score_probability = excluded.score_probability,
-                    is_estimated = true,
-                    source = excluded.source,
-                    confidence = excluded.confidence,
-                    computed_at = now()
-                """,
-                (player_id, fixture_id, scaled),
-            )
-            written += 1
+    # Keyed by (player_id, fixture_id), not appended - execute_values'
+    # single multi-row INSERT hard-errors ("ON CONFLICT DO UPDATE command
+    # cannot affect row a second time") if the same conflict key appears
+    # twice in one statement, unlike the old per-row loop this replaced,
+    # which just upserted each in its own statement. A player could in
+    # principle carry more than one baseline row matching this market
+    # filter - last one wins, same as the old loop's overwrite order.
+    by_key = {}
+    for player_id, fixture_id, observed_prob, baseline_attack, attack_score in candidates:
+        is_estimated = existing.get((player_id, fixture_id))
+        if is_estimated is not None and not is_estimated:
+            continue  # never overwrite a real observation with an estimate
+        scaled = max(0.01, min(0.9, float(observed_prob) * (attack_score / baseline_attack)))
+        by_key[(player_id, fixture_id)] = (player_id, fixture_id, scaled)
+    rows_to_upsert = list(by_key.values())
 
-    return written
+    if rows_to_upsert:
+        execute_values(
+            cur,
+            """
+            insert into bookmaker_player_features
+                (player_id, fixture_id, score_probability, is_estimated, source, confidence, market_observed_at)
+            values %s
+            on conflict (player_id, fixture_id) do update set
+                score_probability = excluded.score_probability,
+                is_estimated = true,
+                source = excluded.source,
+                confidence = excluded.confidence,
+                computed_at = now()
+            """,
+            rows_to_upsert,
+            template="(%s, %s, %s, true, 'sportmonks_baseline_scaled', 0.5, now())",
+        )
+
+    return len(rows_to_upsert)
 
 
 def _populate_estimated_assist_rows(cur):
@@ -658,43 +706,55 @@ def _populate_estimated_assist_rows(cur):
         """
     )
     baselines = cur.fetchall()
-    written = 0
+
+    team_ids = {team_id for _, _, _, team_id in baselines}
+    fixtures_by_team = {team_id: _upcoming_team_fixtures(cur, team_id) for team_id in team_ids}
+
+    candidates = []
     for player_id, observed_prob, baseline_attack, team_id in baselines:
         baseline_attack = float(baseline_attack)
         if baseline_attack <= 0:
             continue
-
-        for fixture_id, home_team_id, home_win_prob, away_win_prob in _upcoming_team_fixtures(cur, team_id):
+        for fixture_id, home_team_id, home_win_prob, away_win_prob in fixtures_by_team[team_id]:
             attack_score = float(home_win_prob) if team_id == home_team_id else float(away_win_prob)
+            candidates.append((player_id, fixture_id, observed_prob, baseline_attack, attack_score))
 
-            cur.execute(
-                "select assist_is_estimated from bookmaker_player_features where player_id = %s and fixture_id = %s",
-                (player_id, fixture_id),
-            )
-            existing = cur.fetchone()
-            if existing is not None and existing[0] is False:
-                continue  # never overwrite a real observation with an estimate
+    # assist_is_estimated is nullable (unlike is_estimated) - "no row
+    # yet" (None) and "a real value already exists" (False) are
+    # distinguishable - `is False` below is deliberate, not `not`.
+    existing = _fetch_existing_flags(cur, [(c[0], c[1]) for c in candidates], "assist_is_estimated")
 
-            scaled = max(0.01, min(0.9, float(observed_prob) * (attack_score / baseline_attack)))
-            cur.execute(
-                """
-                insert into bookmaker_player_features
-                    (player_id, fixture_id, assist_probability, is_estimated, source, confidence,
-                     assist_is_estimated, assist_source, assist_confidence, assist_market_observed_at)
-                values (%s, %s, %s, true, 'sportmonks_baseline_scaled', 0.5, true, 'sportmonks_baseline_scaled', 0.5, now())
-                on conflict (player_id, fixture_id) do update set
-                    assist_probability = excluded.assist_probability,
-                    assist_is_estimated = true,
-                    assist_source = excluded.assist_source,
-                    assist_confidence = excluded.assist_confidence,
-                    assist_market_observed_at = excluded.assist_market_observed_at,
-                    computed_at = now()
-                """,
-                (player_id, fixture_id, scaled),
-            )
-            written += 1
+    # Keyed by (player_id, fixture_id) - see the goal-rows function above
+    # for why a plain list would risk a duplicate-conflict-key crash.
+    by_key = {}
+    for player_id, fixture_id, observed_prob, baseline_attack, attack_score in candidates:
+        if existing.get((player_id, fixture_id)) is False:
+            continue  # never overwrite a real observation with an estimate
+        scaled = max(0.01, min(0.9, float(observed_prob) * (attack_score / baseline_attack)))
+        by_key[(player_id, fixture_id)] = (player_id, fixture_id, scaled)
+    rows_to_upsert = list(by_key.values())
 
-    return written
+    if rows_to_upsert:
+        execute_values(
+            cur,
+            """
+            insert into bookmaker_player_features
+                (player_id, fixture_id, assist_probability, is_estimated, source, confidence,
+                 assist_is_estimated, assist_source, assist_confidence, assist_market_observed_at)
+            values %s
+            on conflict (player_id, fixture_id) do update set
+                assist_probability = excluded.assist_probability,
+                assist_is_estimated = true,
+                assist_source = excluded.assist_source,
+                assist_confidence = excluded.assist_confidence,
+                assist_market_observed_at = excluded.assist_market_observed_at,
+                computed_at = now()
+            """,
+            rows_to_upsert,
+            template="(%s, %s, %s, true, 'sportmonks_baseline_scaled', 0.5, true, 'sportmonks_baseline_scaled', 0.5, now())",
+        )
+
+    return len(rows_to_upsert)
 
 
 def populate_estimated_hub_rows(cur):
