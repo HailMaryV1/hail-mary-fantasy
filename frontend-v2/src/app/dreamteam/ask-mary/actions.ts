@@ -73,8 +73,23 @@ export async function applyRecommendation({
   const applied: { outGamePlayerId: number; inGamePlayerId: number }[] = [];
   const orderedLegs = legs.slice().sort((a, b) => a.inPrice - a.outPrice - (b.inPrice - b.outPrice));
 
-  for (const leg of orderedLegs) {
-    const batchLegs = legs.filter((l) => l.outGamePlayerId !== leg.outGamePlayerId).map((l) => ({ outGamePlayerId: l.outGamePlayerId, inPosition: l.inPosition }));
+  for (let i = 0; i < orderedLegs.length; i++) {
+    const leg = orderedLegs[i];
+    // Real user report 2026-08-21: a position-neutral 2-leg bundle
+    // (MID->MID, DEF->DEF - shouldn't be able to touch formation
+    // legality at all) still failed on leg 2 every time. Root cause:
+    // this used to pass every OTHER leg in the bundle regardless of
+    // whether it had already been applied - but makeTransfer's own
+    // allSquadPlayers fetch reads LIVE state, and leg 1 had already
+    // committed to squad_players by the time leg 2 ran. Leg 1's
+    // incoming player was therefore counted TWICE: once for real
+    // (already in the squad) and once more as a still-staged pick,
+    // since its batchLegs entry still told makeTransfer to exclude the
+    // now-gone outgoing player and add the incoming one as staged. Only
+    // legs still PENDING (not yet committed) need that "exclude old,
+    // stage new" treatment - an already-applied leg is just normal,
+    // already-live squad state and needs no special handling at all.
+    const batchLegs = orderedLegs.slice(i + 1).map((l) => ({ outGamePlayerId: l.outGamePlayerId, inPosition: l.inPosition }));
     const result = await makeTransfer({ squadId, outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId, batchLegs });
     if (result.error) {
       for (const done of applied.reverse()) {
