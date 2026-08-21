@@ -5,6 +5,7 @@ import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquad
 import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
 import { fetchFfscoutStatusByPlayerIds } from "@/lib/ffscoutStatus";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
+import { getProjectionFreshness } from "@/lib/projectionFreshness";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import FanTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./FanTeamBoard";
 
@@ -367,6 +368,9 @@ export default async function FanTeamSquadPage({
       (f) => f.gk_count === startingCounts.GK && f.def_count === startingCounts.DEF && f.mid_count === startingCounts.MID && f.fwd_count === startingCounts.FWD
     )?.code ?? null;
 
+  // Real user request 2026-08-21 - see lib/projectionFreshness.ts.
+  const projectionsUpdatedAt = await getProjectionFreshness(supabase, "fanteam");
+
   return (
     <FanTeamBoard
       squadId={squadId}
@@ -398,6 +402,7 @@ export default async function FanTeamSquadPage({
       fixtureTiles={fixtureTilesRecord}
       isPoolServerDriven={!isPastView}
       squadSummary={squadSummary}
+      projectionsUpdatedAt={projectionsUpdatedAt}
     />
   );
 }

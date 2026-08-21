@@ -10,6 +10,7 @@ import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMe
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import SaveTeamButton from "@/components/SaveTeamButton";
+import ProjectionFreshness from "@/components/ProjectionFreshness";
 import { searchPool } from "@/lib/poolSearch";
 import { reorderFanteamBench, setFanteamFormation, setFanteamCaptain, swapFanteamLineup, saveTeamForGameweek } from "../actions";
 import { applyRecommendation } from "./ask-mary/actions";
@@ -231,6 +232,7 @@ export default function FanTeamBoard({
   fixtureTiles,
   isPoolServerDriven,
   squadSummary,
+  projectionsUpdatedAt,
 }: {
   squadId: number;
   squadName: string;
@@ -280,6 +282,8 @@ export default function FanTeamBoard({
   // behavior over an already-fetched full pool).
   isPoolServerDriven: boolean;
   squadSummary: string[];
+  // Real user request 2026-08-21 - see lib/projectionFreshness.ts.
+  projectionsUpdatedAt: string | null;
 }) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -1228,6 +1232,7 @@ export default function FanTeamBoard({
                   </button>
                 </div>
               )}
+              <ProjectionFreshness updatedAt={projectionsUpdatedAt} />
             </div>
           </div>
           )}

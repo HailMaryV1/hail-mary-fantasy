@@ -5,6 +5,7 @@ import { getProjectionsForPlayerIds, fetchAllPaginated } from "@/lib/gameweek";
 import { getEflGameweekInfo, getTeamKickoffMap, isTeamLocked } from "@/lib/eflFixtureLocking";
 import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquadSaved, getSquadActualPointsForGameweek } from "@/lib/gameweekHistory";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
+import { getProjectionFreshness } from "@/lib/projectionFreshness";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import EFLFantasyBoard, {
   type BoardPlayer,
@@ -537,6 +538,9 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       })
     : [];
 
+  // Real user request 2026-08-21 - see lib/projectionFreshness.ts.
+  const projectionsUpdatedAt = await getProjectionFreshness(supabase, "eflfantasy");
+
   return (
     <EFLFantasyBoard
       squadId={squadId}
@@ -563,6 +567,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       isPoolServerDriven={!isPastView}
       fixtureTiles={fixtureTilesRecord}
       reserves={boardReserves}
+      projectionsUpdatedAt={projectionsUpdatedAt}
     />
   );
 }

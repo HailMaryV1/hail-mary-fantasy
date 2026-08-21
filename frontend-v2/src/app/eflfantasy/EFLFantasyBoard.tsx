@@ -9,6 +9,7 @@ import Kit from "@/components/Kit";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import OddsRefreshButton from "@/components/OddsRefreshButton";
 import SaveTeamButton from "@/components/SaveTeamButton";
+import ProjectionFreshness from "@/components/ProjectionFreshness";
 import { searchPool } from "@/lib/poolSearch";
 import { isLegalPositionSwap } from "@/lib/eflFormation";
 import { makeTransfer, makeClubTransfer, addReserve, removeReserve, setReservesForPosition, saveTeamForGameweek } from "./actions";
@@ -184,6 +185,7 @@ export default function EFLFantasyBoard({
   isPoolServerDriven,
   fixtureTiles,
   reserves,
+  projectionsUpdatedAt,
 }: {
   squadId: number;
   squadName: string;
@@ -232,6 +234,8 @@ export default function EFLFantasyBoard({
   // shortlist is about backing up THIS week's live decisions, not a past
   // one.
   reserves: Record<ReservePosition, ReservePick[]>;
+  // Real user request 2026-08-21 - see lib/projectionFreshness.ts.
+  projectionsUpdatedAt: string | null;
 }) {
   const lockedTeamIds = new Set(lockedTeamIdsProp);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
@@ -1211,6 +1215,7 @@ export default function EFLFantasyBoard({
                     </button>
                   </div>
                 )}
+                <ProjectionFreshness updatedAt={projectionsUpdatedAt} />
               </div>
             </div>
           )}

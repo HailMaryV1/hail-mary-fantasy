@@ -2526,6 +2526,11 @@ def build_explanation(priced, top_n=3):
 
 
 def upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs):
+    # updated_at bumped explicitly on the update path (2026-08-21 - see
+    # migration 0131's docstring: this is the only reliable "last actually
+    # recomputed" signal in the schema, since created_at never moves once a
+    # row exists). The insert path's own column default handles the first-
+    # ever write for a row.
     if gameweek is not None:
         cur.execute(
             """
@@ -2535,7 +2540,8 @@ def upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, peri
             values (%s, %s, %s, %s, %s, %s, %s, %s)
             on conflict (algorithm_version_id, game_player_id, gameweek) where gameweek is not null
                 do update set hail_mary_score = excluded.hail_mary_score, inputs = excluded.inputs,
-                              period_start = excluded.period_start, period_end = excluded.period_end
+                              period_start = excluded.period_start, period_end = excluded.period_end,
+                              updated_at = now()
             """,
             (algo_id, game_player_id, UPCOMING_SEASON, gameweek, period_start, period_end, round(score, 3),
              psycopg2.extras.Json(inputs)),
@@ -2549,7 +2555,8 @@ def upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, peri
             values (%s, %s, %s, %s, %s, %s, %s)
             on conflict (algorithm_version_id, game_player_id, period_start, period_end)
                 where gameweek is null
-                do update set hail_mary_score = excluded.hail_mary_score, inputs = excluded.inputs
+                do update set hail_mary_score = excluded.hail_mary_score, inputs = excluded.inputs,
+                              updated_at = now()
             """,
             (algo_id, game_player_id, UPCOMING_SEASON, period_start, period_end, round(score, 3),
              psycopg2.extras.Json(inputs)),

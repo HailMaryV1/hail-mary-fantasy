@@ -6,6 +6,7 @@ import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquad
 import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
 import { fetchFfscoutStatusByPlayerIds } from "@/lib/ffscoutStatus";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
+import { getProjectionFreshness } from "@/lib/projectionFreshness";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import { getMatchDaysForSquad, ensureAutoPicks, fetchScoresForMatchDays, countUncoveredMatchDays } from "@/lib/matchDayCaptains";
 import CloudFFBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./CloudFFBoard";
@@ -366,6 +367,9 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       })
     : [];
 
+  // Real user request 2026-08-21 - see lib/projectionFreshness.ts.
+  const projectionsUpdatedAt = await getProjectionFreshness(supabase, "cloudff");
+
   return (
     <CloudFFBoard
       squadId={squadId}
@@ -389,6 +393,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       fixtureTiles={fixtureTilesRecord}
       isPoolServerDriven={!isPastView}
       squadSummary={squadSummary}
+      projectionsUpdatedAt={projectionsUpdatedAt}
     />
   );
 }

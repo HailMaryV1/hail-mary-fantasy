@@ -6,6 +6,7 @@ import { getSquadGameweekLock, getActualPoints, resolvePlayerIdentities, isSquad
 import { fetchRotationRiskByPlayerIds } from "@/lib/rotationRisk";
 import { fetchFfscoutStatusByPlayerIds } from "@/lib/ffscoutStatus";
 import { searchPool, listPoolTeams } from "@/lib/poolSearch";
+import { getProjectionFreshness } from "@/lib/projectionFreshness";
 import { buildSquadSummary } from "@/lib/squadSummary";
 import { getSquadProjectionTrend, type TrendPoint } from "@/lib/projectionTrend";
 import DreamTeamBoard, { type BoardPlayer, type PoolPlayer, type FixtureTile, POOL_PAGE_SIZE } from "./DreamTeamBoard";
@@ -436,6 +437,12 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       })
     : [];
 
+  // Real user request 2026-08-21: "a time stamp on when the last update was
+  // on the player projections... so i know im using fresh data not stale
+  // data" - see projectionFreshness.ts's own docstring for why this can't
+  // just read projections.created_at.
+  const projectionsUpdatedAt = await getProjectionFreshness(supabase, "dreamteam");
+
   return (
     <DreamTeamBoard
       squadId={squadId}
@@ -468,6 +475,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
       fixtureTiles={fixtureTilesRecord}
       isPoolServerDriven={!isPastView}
       squadSummary={squadSummary}
+      projectionsUpdatedAt={projectionsUpdatedAt}
     />
   );
 }

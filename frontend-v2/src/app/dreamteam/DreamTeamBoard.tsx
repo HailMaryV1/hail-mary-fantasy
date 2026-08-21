@@ -11,6 +11,7 @@ import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import SaveTeamButton from "@/components/SaveTeamButton";
 import TrendChart from "@/components/TrendChart";
+import ProjectionFreshness from "@/components/ProjectionFreshness";
 import type { TrendPoint } from "@/lib/projectionTrend";
 import { searchPool } from "@/lib/poolSearch";
 import { isLegalFormationPick, countByPosition, ELEVEN_A_SIDE_FORMATIONS, type SquadPosition } from "@/lib/squadFormation";
@@ -164,6 +165,7 @@ export default function DreamTeamBoard({
   fixtureTiles,
   isPoolServerDriven,
   squadSummary,
+  projectionsUpdatedAt,
 }: {
   squadId: number;
   squadName: string;
@@ -205,6 +207,8 @@ export default function DreamTeamBoard({
   // since it's scored from real actuals, not projections.
   isPoolServerDriven: boolean;
   squadSummary: string[];
+  // Real user request 2026-08-21 - see lib/projectionFreshness.ts.
+  projectionsUpdatedAt: string | null;
 }) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>("pts");
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -953,6 +957,7 @@ export default function DreamTeamBoard({
                   </button>
                 </div>
               )}
+              <ProjectionFreshness updatedAt={projectionsUpdatedAt} />
             </div>
           </div>
           )}
