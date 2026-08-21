@@ -429,7 +429,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
             ),
         heading({ marginTop: s(14), fontSize: s(62), color: "#ffffff", textAlign: "center", letterSpacing: s(-1) }, fullName.toUpperCase()),
         label(
-          { marginTop: s(6), fontSize: s(22), color: NAVY[300], letterSpacing: s(2) },
+          { marginTop: s(2), fontSize: s(22), color: NAVY[300], letterSpacing: s(2) },
           hasBudget ? `${position} · ${teamName} · £${price.toFixed(1)}m` : `${position} · ${teamName}`
         )
       )
