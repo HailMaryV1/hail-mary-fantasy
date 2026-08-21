@@ -94,13 +94,23 @@ export default async function EflMarketOddsPage({
               Championship, League One and League Two only.
             </p>
           </div>
-          <GameweekSwitcher
-            basePath="/eflfantasy/market-odds"
-            currentGameweek={viewedGameweek}
-            minGameweek={gwInfo.minGameweek}
-            maxGameweek={gwInfo.maxGameweek}
-            planningGameweek={planningGameweek}
-          />
+          <div className="flex items-center gap-2">
+            <a
+              href={`/api/market-odds-card?gameweek=${viewedGameweek}${activeCompetition !== "ALL" ? `&competition=${activeCompetition}` : ""}`}
+              download={`hail-mary-market-odds-gw${viewedGameweek}.png`}
+              className="flex shrink-0 items-center gap-1 self-start rounded-full border border-navy-700 bg-navy-950 px-2.5 py-1.5 text-[10px] font-semibold text-sky-400 hover:border-sky-500 hover:text-sky-300"
+              title="Download a shareable market odds card for socials"
+            >
+              ⬇ Card
+            </a>
+            <GameweekSwitcher
+              basePath="/eflfantasy/market-odds"
+              currentGameweek={viewedGameweek}
+              minGameweek={gwInfo.minGameweek}
+              maxGameweek={gwInfo.maxGameweek}
+              planningGameweek={planningGameweek}
+            />
+          </div>
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
