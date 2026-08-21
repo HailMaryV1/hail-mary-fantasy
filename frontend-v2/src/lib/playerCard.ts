@@ -398,9 +398,9 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
       // at ~516 - past the fixture panel's own top, so the position/team/
       // price label rendered underneath (overlapping) "vs Opponent". Sizes
       // trimmed here (kit block marginTop 20->4, kit 208x224->186x200,
-      // name marginTop 20->14, label marginTop 8->6) bring the real total
-      // to ~468, clearing the fixture panel with margin instead of
-      // colliding with it.
+      // name marginTop 20->8, label marginTop 8->0 - tightened twice, the
+      // first pass wasn't enough per a real rendered card) bring the whole
+      // identity block up with real clearance before the fixture panel.
       h(
         "div",
         { style: { display: "flex", flexDirection: "column", alignItems: "center", marginTop: s(4) } },
@@ -427,9 +427,9 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
               },
               heading({ fontSize: s(52), color: colors.secondary }, colors.abbr)
             ),
-        heading({ marginTop: s(14), fontSize: s(62), color: "#ffffff", textAlign: "center", letterSpacing: s(-1) }, fullName.toUpperCase()),
+        heading({ marginTop: s(8), fontSize: s(62), color: "#ffffff", textAlign: "center", letterSpacing: s(-1) }, fullName.toUpperCase()),
         label(
-          { marginTop: s(2), fontSize: s(22), color: NAVY[300], letterSpacing: s(2) },
+          { marginTop: s(0), fontSize: s(22), color: NAVY[300], letterSpacing: s(2) },
           hasBudget ? `${position} · ${teamName} · £${price.toFixed(1)}m` : `${position} · ${teamName}`
         )
       )
