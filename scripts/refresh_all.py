@@ -336,13 +336,19 @@ def run_wrapup():
     script's own docstring for why every real consumer already only
     ever wants the latest row per (game_player_id, gameweek) anyway, so
     running this every cycle keeps the table from ever re-accumulating
-    the ~90k-row/168MB bloat a one-off cleanup found on 2026-08-17."""
+    the ~90k-row/168MB bloat a one-off cleanup found on 2026-08-17.
+
+    send_accuracy_digest.py runs immediately after evaluate_predictions.py
+    specifically because it depends on that step's freshest evaluation
+    rows to decide which squad+gameweeks just became fully graded -
+    see its own docstring."""
     results = []
     results.append(run_step("Capture gameweek actuals", ["scripts/capture_gameweek_actuals.py"]))
     results.append(run_step("Attach gameweek results to frozen predictions", ["scripts/attach_gameweek_results.py"]))
     results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
     results.append(run_step("Capture squad state at deadline (Mary Performance Lab)", ["scripts/capture_squad_gameweek_state.py"]))
     results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
+    results.append(run_step("Send accuracy digest", ["scripts/send_accuracy_digest.py"]))
     results.append(run_step("Prune superseded projection rows", ["scripts/prune_old_projections.py"]))
     return results
 
