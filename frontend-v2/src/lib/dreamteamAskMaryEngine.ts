@@ -802,8 +802,19 @@ export async function runAskMaryAnalysis(
     // Which transfer gets made is decided on the wider PLANNING_LOOKAHEAD_
     // GAMEWEEKS-week view (see that constant) - scoreMapForStep above stays
     // 1-week and is only used below for the number actually displayed as
-    // this step's projected points.
-    const planningScoreMap = stepPlanningScoreMaps[offset - 1] ?? new Map();
+    // this step's projected points. That smoothing exists to stop a real,
+    // scarce free transfer being spent chasing one noisy week - but real
+    // user report 2026-08-21: it also recommended transferring IN a player
+    // with a genuinely bad primary fixture (Torp away at Arsenal, 2.99)
+    // purely because a strong following gameweek (8.9) pulled his 2-week
+    // average up, during the PRE-SEASON step specifically - where transfers
+    // are free and unlimited, so there is zero cost to just waiting and
+    // making that exact same transfer next week instead, right before the
+    // good fixture. The averaging's own rationale (protect a scarce
+    // transfer from short-term noise) doesn't apply when nothing is scarce
+    // - so the pre-season step decides off the immediate week's score
+    // instead, same as what it displays.
+    const planningScoreMap = isPreSeasonStep ? scoreMapForStep : stepPlanningScoreMaps[offset - 1] ?? new Map();
 
     function buildStep(result: { transfers: BundleTransfer[] } & SearchState, explainHold = false): GameweekPlanStep {
       const resultingSquadExpectedPoints = optimalXITotal(result.workingSquad, scoreMapForStep);
