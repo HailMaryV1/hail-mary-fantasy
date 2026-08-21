@@ -2,10 +2,11 @@
 compute_expected_goals.py
 --------------------------
 Real per-team expected goals, derived from the real bookmaker 1X2 (home/
-draw/away win) market - 2026-08-20 user request, for the EFL-only "Market
-Odds" page (Championship/League One/League Two - explicitly not Premier
-League; scoped here the same way, not because the math couldn't apply
-elsewhere).
+draw/away win) market - 2026-08-20 user request, originally for the
+EFL-only "Market Odds" page (Championship/League One/League Two), widened
+2026-08-21 to also cover the Premier League (soccer_epl) for the same
+page's Dream Team/FanTeam/Cloud FF variants - the math and query were
+already fully generic, this was just a competition-list gate.
 
 fixture_team_totals (a real bookmaker team-goals line) exists but is
 sparse in practice - checked live, every upcoming EFL fixture had
@@ -34,7 +35,7 @@ import psycopg2
 
 ROOT = Path(__file__).resolve().parent.parent
 
-EFL_COMPETITIONS = ("efl_championship", "efl_league_one", "efl_league_two")
+MARKET_ODDS_COMPETITIONS = ("efl_championship", "efl_league_one", "efl_league_two", "soccer_epl")
 
 MAX_GOALS = 8  # truncation point for the Poisson sum - tail beyond this is negligible for any realistic lambda.
 
@@ -138,7 +139,7 @@ def main():
             where f.competition = any(%s)
             order by fp.fixture_id, fp.computed_at desc
             """,
-            (list(EFL_COMPETITIONS),),
+            (list(MARKET_ODDS_COMPETITIONS),),
         )
         rows = cur.fetchall()
 
@@ -158,7 +159,7 @@ def main():
                 written += 1
 
         conn.commit()
-        print(f"Computed expected goals for {written} (fixture, team) rows across {len(rows)} EFL fixtures.")
+        print(f"Computed expected goals for {written} (fixture, team) rows across {len(rows)} fixtures.")
     except Exception:
         conn.rollback()
         raise

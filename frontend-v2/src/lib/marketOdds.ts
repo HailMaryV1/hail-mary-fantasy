@@ -3,6 +3,7 @@
 import { createAuthServerClient } from "./supabaseServerClient";
 
 export type EflCompetition = "efl_championship" | "efl_league_one" | "efl_league_two";
+export type MarketOddsCompetition = EflCompetition | "soccer_epl";
 
 export type MarketOddsTeamSide = {
   teamId: number;
@@ -20,7 +21,7 @@ export type MarketOddsTeamSide = {
 
 export type MarketOddsFixture = {
   fixtureId: number;
-  competition: EflCompetition;
+  competition: MarketOddsCompetition;
   kickoffAt: string;
   home: MarketOddsTeamSide;
   away: MarketOddsTeamSide;
@@ -28,7 +29,7 @@ export type MarketOddsFixture = {
 
 export type MarketOddsTeamRow = MarketOddsTeamSide & {
   fixtureId: number;
-  competition: EflCompetition;
+  competition: MarketOddsCompetition;
   kickoffAt: string;
   opponentName: string;
   isHome: boolean;
@@ -43,7 +44,7 @@ export type MarketOddsResult = {
 
 type RpcRow = {
   fixture_id: number;
-  competition: EflCompetition;
+  competition: MarketOddsCompetition;
   kickoff_at: string;
   team_id: number;
   team_name: string;
@@ -59,23 +60,29 @@ type RpcRow = {
 
 /**
  * Real per-team market data (win %, clean sheet %, Poisson-derived
- * expected goals - see migration 0125/0126's own docstrings) for one EFL
- * Fantasy gameweek's fixtures, scoped to the real Premier-League-
- * excluded EFL competitions - 2026-08-20 user request for a "Market
- * Odds" page. Championship/League One/League Two only; this game
- * (eflfantasy) never has Premier League fixtures in its own gameweek
- * calendar, so no separate competition filter is needed here to keep
- * that scope - it's a structural guarantee of the RPC's own join, not a
- * WHERE clause someone could accidentally loosen.
+ * expected goals - see migration 0125/0133's own docstrings) for one
+ * game's gameweek of fixtures - originally built 2026-08-20 for EFL
+ * Fantasy's "Market Odds" page (Championship/League One/League Two),
+ * widened 2026-08-21 to also serve Dream Team/FanTeam/Cloud FF's real
+ * Premier League fixtures. The scope guarantee moved from a hardcoded
+ * 'eflfantasy' literal inside the RPC to the caller-supplied gameSlug -
+ * get_market_odds(p_game_slug, p_gameweek) only ever returns fixtures
+ * from that game's own game_fixture_gameweeks calendar, so a single-
+ * competition game (fanteam/cloudff, Premier League only) never needs
+ * competitionFilter at all and can just leave it at "ALL".
  */
-export async function fetchEflMarketOdds(gameweek: number, competitionFilter: EflCompetition | "ALL" = "ALL"): Promise<MarketOddsResult> {
+export async function fetchMarketOdds(
+  gameSlug: string,
+  gameweek: number,
+  competitionFilter: MarketOddsCompetition | "ALL" = "ALL"
+): Promise<MarketOddsResult> {
   const supabase = await createAuthServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return { fixtures: [], top5Winners: [], top5Goals: [], top5CleanSheets: [] };
 
-  const { data, error } = await supabase.rpc("get_efl_market_odds", { p_gameweek: gameweek });
+  const { data, error } = await supabase.rpc("get_market_odds", { p_game_slug: gameSlug, p_gameweek: gameweek });
   if (error || !data) return { fixtures: [], top5Winners: [], top5Goals: [], top5CleanSheets: [] };
 
   const rows = (data as RpcRow[]).filter((r) => competitionFilter === "ALL" || r.competition === competitionFilter);

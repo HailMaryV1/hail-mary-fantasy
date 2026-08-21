@@ -286,7 +286,7 @@ def main():
             (home_name, away_name, kickoff_at.date()): (fid, home_team_id, away_team_id)
             for fid, home_name, away_name, kickoff_at, home_team_id, away_team_id in our_fixtures
         }
-        print(f"{len(our_fixtures)} upcoming EFL Fantasy fixtures to match against SportMonks.")
+        print(f"{len(our_fixtures)} upcoming fixtures (all 6 covered competitions) to match against SportMonks.")
 
         start_date = now.date().isoformat()
         end_date = (now + timedelta(days=LOOKAHEAD_DAYS)).date().isoformat()

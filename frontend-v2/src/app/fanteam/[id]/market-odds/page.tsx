@@ -1,19 +1,18 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo } from "@/lib/gameweek";
-import { fetchMarketOdds, type EflCompetition, type MarketOddsTeamRow } from "@/lib/marketOdds";
+import { fetchMarketOdds, type MarketOddsTeamRow } from "@/lib/marketOdds";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import Kit from "@/components/Kit";
 
 export const dynamic = "force-dynamic";
 
-const COMPETITION_TABS: { value: EflCompetition | "ALL"; label: string }[] = [
-  { value: "efl_championship", label: "Championship" },
-  { value: "efl_league_one", label: "League One" },
-  { value: "efl_league_two", label: "League Two" },
-  { value: "ALL", label: "All competitions" },
-];
+type SquadRow = {
+  id: number;
+  user_id: string;
+  fantasy_games: { id: number; slug: string } | { id: number; slug: string }[];
+};
 
 function DeltaTag({ value, suffix = "%" }: { value: number; suffix?: string }) {
   if (Math.abs(value) < 0.05) return null;
@@ -55,20 +54,32 @@ function Top5Card({ title, rows, metric }: { title: string; rows: MarketOddsTeam
   );
 }
 
-export default async function EflMarketOddsPage({
+export default async function FanTeamMarketOddsPage({
+  params,
   searchParams,
 }: {
-  searchParams: Promise<{ gameweek?: string; competition?: string }>;
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ gameweek?: string }>;
 }) {
-  const { gameweek: gameweekParam, competition: competitionParam } = await searchParams;
+  const { id } = await params;
+  const squadId = Number(id);
+  const { gameweek: gameweekParam } = await searchParams;
+
   const supabase = await createAuthServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: game } = await supabase.from("fantasy_games").select("id").eq("slug", "eflfantasy").maybeSingle();
-  if (!game) redirect("/eflfantasy");
+  const { data: squad } = await supabase
+    .from("squads")
+    .select("id, user_id, fantasy_games(id, slug)")
+    .eq("id", squadId)
+    .single<SquadRow>();
+  if (!squad || squad.user_id !== user.id) notFound();
+
+  const game = Array.isArray(squad.fantasy_games) ? squad.fantasy_games[0] : squad.fantasy_games;
+  if (!game || game.slug !== "fanteam") notFound();
 
   const gwInfo = await getGameweekInfo(supabase, game.id);
   const planningGameweek = gwInfo.planningGameweek ?? 1;
@@ -77,26 +88,25 @@ export default async function EflMarketOddsPage({
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
     : planningGameweek;
 
-  const activeCompetition: EflCompetition | "ALL" = COMPETITION_TABS.some((t) => t.value === competitionParam)
-    ? (competitionParam as EflCompetition | "ALL")
-    : "ALL";
-
-  const { fixtures, top5Winners, top5Goals, top5CleanSheets } = await fetchMarketOdds("eflfantasy", viewedGameweek, activeCompetition);
+  const { fixtures, top5Winners, top5Goals, top5CleanSheets } = await fetchMarketOdds("fanteam", viewedGameweek);
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
       <div className="mx-auto max-w-6xl">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <Link href={`/fanteam/${squadId}`} className="text-sm font-medium text-navy-400 hover:text-sky-400">
+          ← Back to squad
+        </Link>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h1 className="text-lg font-semibold text-white">Market Odds</h1>
             <p className="mt-1 max-w-xl text-xs text-navy-400">
-              Goal and clean sheet projections from the betting market, with how far each price has moved since it opened. EFL
-              Championship, League One and League Two only.
+              Goal and clean sheet projections from the betting market, with how far each price has moved since it opened. Premier
+              League only.
             </p>
           </div>
           <div className="flex items-center gap-2">
             <a
-              href={`/api/market-odds-card?gameweek=${viewedGameweek}&gameSlug=eflfantasy${activeCompetition !== "ALL" ? `&competition=${activeCompetition}` : ""}`}
+              href={`/api/market-odds-card?gameweek=${viewedGameweek}&gameSlug=fanteam`}
               download={`hail-mary-market-odds-gw${viewedGameweek}.png`}
               className="flex shrink-0 items-center gap-1 self-start rounded-full border border-navy-700 bg-navy-950 px-2.5 py-1.5 text-[10px] font-semibold text-sky-400 hover:border-sky-500 hover:text-sky-300"
               title="Download a shareable market odds card for socials"
@@ -104,27 +114,13 @@ export default async function EflMarketOddsPage({
               ⬇ Card
             </a>
             <GameweekSwitcher
-              basePath="/eflfantasy/market-odds"
+              basePath={`/fanteam/${squadId}/market-odds`}
               currentGameweek={viewedGameweek}
               minGameweek={gwInfo.minGameweek}
               maxGameweek={gwInfo.maxGameweek}
               planningGameweek={planningGameweek}
             />
           </div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          {COMPETITION_TABS.map((tab) => (
-            <Link
-              key={tab.value}
-              href={`/eflfantasy/market-odds?gameweek=${viewedGameweek}&competition=${tab.value}`}
-              className={`rounded-full px-3 py-1.5 text-xs font-medium ${
-                activeCompetition === tab.value ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"
-              }`}
-            >
-              {tab.label}
-            </Link>
-          ))}
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -136,14 +132,13 @@ export default async function EflMarketOddsPage({
         <div className="mt-6 rounded-xl border border-navy-700 bg-navy-900 p-4">
           <h2 className="text-sm font-semibold text-white">By fixture</h2>
           {fixtures.length === 0 ? (
-            <p className="mt-3 text-xs text-navy-500">No fixtures found for Gameweek {viewedGameweek} in this competition.</p>
+            <p className="mt-3 text-xs text-navy-500">No fixtures found for Gameweek {viewedGameweek}.</p>
           ) : (
             <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
               {fixtures.map((fx) => (
                 <div key={fx.fixtureId} className="rounded-lg border border-navy-800 bg-navy-950 p-3">
                   <div className="flex items-center justify-between text-[10px] text-navy-500">
                     <span>{new Date(fx.kickoffAt).toLocaleString("en-GB", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
-                    <span className="uppercase tracking-wide">{COMPETITION_TABS.find((t) => t.value === fx.competition)?.label ?? fx.competition}</span>
                   </div>
                   <table className="mt-2 w-full text-left text-xs">
                     <thead>

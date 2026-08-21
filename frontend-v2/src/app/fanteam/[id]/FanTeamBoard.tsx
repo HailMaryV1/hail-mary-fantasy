@@ -965,6 +965,12 @@ export default function FanTeamBoard({
                 >
                   Ask Mary
                 </Link>
+                <Link
+                  href={`/fanteam/${squadId}/market-odds`}
+                  className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-200 hover:border-sky-500"
+                >
+                  Market Odds
+                </Link>
                 <select
                   value={currentFormationCode ?? ""}
                   disabled={isFormationPending || !isPlanningView}

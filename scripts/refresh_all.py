@@ -172,7 +172,18 @@ def run_shared_odds():
     League fixture's odds matter to FanTeam, Cloud FF, and Dream Team
     simultaneously), so this runs once, ahead of every game-specific
     section, rather than being duplicated per game (which would burn
-    through the Odds API/SportMonks quota re-fetching the same data)."""
+    through the Odds API/SportMonks quota re-fetching the same data).
+
+    2026-08-21: also owns real match-winner/clean-sheet odds (SportMonks)
+    and derived expected goals for every competition that importer covers
+    - EFL Championship/League One/League Two AND the Premier League (see
+    import_sportmonks_match_odds.py's LEAGUE_ID_BY_COMPETITION and
+    compute_expected_goals.py's MARKET_ODDS_COMPETITIONS). Previously
+    these two only ran inside run_eflfantasy(), so Dream Team/FanTeam/
+    Cloud FF's "Market Odds" pages only ever got fresh data as a
+    byproduct of EFL Fantasy's own schedule - moved here so every game
+    refreshes on the same cadence, and placed before the probabilities/
+    clean-sheet passes below so they see this cycle's freshest odds."""
     results = []
     results.append(run_step("Odds: fixtures + h2h", ["scripts/import_fixtures_odds.py"]))
     results.append(
@@ -181,8 +192,12 @@ def run_shared_odds():
     results.append(
         run_step("SportMonks: player-level bookmaker props", ["scripts/import_sportmonks_player_props.py"])
     )
+    results.append(
+        run_step("SportMonks: match odds (EFL + Premier League)", ["scripts/import_sportmonks_match_odds.py"])
+    )
     results.append(run_step("Fixture probabilities", ["scripts/compute_fixture_probabilities.py"]))
     results.append(run_step("Clean sheet probabilities", ["scripts/compute_clean_sheet_probabilities.py"]))
+    results.append(run_step("Expected goals (EFL + Premier League)", ["scripts/compute_expected_goals.py"]))
     # Real user request 2026-08-18: alert on large player-odds swings -
     # runs last in this section so it always sees this cycle's freshest
     # bookmaker_player_probability_history rows (migration 0120).
@@ -217,26 +232,15 @@ def run_cloudff():
 def run_eflfantasy():
     """EFL Fantasy - players/clubs/fixtures, both endpoints real, public,
     unauthenticated JSON (see scraper_eflfantasy.py) - no login dance
-    needed at all, unlike FanTeam. Also owns its real bookmaker match-
-    winner odds for Championship/League One/League Two (SportMonks,
-    confirmed live 2026-08-06 - see that script's own docstring for why
-    this needed its own importer instead of reusing import_fixtures_
-    odds.py, which only covers Odds-API sport_keys). Writes into the same
-    fixture_odds table every other competition uses, so needs its own
-    compute_fixture_probabilities.py pass here - the shared one in
-    run_shared_odds() already ran before these fixtures/odds existed on
-    a cold run."""
+    needed at all, unlike FanTeam. Its real bookmaker match-winner odds
+    (SportMonks, confirmed live 2026-08-06), the fixture-probabilities
+    pass, and expected goals now all run once for every game up front in
+    run_shared_odds() (2026-08-21 - previously duplicated here since this
+    was the only section that called the SportMonks importer at all), so
+    this section is just players/clubs/fixtures import + recompute."""
     results = []
     results.append(run_step("EFL Fantasy players + clubs + fixtures (no login needed)", ["scraper_eflfantasy.py"]))
     results.append(run_step("Import EFL Fantasy players + clubs + fixtures", ["import_eflfantasy.py"]))
-    results.append(run_step("EFL Fantasy real match odds (SportMonks)", ["scripts/import_sportmonks_match_odds.py"]))
-    results.append(run_step("Fixture probabilities (post-EFL-odds)", ["scripts/compute_fixture_probabilities.py"]))
-    # Real user request 2026-08-20: EFL-only "Market Odds" page needs a
-    # genuine per-team goals figure, not the win-probability-only attack_
-    # score - see that script's own docstring. Needs to run AFTER the
-    # fixture_probabilities pass just above, same "post-EFL-odds" timing
-    # reason.
-    results.append(run_step("Expected goals (EFL)", ["scripts/compute_expected_goals.py"]))
     results.extend(recompute_section("eflfantasy", "EFL Fantasy"))
     return results
 

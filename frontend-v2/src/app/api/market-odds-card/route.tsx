@@ -3,7 +3,7 @@ import path from "path";
 import { NextRequest } from "next/server";
 import { ImageResponse } from "next/og";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
-import { fetchEflMarketOdds, type EflCompetition } from "@/lib/eflMarketOdds";
+import { fetchMarketOdds, type EflCompetition } from "@/lib/marketOdds";
 import { getKitImage } from "@/lib/kitImages";
 import { buildMarketOddsCardElement, MARKET_ODDS_CARD_WIDTH, MARKET_ODDS_CARD_HEIGHT, type MarketOddsCardRow } from "@/lib/marketOddsCard";
 
@@ -26,17 +26,22 @@ async function loadFont(fileName: string): Promise<ArrayBuffer> {
 /**
  * Shareable "Hail Mary Market Odds Card" PNG - 2026-08-21 user request
  * ("like for the players... downloads the market card with the 3
- * categories on"). Same next/og + lib/*Card.ts split as api/player-card/
- * route.tsx, for the same reasons (server-rendered, matches the app's own
- * navy palette exactly, no client bundle). Reuses fetchEflMarketOdds -
- * the exact same data the live Market Odds page renders - so the card
- * never disagrees with what's on screen.
+ * categories on"), widened the same day to serve Dream Team/FanTeam/
+ * Cloud FF's Premier League data too. Same next/og + lib/*Card.ts split
+ * as api/player-card/route.tsx, for the same reasons (server-rendered,
+ * matches the app's own navy palette exactly, no client bundle). Reuses
+ * fetchMarketOdds - the exact same data the live Market Odds page
+ * renders - so the card never disagrees with what's on screen.
  */
 export async function GET(request: NextRequest) {
   const gameweekParam = request.nextUrl.searchParams.get("gameweek");
   const gameweek = gameweekParam ? Number(gameweekParam) : NaN;
   if (!Number.isFinite(gameweek)) {
     return new Response("Missing gameweek.", { status: 400 });
+  }
+  const gameSlug = request.nextUrl.searchParams.get("gameSlug");
+  if (!gameSlug) {
+    return new Response("Missing gameSlug.", { status: 400 });
   }
   const competitionParam = request.nextUrl.searchParams.get("competition");
   const competitionFilter: EflCompetition | "ALL" =
@@ -50,7 +55,10 @@ export async function GET(request: NextRequest) {
   } = await supabase.auth.getUser();
   if (!user) return new Response("Not signed in.", { status: 401 });
 
-  const { top5Winners, top5Goals, top5CleanSheets } = await fetchEflMarketOdds(gameweek, competitionFilter);
+  const { data: game } = await supabase.from("fantasy_games").select("id").eq("slug", gameSlug).maybeSingle();
+  if (!game) return new Response("Unknown gameSlug.", { status: 400 });
+
+  const { top5Winners, top5Goals, top5CleanSheets } = await fetchMarketOdds(gameSlug, gameweek, competitionFilter);
 
   const toRows = async (rows: typeof top5Winners, valueOf: (r: (typeof top5Winners)[number]) => string): Promise<MarketOddsCardRow[]> =>
     Promise.all(
