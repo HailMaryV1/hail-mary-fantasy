@@ -397,18 +397,18 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
       // natural flow height (header + kit + name + position line) landed
       // at ~516 - past the fixture panel's own top, so the position/team/
       // price label rendered underneath (overlapping) "vs Opponent". Sizes
-      // trimmed here (kit block marginTop 20->4, kit 208x224->186x200,
-      // name marginTop 20->8, label marginTop 8->0 - tightened twice, the
-      // first pass wasn't enough per a real rendered card) bring the whole
-      // identity block up with real clearance before the fixture panel.
+      // trimmed here across three passes (kit block marginTop 20->0, kit
+      // 208x224->158x170, name marginTop 20->4, label marginTop 8->0 - the
+      // first two passes weren't enough per real rendered cards) bring the
+      // whole identity block up with real clearance before the fixture panel.
       h(
         "div",
-        { style: { display: "flex", flexDirection: "column", alignItems: "center", marginTop: s(4) } },
+        { style: { display: "flex", flexDirection: "column", alignItems: "center", marginTop: s(0) } },
         kitDataUri
           ? h("img", {
               src: kitDataUri,
-              width: s(186),
-              height: s(200),
+              width: s(158),
+              height: s(170),
               style: { objectFit: "contain", filter: `drop-shadow(0px 0px ${s(14)}px ${kitGlowColor(colors)}99)` },
             })
           : h(
@@ -427,7 +427,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
               },
               heading({ fontSize: s(52), color: colors.secondary }, colors.abbr)
             ),
-        heading({ marginTop: s(8), fontSize: s(62), color: "#ffffff", textAlign: "center", letterSpacing: s(-1) }, fullName.toUpperCase()),
+        heading({ marginTop: s(4), fontSize: s(62), color: "#ffffff", textAlign: "center", letterSpacing: s(-1) }, fullName.toUpperCase()),
         label(
           { marginTop: s(0), fontSize: s(22), color: NAVY[300], letterSpacing: s(2) },
           hasBudget ? `${position} · ${teamName} · £${price.toFixed(1)}m` : `${position} · ${teamName}`
