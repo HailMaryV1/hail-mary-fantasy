@@ -67,7 +67,7 @@ export default async function DreamTeamMarketOddsPage({
   const requestedGameweek = Number(gameweekParam);
   const viewedGameweek = Number.isInteger(requestedGameweek)
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
-    : planningGameweek;
+    : gwInfo.displayGameweek;
 
   // Dream Team's own gameweek calendar (unlike FanTeam/Cloud FF's) also
   // buckets cup/European fixtures into the same gameweek window (see

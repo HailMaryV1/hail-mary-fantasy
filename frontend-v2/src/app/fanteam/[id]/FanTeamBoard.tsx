@@ -1074,7 +1074,7 @@ export default function FanTeamBoard({
           </div>
 
           {infoPlayerId != null ? (
-            <PlayerInfoPanel gameSlug="fanteam" gamePlayerId={infoPlayerId} onBack={() => setInfoPlayerId(null)} />
+            <PlayerInfoPanel gameSlug="fanteam" gamePlayerId={infoPlayerId} onBack={() => setInfoPlayerId(null)} viewedGameweek={viewedGameweek} />
           ) : (
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
             <div className="flex items-center gap-2">

@@ -4,24 +4,38 @@ type Supabase = Awaited<ReturnType<typeof createAuthServerClient>>;
 
 type FixtureGameweekRow = { gameweek: number; fixtures: { kickoff_at: string } };
 
-/** Earliest fixture kickoff per gameweek for this game - the shared read
- * getGameweekInfo builds on, since a fantasy gameweek's real deadline is
- * "the moment its first ball is kicked." */
-async function earliestKickoffByGameweek(supabase: Supabase, gameId: number): Promise<Map<number, number>> {
+/** Earliest AND latest fixture kickoff per gameweek for this game -
+ * earliest drives planningGameweek's "the moment its first ball is
+ * kicked" deadline; latest drives displayGameweek's "is this gameweek
+ * actually over yet" check below. */
+async function kickoffRangeByGameweek(supabase: Supabase, gameId: number): Promise<Map<number, { min: number; max: number }>> {
   const { data } = await supabase
     .from("game_fixture_gameweeks")
     .select("gameweek, fixtures(kickoff_at)")
     .eq("game_id", gameId)
     .returns<FixtureGameweekRow[]>();
 
-  const byGameweek = new Map<number, number>();
+  const byGameweek = new Map<number, { min: number; max: number }>();
   for (const row of data ?? []) {
     const t = new Date(row.fixtures.kickoff_at).getTime();
     const current = byGameweek.get(row.gameweek);
-    if (current === undefined || t < current) byGameweek.set(row.gameweek, t);
+    if (!current) byGameweek.set(row.gameweek, { min: t, max: t });
+    else {
+      if (t < current.min) current.min = t;
+      if (t > current.max) current.max = t;
+    }
   }
   return byGameweek;
 }
+
+// A gameweek counts as "over" once its last real fixture kicked off at
+// least 3 hours ago - the same real-data-grounded proxy for "the match
+// has finished" already relied on elsewhere without a separate full-time-
+// status source (capture_gameweek_actuals.py's Cloud FF path, accrue_
+// free_transfers.py, compute_projections.py's season-games-elapsed
+// count - no fixture-level "finished" column exists in this schema at
+// all, see fixtures table).
+const GAMEWEEK_OVER_BUFFER_MS = 3 * 60 * 60 * 1000;
 
 export type GameweekInfo = {
   seasonStarted: boolean;
@@ -29,6 +43,18 @@ export type GameweekInfo = {
    * the instant a gameweek's first ball is kicked, planning shifts to the
    * next one, even if that gameweek still has fixtures left to play. */
   planningGameweek: number | null;
+  /** Real user report 2026-08-22: with planningGameweek used as the
+   * board's default landing view, the page jumped to GW2 the instant
+   * GW1's first fixture kicked off - even though GW1 still had 9 more
+   * fixtures left to play and no results existed yet for anything. This
+   * is the SEPARATE "what should I show by default when just browsing"
+   * gameweek - stays on a gameweek that's kicked off but not yet over
+   * (see GAMEWEEK_OVER_BUFFER_MS above), only advancing once that
+   * gameweek is genuinely done. Deliberately never null (falls back to
+   * maxGameweek once every known gameweek is over) and deliberately NOT
+   * planningGameweek - transfer/Ask-Mary logic must keep moving to the
+   * next week the instant a gameweek kicks off, unaffected by this. */
+  displayGameweek: number;
   /** For browsing/switching between weeks (not "what should Mary act on
    * right now" - that's planningGameweek above). Lets a caller clamp an
    * untrusted ?gameweek= param into range without a second query. */
@@ -45,27 +71,31 @@ export type GameweekInfo = {
  * round trip without changing what either was computing.
  */
 export async function getGameweekInfo(supabase: Supabase, gameId: number): Promise<GameweekInfo> {
-  const byGameweek = await earliestKickoffByGameweek(supabase, gameId);
+  const byGameweek = await kickoffRangeByGameweek(supabase, gameId);
   if (byGameweek.size === 0) {
-    return { seasonStarted: false, planningGameweek: null, minGameweek: 1, maxGameweek: 1, gameweeks: [] };
+    return { seasonStarted: false, planningGameweek: null, displayGameweek: 1, minGameweek: 1, maxGameweek: 1, gameweeks: [] };
   }
 
   const now = Date.now();
-  const gameweek1Kickoff = byGameweek.get(1);
+  const gameweek1Kickoff = byGameweek.get(1)?.min;
   const seasonStarted = gameweek1Kickoff !== undefined && now >= gameweek1Kickoff;
 
   const sorted = Array.from(byGameweek.entries())
-    .map(([gameweek, kickoff]) => ({ gameweek, kickoff }))
+    .map(([gameweek, range]) => ({ gameweek, ...range }))
     .sort((a, b) => a.gameweek - b.gameweek);
-  const upcoming = sorted.filter((g) => g.kickoff >= now);
+  const upcoming = sorted.filter((g) => g.min >= now);
   const planningGameweek = upcoming.length > 0 ? upcoming[0].gameweek : null;
+
+  const notYetOver = sorted.filter((g) => now < g.max + GAMEWEEK_OVER_BUFFER_MS);
+  const displayGameweek = notYetOver.length > 0 ? notYetOver[0].gameweek : sorted[sorted.length - 1].gameweek;
 
   return {
     seasonStarted,
     planningGameweek,
+    displayGameweek,
     minGameweek: sorted[0].gameweek,
     maxGameweek: sorted[sorted.length - 1].gameweek,
-    gameweeks: sorted.map(({ gameweek, kickoff }) => ({ gameweek, deadline: new Date(kickoff).toISOString() })),
+    gameweeks: sorted.map(({ gameweek, min }) => ({ gameweek, deadline: new Date(min).toISOString() })),
   };
 }
 

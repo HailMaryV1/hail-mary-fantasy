@@ -40,7 +40,7 @@ export async function getEflGameweekInfo(supabase: Supabase, gameId: number): Pr
     if (l === undefined || t > l) latestByGw.set(row.gameweek, t);
   }
   if (earliestByGw.size === 0) {
-    return { seasonStarted: false, planningGameweek: null, minGameweek: 1, maxGameweek: 1, gameweeks: [] };
+    return { seasonStarted: false, planningGameweek: null, displayGameweek: 1, minGameweek: 1, maxGameweek: 1, gameweeks: [] };
   }
 
   const now = Date.now();
@@ -59,6 +59,12 @@ export async function getEflGameweekInfo(supabase: Supabase, gameId: number): Pr
   return {
     seasonStarted,
     planningGameweek,
+    // EFL Fantasy's own planningGameweek already means "still has at
+    // least one fixture left to kick off" (last-kickoff based, per this
+    // file's own docstring) - unlike gameweek.ts's shared logic, that's
+    // already the right "not yet over" signal for the board's default
+    // view, so no separate displayGameweek computation is needed here.
+    displayGameweek: planningGameweek ?? sorted[sorted.length - 1].gameweek,
     minGameweek: sorted[0].gameweek,
     maxGameweek: sorted[sorted.length - 1].gameweek,
     gameweeks: sorted.map(({ gameweek, kickoff }) => ({ gameweek, deadline: new Date(kickoff).toISOString() })),

@@ -75,7 +75,7 @@ export default async function EflMarketOddsPage({
   const requestedGameweek = Number(gameweekParam);
   const viewedGameweek = Number.isInteger(requestedGameweek)
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
-    : planningGameweek;
+    : gwInfo.displayGameweek;
 
   const activeCompetition: EflCompetition | "ALL" = COMPETITION_TABS.some((t) => t.value === competitionParam)
     ? (competitionParam as EflCompetition | "ALL")

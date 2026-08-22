@@ -155,7 +155,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   const requestedGameweek = Number(gameweekParam);
   const viewedGameweek = Number.isInteger(requestedGameweek)
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
-    : planningGameweek;
+    : gwInfo.displayGameweek;
   const isPlanningView = viewedGameweek === planningGameweek;
   const isPastView = viewedGameweek < planningGameweek;
 

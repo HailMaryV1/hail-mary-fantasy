@@ -125,7 +125,7 @@ export default async function DreamTeamPage({ searchParams }: { searchParams: Pr
   const requestedGameweek = Number(gameweekParam);
   const viewedGameweek = Number.isInteger(requestedGameweek)
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
-    : planningGameweek;
+    : gwInfo.displayGameweek;
   const isPlanningView = viewedGameweek === planningGameweek;
   const isPastView = viewedGameweek < planningGameweek;
   const squadIds = (squadPlayersRaw ?? []).map((sp) => sp.game_player_id);

@@ -86,7 +86,7 @@ export default async function FanTeamMarketOddsPage({
   const requestedGameweek = Number(gameweekParam);
   const viewedGameweek = Number.isInteger(requestedGameweek)
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
-    : planningGameweek;
+    : gwInfo.displayGameweek;
 
   const { fixtures, top5Winners, top5Goals, top5CleanSheets } = await fetchMarketOdds("fanteam", viewedGameweek, "soccer_epl");
 
