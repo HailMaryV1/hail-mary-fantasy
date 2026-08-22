@@ -83,6 +83,37 @@ Cloud FF's own gameweek numbering should have rolled over too, but that
 hasn't been (and can't yet be) verified against a real completed 2026/27
 gameweek. Sanity-check the first real GW1 values once the season starts.
 
+Also captures Dream Team's real actuals (capture_dreamteam_actuals below) -
+same target table, its own real api/players/stats endpoint (see
+scraper_dreamteam_stats.py/seed_dreamteam_historical_stats.py), read via a
+SELF-CONTAINED live fetch here rather than that scraper's own raw JSON
+file: this script runs in refresh_wrapup.yml, a SEPARATE GitHub Actions
+job/checkout from refresh_dreamteam.yml (confirmed by both workflows'
+own cron schedules - dreamteam at :36, wrapup at :12 nearly an hour
+later, each `actions/checkout`-ing fresh), so a file written by an
+earlier job's run_step() simply doesn't exist on this job's runner. This
+is a genuine, real gap in capture_eflfantasy_actuals below (reads
+eflfantasy_players_raw.json, which is exactly as absent in real CI wrap-
+up runs, confirmed found empty here 2026-08-22 - it only ever "worked"
+in this project's own local dev checkout, where an earlier local scraper
+run happened to leave the file on disk) - flagged as a separate follow-
+up rather than silently fixed here, out of this change's own scope. This
+function does not repeat that mistake: matchdayPoints only ever exposes
+ONE gameweek at a time (no startGW/endGW range like Cloud FF's own
+endpoint), taken to mean "the most recently completed one" and matched
+against this project's own completed_gameweeks determination (same 3h-
+post-kickoff proxy as Cloud FF) - a best-effort, once-per-run capture,
+same class of limitation as the FanTeam N-1 capture above (acceptable
+as long as this runs at least once between any two real gameweeks
+completing, which it does - twice daily).
+
+No real per-gameweek minutes field exists for Dream Team either (same
+gap as FanTeam/EFL Fantasy, see scraper_dreamteam_stats.py's docstring)
+- unlike FanTeam's misleading literal 0 or EFL Fantasy's labeled-
+approximation 90, actual_minutes is left NULL here (the column is
+nullable - see migration 0034) since there's no honest number, real or
+proxied, worth writing.
+
 RUN:
     python3 scripts/capture_gameweek_actuals.py
 """
@@ -235,6 +266,88 @@ def capture_eflfantasy_actuals(conn):
         cur.close()
 
 
+DREAMTEAM_STATS_URL = "https://engagecraft-fantasy-backend-prod.azurewebsites.net/api/players/stats"
+
+
+def fetch_dreamteam_player_stats():
+    """All real pages of Dream Team's live api/players/stats endpoint -
+    same pagination shape as scraper_dreamteam_stats.py (limit=100,
+    empty items list = done), duplicated here rather than imported since
+    this needs to run standalone in a separate CI job with no shared
+    filesystem state - see this module's own docstring."""
+    all_items = []
+    page = 1
+    while True:
+        body = fetch_json(f"{DREAMTEAM_STATS_URL}?limit=100&page={page}")
+        items = body["data"]["items"]
+        if not items:
+            break
+        all_items.extend(items)
+        page += 1
+    return all_items
+
+
+def capture_dreamteam_actuals(conn):
+    cur = conn.cursor()
+    try:
+        cur.execute("select id from fantasy_games where slug = 'dreamteam'")
+        row = cur.fetchone()
+        if not row:
+            print("No dreamteam fantasy_games row - skipping Dream Team actuals capture.")
+            return
+        game_id = row[0]
+
+        # Same real-data-grounded "match finished" proxy as Cloud FF
+        # above - every one of the gameweek's real fixtures kicked off
+        # at least 3 hours ago.
+        cur.execute(
+            """
+            select distinct gfg.gameweek
+            from game_fixture_gameweeks gfg
+            join fixtures f on f.id = gfg.fixture_id
+            where gfg.game_id = %s
+            group by gfg.gameweek
+            having max(f.kickoff_at) < now() - interval '3 hours'
+            order by gfg.gameweek
+            """,
+            (game_id,),
+        )
+        completed_gameweeks = [r[0] for r in cur.fetchall()]
+        if not completed_gameweeks:
+            print("No completed Dream Team gameweeks yet - skipping Dream Team actuals capture.")
+            return
+        most_recent_completed_gw = max(completed_gameweeks)
+
+        cur.execute("select id, external_id from game_players where game_id = %s", (game_id,))
+        game_player_id_by_external_id = {external_id: gp_id for gp_id, external_id in cur.fetchall()}
+
+        stats = fetch_dreamteam_player_stats()
+        written = 0
+        for s in stats:
+            game_player_id = game_player_id_by_external_id.get(str(s["playerId"]))
+            if game_player_id is None:
+                continue
+            cur.execute(
+                """
+                insert into player_gameweek_results (game_id, game_player_id, gameweek, actual_points, actual_minutes, captured_at)
+                values (%s, %s, %s, %s, %s, now())
+                on conflict (game_id, game_player_id, gameweek) do update
+                    set actual_points = excluded.actual_points, actual_minutes = excluded.actual_minutes,
+                        captured_at = excluded.captured_at
+                """,
+                (game_id, game_player_id, most_recent_completed_gw, s["matchdayPoints"], None),
+            )
+            written += 1
+
+        conn.commit()
+        print(f"Captured {written} real Dream Team gameweek-actual rows for gameweek {most_recent_completed_gw}.")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
 def main():
     load_env()
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
@@ -277,6 +390,7 @@ def main():
 
     capture_cloudff_actuals(conn)
     capture_eflfantasy_actuals(conn)
+    capture_dreamteam_actuals(conn)
     conn.close()
 
 

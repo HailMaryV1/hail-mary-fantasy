@@ -256,11 +256,23 @@ def run_dreamteam():
     Dream Team gameweek window its kickoff falls in - a fixture that
     doesn't exist yet (e.g. a cup round not drawn) simply finds nothing
     to assign, not an error, and picks itself up automatically the
-    first refresh after it appears."""
+    first refresh after it appears.
+
+    scraper_dreamteam_stats.py + seed_dreamteam_historical_stats.py (added
+    2026-08-22) pull Dream Team's own real season-cumulative per-player
+    stats and reseed the historical shrinkage prior from them every run -
+    replaces what used to be a one-time stale CSV seed. Deliberately runs
+    in THIS job (not wrapup) since seed_dreamteam_historical_stats.py
+    reads the scraper's raw JSON file straight off disk, same-job/same-
+    checkout - see capture_gameweek_actuals.py's own docstring for why
+    its separate Dream Team actuals capture can't reuse that file and
+    fetches live instead."""
     results = []
     results.append(run_step("Dream Team players (no login needed)", ["scraper_dreamteam.py"]))
     results.append(run_step("Import Dream Team players", ["import_dreamteam.py"]))
     results.append(run_step("Dream Team: assign cup/Europe fixtures to gameweeks", ["scripts/assign_dreamteam_cup_gameweeks.py"]))
+    results.append(run_step("Dream Team player stats (no login needed)", ["scraper_dreamteam_stats.py"]))
+    results.append(run_step("Seed Dream Team historical stats", ["scripts/seed_dreamteam_historical_stats.py"]))
     results.extend(recompute_section("dreamteam", "Dream Team"))
     return results
 
