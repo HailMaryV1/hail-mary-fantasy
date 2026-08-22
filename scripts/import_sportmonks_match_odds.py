@@ -38,10 +38,21 @@ automatically with zero changes needed there. team_fixture_difficulty's
 real-odds-first COALESCE (migration 0017) does the rest - no view
 changes either.
 
-Team names match exactly between SportMonks and this project's `teams`
-table for every real GW1 EFL fixture (confirmed live: 0 mismatches
-across 50 distinct team names) - no alias table needed, unlike
-import_fixtures_odds.py's ODDS_NAME_OVERRIDES.
+Team names matched exactly between SportMonks and this project's `teams`
+table for every real GW1 EFL fixture when this was first written
+(confirmed live: 0 mismatches across 50 distinct team names) - that
+confirmation predates the 2026-08-17 Premier League addition and was
+never re-run for it. Real user report 2026-08-22: Man City-Bournemouth
+and Brighton-Aston Villa were silently dropped every single run since
+soccer_epl was added, with zero odds/clean-sheet data for either,
+because SportMonks spells them "AFC Bournemouth"/"Brighton & Hove
+Albion" while this project's `teams.name` is "Bournemouth"/"Brighton" -
+neither was in SPORTMONKS_NAME_OVERRIDES. A silent `continue` on no
+match (see the main loop below) meant this had zero visibility until a
+screenshot proved bet365 had extensive real markets live for that exact
+fixture. Every unmatched SportMonks fixture is now logged loudly at the
+end of every run specifically so this class of bug is never silent
+again - see the unmatched-fixtures report in main().
 
 Fixture matching: SportMonks fixture -> our fixtures row, by (home team
 name, away team name, same calendar date) - not exact kickoff_at, since
@@ -121,6 +132,27 @@ CLEAN_SHEET_MARKETS = {"Clean Sheet - Home": "home", "Clean Sheet - Away": "away
 # single test happened to catch.
 SPORTMONKS_NAME_OVERRIDES = {
     "Milton Keynes Dons": "MK Dons",
+    # Added 2026-08-22 - real user report of a silently-dropped Premier
+    # League fixture (Man City v Bournemouth) traced to these two never
+    # having been checked against SportMonks' own Premier League naming
+    # (only EFL Championship/L1/L2 spellings were verified when this
+    # dict was first built - see this module's own docstring).
+    "AFC Bournemouth": "Bournemouth",
+    "Brighton & Hove Albion": "Brighton",
+    # Deliberately NOT overriding "Luton Town"/"AFC Wimbledon" here, even
+    # though they also show up unmatched in the EFL Cup - this project's
+    # own `teams` table has TWO real, separately-used rows for each club
+    # (e.g. "Luton" id 62 AND "Luton Town" id 172), and which one a given
+    # fixture actually references depends on which importer created that
+    # fixture row (EFL Cup fixtures use the short name, League One
+    # fixtures use the long name - confirmed live 2026-08-22, adding a
+    # blanket override here broke previously-working League One matches
+    # while "fixing" EFL Cup ones). A single string rewrite can't resolve
+    # this - it needs a real team-identity merge (same shape as this
+    # project's existing player-identity-duplicate audit/merge), not a
+    # name alias. Tracked separately; left genuinely unmatched (and
+    # loudly reported below) until that's done, rather than silently
+    # papered over with a fix that regresses a different competition.
 }
 
 
@@ -273,7 +305,7 @@ def main():
         # numbering with no crosswalk).
         cur.execute(
             """
-            select f.id, ht.name as home_name, at.name as away_name, f.kickoff_at, f.home_team_id, f.away_team_id
+            select f.id, ht.name as home_name, at.name as away_name, f.kickoff_at, f.home_team_id, f.away_team_id, f.competition
             from fixtures f
             join teams ht on ht.id = f.home_team_id
             join teams at on at.id = f.away_team_id
@@ -284,7 +316,7 @@ def main():
         our_fixtures = cur.fetchall()
         by_key = {
             (home_name, away_name, kickoff_at.date()): (fid, home_team_id, away_team_id)
-            for fid, home_name, away_name, kickoff_at, home_team_id, away_team_id in our_fixtures
+            for fid, home_name, away_name, kickoff_at, home_team_id, away_team_id, _competition in our_fixtures
         }
         print(f"{len(our_fixtures)} upcoming fixtures (all 6 covered competitions) to match against SportMonks.")
 
@@ -293,7 +325,25 @@ def main():
         sm_fixtures = fetch_fixtures(api_key, LEAGUE_ID_BY_COMPETITION.values(), start_date, end_date)
         print(f"{len(sm_fixtures)} SportMonks fixtures found in that window across Championship/L1/L2.")
 
+        # Real user report 2026-08-22 ("NO FIXTURE SHOULD EVER GET
+        # SKIPPED - EVER"): a name-match miss here used to just `continue`
+        # silently, with no visibility until a user happened to notice
+        # real odds were missing. Every SportMonks fixture that fails to
+        # match now gets collected and reported loudly at the end of the
+        # run, distinguishing "same date/competition has a DIFFERENT-
+        # named fixture in our own data" (almost certainly a real naming
+        # gap needing a SPORTMONKS_NAME_OVERRIDES entry, like the
+        # Bournemouth/Brighton case that prompted this) from "we have no
+        # fixture at all yet for that date/competition" (normal sync lag
+        # for fixtures further out than our own fixture importers have
+        # reached - not a bug, just not yet due).
+        our_fixtures_by_date_comp: dict[tuple, list] = {}
+        for fid, home_name, away_name, kickoff_at, home_team_id, away_team_id, competition in our_fixtures:
+            our_fixtures_by_date_comp.setdefault((kickoff_at.date(), competition), []).append((home_name, away_name, fid))
+        comp_by_league_id = {v: k for k, v in LEAGUE_ID_BY_COMPETITION.items()}
+
         matched, priced, odds_written, clean_sheet_written = 0, 0, 0, 0
+        unmatched = []
         for f in sm_fixtures:
             participants = f.get("participants", [])
             home = next((p for p in participants if (p.get("meta") or {}).get("location") == "home"), None)
@@ -303,8 +353,12 @@ def main():
                 continue
 
             match_date = datetime.fromisoformat(starting_at.replace(" ", "T")).date()
-            match = by_key.get((canonical_name(home.get("name")), canonical_name(away.get("name")), match_date))
+            home_name, away_name = canonical_name(home.get("name")), canonical_name(away.get("name"))
+            match = by_key.get((home_name, away_name, match_date))
             if match is None:
+                sm_competition = comp_by_league_id.get(f.get("league_id"))
+                same_date_comp_candidates = our_fixtures_by_date_comp.get((match_date, sm_competition), [])
+                unmatched.append((match_date, sm_competition, home.get("name"), away.get("name"), same_date_comp_candidates))
                 continue
             our_fixture_id, our_home_team_id, our_away_team_id = match
             matched += 1
@@ -334,6 +388,25 @@ def main():
         conn.commit()
         print(f"\nDone: {matched} fixtures matched, {priced} already priced, {odds_written} bookmaker odds rows written, "
               f"{clean_sheet_written} clean-sheet-probability rows written.")
+
+        likely_naming_gaps = [u for u in unmatched if u[4]]
+        no_fixture_yet = [u for u in unmatched if not u[4]]
+        if likely_naming_gaps:
+            print(
+                f"\n[!!!] {len(likely_naming_gaps)} SportMonks fixture(s) had a DIFFERENT fixture on the "
+                f"same date AND competition in our own data - almost certainly a real "
+                f"SPORTMONKS_NAME_OVERRIDES gap (exactly the class of bug that silently dropped Man "
+                f"City-Bournemouth/Brighton-Aston Villa until a user caught it live). Every one of these "
+                f"means missing real odds RIGHT NOW for that fixture:"
+            )
+            for match_date, competition, home_name, away_name, candidates in likely_naming_gaps:
+                print(f"    {match_date} [{competition}]: SportMonks '{home_name}' v '{away_name}' - our fixtures: {candidates}")
+        if no_fixture_yet:
+            print(
+                f"\n{len(no_fixture_yet)} SportMonks fixture(s) had no fixture at all in our own data yet on "
+                f"that date/competition - normal sync lag for dates further out than our own fixture "
+                f"importers have reached, not a naming bug."
+            )
     except Exception:
         conn.rollback()
         raise
