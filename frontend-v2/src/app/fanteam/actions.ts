@@ -55,11 +55,25 @@ export async function makeFanteamTransfer({
   outGamePlayerId,
   inGamePlayerId,
   useWildcard,
+  batchLegs,
 }: {
   squadId: number;
   outGamePlayerId: number;
   inGamePlayerId: number;
   useWildcard: boolean;
+  // Other legs still PENDING in the same multi-transfer bundle (see
+  // dreamteam/actions.ts's makeTransfer for the identical pattern and the
+  // real bug it fixes). Budget is safe without this - applyRecommendation
+  // already orders legs cash-freeing-first, which alone guarantees the
+  // running bank stays non-negative if the bundle is affordable in
+  // aggregate. Max-per-club is NOT safe without it: real user report
+  // 2026-08-21, a legal 4-leg bundle failed on leg 2 with "Max 3 players
+  // allowed from the same club" purely from sequencing - this leg's own
+  // club count only ever saw the CURRENT real squad (this leg's outgoing
+  // player removed, nothing else), with no idea that another pending leg
+  // will also sell a same-club player, or that another pending leg is
+  // about to buy into a club this leg is also buying into.
+  batchLegs?: { outGamePlayerId: number; inGamePlayerId: number }[];
 }) {
   const supabase = await createAuthServerClient();
   const {
@@ -107,10 +121,22 @@ export async function makeFanteamTransfer({
   }
 
   if (rules.max_per_club) {
+    const otherOutIds = new Set((batchLegs ?? []).map((l) => l.outGamePlayerId));
     const clubCounts = new Map<number, number>();
     for (const r of squadPlayers) {
       if (r.game_player_id === outGamePlayerId) continue;
+      if (otherOutIds.has(r.game_player_id)) continue; // also leaving via another pending leg
       clubCounts.set(r.game_players.players.team_id, (clubCounts.get(r.game_players.players.team_id) ?? 0) + 1);
+    }
+    if (batchLegs && batchLegs.length > 0) {
+      const { data: stagedIncoming } = await supabase
+        .from("game_players")
+        .select("id, players(team_id)")
+        .in("id", batchLegs.map((l) => l.inGamePlayerId))
+        .returns<{ id: number; players: { team_id: number } }[]>();
+      for (const row of stagedIncoming ?? []) {
+        clubCounts.set(row.players.team_id, (clubCounts.get(row.players.team_id) ?? 0) + 1);
+      }
     }
     const newClubCount = (clubCounts.get(incoming.players.team_id) ?? 0) + 1;
     if (newClubCount > rules.max_per_club) {

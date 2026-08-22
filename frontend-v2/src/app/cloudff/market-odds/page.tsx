@@ -69,7 +69,7 @@ export default async function CloudFFMarketOddsPage({
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
     : planningGameweek;
 
-  const { fixtures, top5Winners, top5Goals, top5CleanSheets } = await fetchMarketOdds("cloudff", viewedGameweek);
+  const { fixtures, top5Winners, top5Goals, top5CleanSheets } = await fetchMarketOdds("cloudff", viewedGameweek, "soccer_epl");
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">

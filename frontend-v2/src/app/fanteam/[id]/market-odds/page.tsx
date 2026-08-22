@@ -88,7 +88,7 @@ export default async function FanTeamMarketOddsPage({
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
     : planningGameweek;
 
-  const { fixtures, top5Winners, top5Goals, top5CleanSheets } = await fetchMarketOdds("fanteam", viewedGameweek);
+  const { fixtures, top5Winners, top5Goals, top5CleanSheets } = await fetchMarketOdds("fanteam", viewedGameweek, "soccer_epl");
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">

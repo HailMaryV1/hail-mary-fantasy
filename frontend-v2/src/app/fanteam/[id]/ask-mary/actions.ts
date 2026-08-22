@@ -32,6 +32,17 @@ import { makeFanteamTransfer } from "../../actions";
  * full reasoning (same fix, same underlying bug, same bank-balance-
  * sequencing argument for why ascending order is always sufficient when
  * the bundle is affordable in aggregate).
+ *
+ * Real user report 2026-08-21: a legal 4-leg bundle rolled back after
+ * only 1 leg on "Max 3 players allowed from the same club" - budget-
+ * ordering alone doesn't protect a squad-COMPOSITION constraint the same
+ * way it protects the bank balance. Each leg now passes every OTHER leg
+ * still PENDING (not yet applied) as batchLegs, so makeFanteamTransfer's
+ * club-cap check sees the bundle's real final shape instead of a
+ * misleading partial one - identical fix, identical reasoning, as
+ * dreamteam/ask-mary/actions.ts's own batchLegs (only pending legs, never
+ * already-applied ones, since those are already live in the real squad
+ * makeFanteamTransfer's own query reads).
  */
 export async function applyRecommendation({
   squadId,
@@ -51,8 +62,10 @@ export async function applyRecommendation({
   const applied: { outGamePlayerId: number; inGamePlayerId: number }[] = [];
   const orderedLegs = legs.slice().sort((a, b) => a.inPrice - a.outPrice - (b.inPrice - b.outPrice));
 
-  for (const leg of orderedLegs) {
-    const result = await makeFanteamTransfer({ squadId, outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId, useWildcard });
+  for (let i = 0; i < orderedLegs.length; i++) {
+    const leg = orderedLegs[i];
+    const batchLegs = orderedLegs.slice(i + 1).map((l) => ({ outGamePlayerId: l.outGamePlayerId, inGamePlayerId: l.inGamePlayerId }));
+    const result = await makeFanteamTransfer({ squadId, outGamePlayerId: leg.outGamePlayerId, inGamePlayerId: leg.inGamePlayerId, useWildcard, batchLegs });
     if (result.error) {
       for (const done of applied.reverse()) {
         await revertFanteamTransfer(squadId, done.outGamePlayerId, done.inGamePlayerId);

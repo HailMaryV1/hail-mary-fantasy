@@ -69,7 +69,12 @@ export default async function DreamTeamMarketOddsPage({
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
     : planningGameweek;
 
-  const { fixtures, top5Winners, top5Goals, top5CleanSheets } = await fetchMarketOdds("dreamteam", viewedGameweek);
+  // Dream Team's own gameweek calendar (unlike FanTeam/Cloud FF's) also
+  // buckets cup/European fixtures into the same gameweek window (see
+  // assign_dreamteam_cup_gameweeks.py) - explicitly restrict to the real
+  // Premier League here so a club with both a league and a cup fixture
+  // this week doesn't appear twice in "Premier League only" data.
+  const { fixtures, top5Winners, top5Goals, top5CleanSheets } = await fetchMarketOdds("dreamteam", viewedGameweek, "soccer_epl");
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
