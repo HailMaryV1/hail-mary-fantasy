@@ -502,7 +502,26 @@ def main():
         cur.execute("select id from fantasy_games where slug = 'fanteam'")
         game_id = cur.fetchone()[0]
 
-        players_data = json.loads((ROOT / "fanteam_players_raw.json").read_text(encoding="utf-8"))
+        # Real production incident 2026-08-22: scraper_fanteam.py's own
+        # players fetch failed (a transient HTTP 401 - confirmed live
+        # minutes later the same endpoint was back to a normal 200,
+        # exactly the class of blip already anticipated in that script's
+        # own fetch_json docstring), so it never wrote this file at all.
+        # run_step() in refresh_all.py doesn't stop the pipeline on one
+        # step's failure, so this ran anyway straight into an unhandled
+        # FileNotFoundError/pathlib traceback - a real crash, but one
+        # that obscured the actual (upstream, transient) cause behind a
+        # confusing low-level error. Fail the same way (still a real
+        # failure - there's genuinely no fresh data to import), just
+        # with a message that says what actually happened.
+        players_path = ROOT / "fanteam_players_raw.json"
+        if not players_path.exists():
+            raise SystemExit(
+                "fanteam_players_raw.json not found - scraper_fanteam.py's players fetch must have failed "
+                "upstream (see that step's own log for why, e.g. a transient HTTP error). Nothing to import "
+                "this run."
+            )
+        players_data = json.loads(players_path.read_text(encoding="utf-8"))
         fixtures_data = None if skip_fixtures else json.loads((ROOT / "fanteam_fixtures_raw.json").read_text(encoding="utf-8"))
 
         team_id_by_real_id = {}

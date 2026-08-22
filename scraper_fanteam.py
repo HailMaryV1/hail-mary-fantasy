@@ -50,7 +50,7 @@ def get_ft_token():
     raise SystemExit("ftToken not found in auth_state_fanteam.json - re-run discover_fanteam.py and log in.")
 
 
-def fetch_json(url, headers=None, retries=3, backoff_seconds=5):
+def fetch_json(url, headers=None, retries=8, backoff_seconds=30):
     # A single bad response used to kill the whole twice-daily run outright
     # (confirmed live: a one-off HTTP 401 from this endpoint - which is
     # otherwise reliably unauthenticated, see the module docstring - broke
@@ -60,6 +60,16 @@ def fetch_json(url, headers=None, retries=3, backoff_seconds=5):
     # momentary WAF hiccup, a dropped connection) without masking a real,
     # persistent failure - it still gives up and reports the failure after
     # `retries` attempts.
+    #
+    # Widened 3 retries/5s (~15s total) -> 8 retries/30s (~3.5min total)
+    # 2026-08-22: a real run hit 3 straight HTTP 401s and gave up, cascading
+    # into import_fanteam_live.py crashing on a missing raw-data file for
+    # the whole cycle - confirmed live minutes later the endpoint had
+    # already recovered to a normal 200, so the old window was simply too
+    # short for this specific blip. The job timeout has 120 minutes of
+    # headroom (see refresh_fanteam.yml), so trading a few extra minutes
+    # here for actually riding out a multi-minute blip is a clear win over
+    # losing an entire refresh cycle's fresh player data.
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", **(headers or {})})
     last_status = None
     for attempt in range(1, retries + 1):
