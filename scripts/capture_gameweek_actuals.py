@@ -92,13 +92,15 @@ job/checkout from refresh_dreamteam.yml (confirmed by both workflows'
 own cron schedules - dreamteam at :36, wrapup at :12 nearly an hour
 later, each `actions/checkout`-ing fresh), so a file written by an
 earlier job's run_step() simply doesn't exist on this job's runner. This
-is a genuine, real gap in capture_eflfantasy_actuals below (reads
-eflfantasy_players_raw.json, which is exactly as absent in real CI wrap-
-up runs, confirmed found empty here 2026-08-22 - it only ever "worked"
-in this project's own local dev checkout, where an earlier local scraper
-run happened to leave the file on disk) - flagged as a separate follow-
-up rather than silently fixed here, out of this change's own scope. This
-function does not repeat that mistake: matchdayPoints only ever exposes
+was ALSO the real bug behind capture_eflfantasy_actuals below until
+2026-08-22 (it used to read eflfantasy_players_raw.json off disk, which
+was exactly as absent in real CI wrap-up runs - confirmed via
+player_gameweek_results.captured_at, whose only two real EFL Fantasy
+capture timestamps both fell outside the wrapup cron's own 07:12/19:12
+UTC fire times, meaning every real capture so far came from a local dev
+run, never the schedule itself) - now fixed the same way, see
+fetch_eflfantasy_players() below. This function does not repeat that
+mistake either: matchdayPoints only ever exposes
 ONE gameweek at a time (no startGW/endGW range like Cloud FF's own
 endpoint), taken to mean "the most recently completed one" and matched
 against this project's own completed_gameweeks determination (same 3h-
@@ -118,6 +120,7 @@ RUN:
     python3 scripts/capture_gameweek_actuals.py
 """
 
+import gzip
 import json
 import os
 import urllib.request
@@ -210,6 +213,30 @@ def capture_cloudff_actuals(conn):
         cur.close()
 
 
+EFLFANTASY_PLAYERS_URL = "https://fantasy.efl.com/json/fantasy/players.json"
+
+
+def fetch_eflfantasy_players():
+    """Live fetch of fantasy.efl.com's real players.json - NOT a read of
+    eflfantasy_players_raw.json off disk (that was this function's real
+    bug until 2026-08-22: this script runs in refresh_wrapup.yml, a
+    separate GitHub Actions job/checkout from refresh_eflfantasy.yml,
+    which is the only job that ever writes that file - confirmed via
+    player_gameweek_results.captured_at, which only ever landed at times
+    matching a local/manual run, never the wrapup cron's actual 07:12/
+    19:12 UTC fire times, across every real row captured so far. Same
+    gzip-regardless-of-Accept-Encoding handling as scraper_eflfantasy.
+    py's own fetch_json - duplicated here rather than imported, matching
+    capture_dreamteam_actuals' own self-contained live-fetch pattern
+    just above, for the same separate-CI-job reason."""
+    req = urllib.request.Request(EFLFANTASY_PLAYERS_URL, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+    if raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    return json.loads(raw)
+
+
 def capture_eflfantasy_actuals(conn):
     cur = conn.cursor()
     try:
@@ -220,11 +247,7 @@ def capture_eflfantasy_actuals(conn):
             return
         game_id = row[0]
 
-        raw_path = ROOT / "eflfantasy_players_raw.json"
-        if not raw_path.exists():
-            print("No eflfantasy_players_raw.json found - skipping EFL Fantasy actuals capture.")
-            return
-        players_data = json.loads(raw_path.read_text(encoding="utf-8"))
+        players_data = fetch_eflfantasy_players()
 
         # external_id-keyed, not player_id - same reasoning as
         # gk_team_and_price in compute_projections.py: game_player_id is
