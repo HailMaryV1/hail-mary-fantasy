@@ -81,6 +81,16 @@ export type PoolSearchRow = {
    * by the screenshot batch or the batch has gone stale. Real Premier
    * League scope only, same as ffscoutStatus above. */
   rotationRisk: RotationRiskInfo | null;
+  /** The real fixture this row's score/rating was computed from (2026-08-23
+   * user request - "so we know the rating matches the gameweek matches
+   * the fixture") - resolved server-side from the SAME fixture_id already
+   * stored in the projection's own inputs.fixtures[0], never re-derived
+   * independently. Null when this row has no scored projection for the
+   * exact requested gameweek (see migration 0136's gameweek-leakage fix -
+   * rating/fixture never get borrowed from a different gameweek). */
+  opponentTeamName: string | null;
+  fixtureIsHome: boolean | null;
+  fixtureKickoffAt: string | null;
 };
 
 export type PoolSearchResult = { rows: PoolSearchRow[]; totalCount: number };
@@ -174,6 +184,9 @@ export async function searchPool(params: {
     rotation_contender_name: string | null;
     rotation_contender_probability: number | string | null;
     rotation_risk_level: string | null;
+    opponent_team_name: string | null;
+    fixture_is_home: boolean | null;
+    fixture_kickoff_at: string | null;
     total_count: number | string;
   };
   const rpcRows = data as RpcRow[];
@@ -219,6 +232,9 @@ export async function searchPool(params: {
             contenderPlayerId: null,
           }
         : null,
+    opponentTeamName: r.opponent_team_name,
+    fixtureIsHome: r.fixture_is_home,
+    fixtureKickoffAt: r.fixture_kickoff_at,
   }));
   const totalCount = rpcRows.length > 0 ? Number(rpcRows[0].total_count) : 0;
   return { rows, totalCount };

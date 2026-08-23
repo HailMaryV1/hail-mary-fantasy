@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo } from "@/lib/gameweek";
 import { formatRating, ratingTier } from "@/lib/hailMaryRating";
+import { formatFixtureShort } from "@/lib/fixtureFormat";
 import { hasBudget as gameHasBudget } from "@/lib/gameConfig";
 import { listPoolTeams } from "@/lib/poolSearch";
 import Kit from "@/components/Kit";
@@ -41,6 +42,9 @@ type TopRatedRow = {
   team_name: string;
   hail_mary_rating: number | null;
   hail_mary_score: number;
+  opponent_team_name: string | null;
+  fixture_is_home: boolean | null;
+  fixture_kickoff_at: string | null;
 };
 
 function RatingRow({ row, rank }: { row: TopRatedRow; rank: number }) {
@@ -55,7 +59,12 @@ function RatingRow({ row, rank }: { row: TopRatedRow; rank: number }) {
       <div className="flex min-w-0 items-center gap-2">
         <span className="w-4 shrink-0 text-[10px] font-bold text-navy-500">{rank}</span>
         <Kit teamName={row.team_name} size="sm" />
-        <span className="truncate text-xs font-medium text-white">{displayName}</span>
+        <div className="min-w-0">
+          <span className="block truncate text-xs font-medium text-white">{displayName}</span>
+          <span className="block truncate text-[10px] text-navy-500">
+            {formatFixtureShort(row.opponent_team_name, row.fixture_is_home, row.fixture_kickoff_at)}
+          </span>
+        </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <span className="text-xs font-bold text-sky-300">{formatRating(row.hail_mary_rating)}/10</span>

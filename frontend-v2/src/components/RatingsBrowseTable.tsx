@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { searchPool, type PoolSearchRow, type PoolSortBy } from "@/lib/poolSearch";
 import { formatRating, ratingTier } from "@/lib/hailMaryRating";
+import { formatFixtureShort } from "@/lib/fixtureFormat";
 import Kit from "@/components/Kit";
 
 const PAGE_SIZE = 20;
@@ -145,6 +146,7 @@ export default function RatingsBrowseTable({
               <th className="pb-2 pr-2 font-medium">Player</th>
               <th className="pb-2 pr-2 font-medium">Pos</th>
               <th className="pb-2 pr-2 font-medium">Rating</th>
+              <th className="pb-2 pr-2 font-medium">Fixture</th>
               <th className="pb-2 pr-2 font-medium">Total Pts</th>
               {hasBudget && <th className="pb-2 pr-2 font-medium">Price</th>}
               <th className="pb-2 pr-2 font-medium">% Owned</th>
@@ -167,6 +169,7 @@ export default function RatingsBrowseTable({
                     <span className="font-bold text-sky-300">{formatRating(r.hailMaryRating)}/10</span>
                     {tier && <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${tier.toneClass}`}>{tier.label}</span>}
                   </td>
+                  <td className="py-2 pr-2 text-navy-400">{formatFixtureShort(r.opponentTeamName, r.fixtureIsHome, r.fixtureKickoffAt)}</td>
                   <td className="py-2 pr-2 text-navy-200">{r.realTotalPoints ?? "—"}</td>
                   {hasBudget && <td className="py-2 pr-2 text-navy-200">£{r.price.toFixed(1)}m</td>}
                   <td className="py-2 pr-2 text-navy-200">{r.ownershipPct != null ? `${r.ownershipPct.toFixed(1)}%` : "—"}</td>
@@ -175,7 +178,7 @@ export default function RatingsBrowseTable({
             })}
             {!loading && rows.length === 0 && (
               <tr>
-                <td colSpan={hasBudget ? 6 : 5} className="py-6 text-center text-navy-500">
+                <td colSpan={hasBudget ? 7 : 6} className="py-6 text-center text-navy-500">
                   No players match these filters.
                 </td>
               </tr>
