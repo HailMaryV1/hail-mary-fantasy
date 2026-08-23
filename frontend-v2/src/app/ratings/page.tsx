@@ -3,7 +3,10 @@ import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo } from "@/lib/gameweek";
 import { formatRating, ratingTier } from "@/lib/hailMaryRating";
+import { hasBudget as gameHasBudget } from "@/lib/gameConfig";
+import { listPoolTeams } from "@/lib/poolSearch";
 import Kit from "@/components/Kit";
+import RatingsBrowseTable from "@/components/RatingsBrowseTable";
 
 export const dynamic = "force-dynamic";
 
@@ -86,11 +89,14 @@ export default async function HailMaryRatingsPage({
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
     : gwInfo.displayGameweek;
 
-  const { data: topRated } = await supabase.rpc("get_top_rated_players", {
-    p_game_slug: activeSlug,
-    p_gameweek: viewedGameweek,
-    p_limit: 5,
-  });
+  const [{ data: topRated }, teams] = await Promise.all([
+    supabase.rpc("get_top_rated_players", {
+      p_game_slug: activeSlug,
+      p_gameweek: viewedGameweek,
+      p_limit: 5,
+    }),
+    listPoolTeams(activeSlug),
+  ]);
   const rows = (topRated ?? []) as TopRatedRow[];
   const byPosition = new Map<string, TopRatedRow[]>();
   for (const r of rows) {
@@ -180,6 +186,15 @@ export default async function HailMaryRatingsPage({
             );
           })}
         </div>
+
+        <RatingsBrowseTable
+          key={`${activeSlug}-${viewedGameweek}`}
+          gameSlug={activeSlug}
+          gameweek={viewedGameweek}
+          teams={teams}
+          hasClubPosition={activeSlug === "eflfantasy"}
+          hasBudget={gameHasBudget(activeSlug)}
+        />
       </div>
     </div>
   );
