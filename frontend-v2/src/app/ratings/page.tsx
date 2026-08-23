@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo } from "@/lib/gameweek";
-import { formatRating, ratingTier } from "@/lib/hailMaryRating";
+import { formatRating, ratingTier, ratingBasisTag } from "@/lib/hailMaryRating";
 import { formatFixtureShort } from "@/lib/fixtureFormat";
 import { hasBudget as gameHasBudget } from "@/lib/gameConfig";
 import { listPoolTeams } from "@/lib/poolSearch";
@@ -41,6 +41,7 @@ type TopRatedRow = {
   team_id: number;
   team_name: string;
   hail_mary_rating: number | null;
+  hail_mary_rating_basis: "real_odds" | "recent_form" | "coverage_only" | null;
   hail_mary_score: number;
   opponent_team_name: string | null;
   fixture_is_home: boolean | null;
@@ -49,6 +50,7 @@ type TopRatedRow = {
 
 function RatingRow({ row, rank }: { row: TopRatedRow; rank: number }) {
   const tier = ratingTier(row.hail_mary_rating);
+  const basisTag = ratingBasisTag(row.hail_mary_rating_basis);
   // CLUB rows' full_name is the synthetic "<Team> Team" pick label (EFL
   // Fantasy's club-pick naming, migration 0087) - team_name ("Millwall")
   // is the real display name everywhere else this shows up (see
@@ -69,6 +71,11 @@ function RatingRow({ row, rank }: { row: TopRatedRow; rank: number }) {
       <div className="flex shrink-0 items-center gap-1.5">
         <span className="text-xs font-bold text-sky-300">{formatRating(row.hail_mary_rating)}/10</span>
         {tier && <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${tier.toneClass}`}>{tier.label}</span>}
+        {basisTag && (
+          <span title={basisTag.title} className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${basisTag.toneClass}`}>
+            {basisTag.label}
+          </span>
+        )}
       </div>
     </li>
   );
@@ -122,7 +129,14 @@ export default async function HailMaryRatingsPage({
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
       <div className="mx-auto max-w-6xl">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <Link
+          href="/"
+          className="inline-flex items-center gap-1 text-xs font-medium text-navy-400 hover:text-white"
+        >
+          ← Home
+        </Link>
+
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h1 className="text-lg font-semibold text-white">Hail Mary Weekly Ratings</h1>
             <p className="mt-1 max-w-xl text-xs text-navy-400">

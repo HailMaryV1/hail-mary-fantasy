@@ -30,3 +30,38 @@ export function ratingTier(rating: number | null | undefined): RatingTier | null
   const tier = TIER_BY_MIN_RATING.find((t) => rating >= t.min);
   return tier ? { label: tier.label, toneClass: tier.toneClass } : null;
 }
+
+export type RatingBasis = "real_odds" | "recent_form" | "coverage_only";
+
+// "No marker to say these are TRUE REAL LIVE BOOKMAKER ODDS" (2026-08-23
+// user request) - a rating being shown at all already means it's backed
+// by ONE of these 3 real signals (see is_rating_eligible in
+// compute_projections.py), but which one was never visible. This tag
+// makes that honest, so a rating never reads as "the engine just
+// guessed" - real_odds is the trusted default; recent_form is the
+// user's own explicitly-requested fallback ("recent form... alongside
+// bookmaker odds its the best way"); coverage_only only ever appears for
+// EFL Fantasy, whose Championship/L1/L2 pool structurally has no real
+// odds market to fall back to.
+const BASIS_TAG: Record<RatingBasis, { label: string; toneClass: string; title: string }> = {
+  real_odds: {
+    label: "Real Odds",
+    toneClass: "bg-emerald-950 text-emerald-400",
+    title: "Backed by real, live bookmaker odds",
+  },
+  recent_form: {
+    label: "Recent Form",
+    toneClass: "bg-sky-950 text-sky-400",
+    title: "Backed by real recent-gameweek form data (bookmaker odds not live for this gameweek yet)",
+  },
+  coverage_only: {
+    label: "Model",
+    toneClass: "bg-navy-800 text-navy-300",
+    title: "Backed by engine coverage - no real bookmaker odds market exists for this competition",
+  },
+};
+
+export function ratingBasisTag(basis: RatingBasis | null | undefined) {
+  if (!basis) return null;
+  return BASIS_TAG[basis];
+}

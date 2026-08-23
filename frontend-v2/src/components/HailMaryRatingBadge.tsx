@@ -1,17 +1,24 @@
-import { formatRating, ratingTier } from "@/lib/hailMaryRating";
+import { formatRating, ratingTier, ratingBasisTag, type RatingBasis } from "@/lib/hailMaryRating";
 
 // The one shared display for a player's Hail Mary Rating - reused by
 // every pool table, PlayerInfoPanel, and PitchView chip. size="sm" is
 // the compact form for dense table rows/pitch chips; size="lg" is the
-// headline form for the player detail panel.
+// headline form for the player detail panel. basis is optional - pass
+// it wherever the row has it (2026-08-23 user request, see
+// ratingBasisTag's docstring) to show what really backs the number;
+// omit it in tight spaces (pitch chips) where the tier pill already
+// covers the space budget.
 export default function HailMaryRatingBadge({
   rating,
+  basis,
   size = "sm",
 }: {
   rating: number | null | undefined;
+  basis?: RatingBasis | null;
   size?: "sm" | "lg";
 }) {
   const tier = ratingTier(rating);
+  const basisTag = ratingBasisTag(basis);
   const numberClass = size === "lg" ? "text-xl font-bold" : "text-sm font-semibold";
 
   return (
@@ -24,6 +31,11 @@ export default function HailMaryRatingBadge({
           className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${tier.toneClass}`}
         >
           {tier.label}
+        </span>
+      )}
+      {basisTag && (
+        <span title={basisTag.title} className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${basisTag.toneClass}`}>
+          {basisTag.label}
         </span>
       )}
     </span>

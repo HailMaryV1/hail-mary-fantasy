@@ -34,6 +34,13 @@ export type PoolSearchRow = {
    * tiebreaks, never displayed). Null until compute_projections.py's
    * next run touches this exact player/gameweek row. */
   hailMaryRating: number | null;
+  /** What actually backs the rating above (2026-08-23 user request -
+   * "no marker to say these are TRUE REAL LIVE BOOKMAKER ODDS"): real
+   * bookmaker odds, real Recent Form, or (EFL Fantasy only, whose pool
+   * structurally never gets real markets) coverage alone. Null whenever
+   * hailMaryRating is null - there's nothing to explain. See migration
+   * 0140/0141 and compute_projections.py's is_rating_eligible. */
+  hailMaryRatingBasis: "real_odds" | "recent_form" | "coverage_only" | null;
   goalProjected: number;
   assistProjected: number;
   bonusProjected: number;
@@ -158,6 +165,7 @@ export async function searchPool(params: {
     competition: string | null;
     hail_mary_score: number | string | null;
     hail_mary_rating: number | null;
+    hail_mary_rating_basis: "real_odds" | "recent_form" | "coverage_only" | null;
     goal_projected: number | string;
     assist_projected: number | string;
     bonus_projected: number | string;
@@ -200,6 +208,7 @@ export async function searchPool(params: {
     competition: r.competition,
     hail_mary_score: r.hail_mary_score != null ? Number(r.hail_mary_score) : null,
     hailMaryRating: r.hail_mary_rating,
+    hailMaryRatingBasis: r.hail_mary_rating_basis,
     goalProjected: Number(r.goal_projected),
     assistProjected: Number(r.assist_projected),
     bonusProjected: Number(r.bonus_projected),

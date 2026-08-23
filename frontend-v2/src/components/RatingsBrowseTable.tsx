@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { searchPool, type PoolSearchRow, type PoolSortBy } from "@/lib/poolSearch";
-import { formatRating, ratingTier } from "@/lib/hailMaryRating";
+import { formatRating, ratingTier, ratingBasisTag } from "@/lib/hailMaryRating";
 import { formatFixtureShort } from "@/lib/fixtureFormat";
 import Kit from "@/components/Kit";
 
@@ -168,6 +168,19 @@ export default function RatingsBrowseTable({
                   <td className="py-2 pr-2">
                     <span className="font-bold text-sky-300">{formatRating(r.hailMaryRating)}/10</span>
                     {tier && <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${tier.toneClass}`}>{tier.label}</span>}
+                    {(() => {
+                      const basisTag = ratingBasisTag(r.hailMaryRatingBasis);
+                      return (
+                        basisTag && (
+                          <span
+                            title={basisTag.title}
+                            className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${basisTag.toneClass}`}
+                          >
+                            {basisTag.label}
+                          </span>
+                        )
+                      );
+                    })()}
                   </td>
                   <td className="py-2 pr-2 text-navy-400">{formatFixtureShort(r.opponentTeamName, r.fixtureIsHome, r.fixtureKickoffAt)}</td>
                   <td className="py-2 pr-2 text-navy-200">{r.realTotalPoints ?? "—"}</td>
