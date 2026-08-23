@@ -2505,7 +2505,8 @@ def clear_ratings(cur, projection_ids):
         return
     psycopg2.extras.execute_values(
         cur,
-        "update projections set hail_mary_rating = null from (values %s) as data(id) where projections.id = data.id",
+        "update projections set hail_mary_rating = null, hail_mary_rating_basis = null "
+        "from (values %s) as data(id) where projections.id = data.id",
         [(pid,) for pid in projection_ids],
         template="(%s)",
     )
@@ -2726,30 +2727,38 @@ def assign_ratings(scores):
 
 
 def write_ratings(cur, id_position_score_rows):
-    """id_position_score_rows: list of (projection_id, position, score)
-    tuples for ONE (game, gameweek) run - every row already written by
-    upsert_projection this run. Groups by position, runs assign_ratings
-    per group, writes every rating in one batched UPDATE keyed on the
-    numeric projection id (sidesteps any gameweek/period-mode matching
-    ambiguity entirely - the id is already known and unambiguous)."""
+    """id_position_score_rows: list of (projection_id, position, score,
+    basis) tuples for ONE (game, gameweek) run - every row already
+    written by upsert_projection this run, already confirmed eligible by
+    is_rating_eligible. basis is 'real_odds' | 'recent_form' |
+    'coverage_only' (see is_rating_eligible/has_real_bookmaker_signal/
+    has_recent_form_signal) - stored alongside the rating so the frontend
+    can show what actually backs it (2026-08-23 user request - "no
+    marker to say these are TRUE REAL LIVE BOOKMAKER ODDS"), not just
+    the number. Groups by position, runs assign_ratings per group,
+    writes every rating+basis in one batched UPDATE keyed on the numeric
+    projection id (sidesteps any gameweek/period-mode matching ambiguity
+    entirely - the id is already known and unambiguous)."""
     by_position = {}
-    for projection_id, position, score in id_position_score_rows:
-        by_position.setdefault(position, []).append((projection_id, score))
+    for projection_id, position, score, basis in id_position_score_rows:
+        by_position.setdefault(position, []).append((projection_id, score, basis))
 
     updates = []
     for rows in by_position.values():
         ids = [r[0] for r in rows]
         scores = [r[1] for r in rows]
+        bases = [r[2] for r in rows]
         ratings = assign_ratings(scores)
-        updates.extend(zip(ids, ratings))
+        updates.extend(zip(ids, ratings, bases))
 
     if not updates:
         return
     psycopg2.extras.execute_values(
         cur,
-        "update projections set hail_mary_rating = data.rating from (values %s) as data(id, rating) where projections.id = data.id",
+        "update projections set hail_mary_rating = data.rating, hail_mary_rating_basis = data.basis "
+        "from (values %s) as data(id, rating, basis) where projections.id = data.id",
         updates,
-        template="(%s, %s)",
+        template="(%s, %s, %s)",
     )
 
 
@@ -2864,7 +2873,7 @@ def compute_club_scores(cur, game_id, algo_id, fixtures_by_player, position_avg_
         # real match win/draw odds either exist for this fixture or they
         # don't - there's no separate confidence score to loosen instead.
         if fixture_breakdown and fixture_breakdown[0]["probability_source"] == "real_odds":
-            club_rating_rows.append((projection_id, "CLUB", score))
+            club_rating_rows.append((projection_id, "CLUB", score, "real_odds"))
         else:
             unrated_club_projection_ids.append(projection_id)
         written += 1
@@ -3724,14 +3733,20 @@ def main():
             # everyone else stays null (never a rating built on "rubbish"
             # estimated/fallback data), same rule this file already
             # applies to every other real-vs-fabricated number.
+            uses_real_odds = has_real_bookmaker_signal(primary_module_detail)
+            uses_recent_form = has_recent_form_signal(primary_module_detail)
             rating_eligible = is_rating_eligible(
                 game_slug,
                 modular_coverage(module_has_data, module_weights_by_position.get(position, {})),
-                has_real_bookmaker_signal(primary_module_detail),
-                has_recent_form_signal(primary_module_detail),
+                uses_real_odds,
+                uses_recent_form,
             )
             if rating_eligible:
-                rating_rows.append((projection_id, position, score))
+                # Real odds wins the label whenever both are present -
+                # it's the higher-trust signal the user asked to see
+                # first (2026-08-23: "real bookmaker odds is number 1").
+                basis = "real_odds" if uses_real_odds else "recent_form" if uses_recent_form else "coverage_only"
+                rating_rows.append((projection_id, position, score, basis))
             else:
                 unrated_projection_ids.append(projection_id)
             written += 1
