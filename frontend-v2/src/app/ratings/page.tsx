@@ -6,6 +6,7 @@ import { formatRating, ratingTier, ratingBasisTag } from "@/lib/hailMaryRating";
 import { formatFixtureShort } from "@/lib/fixtureFormat";
 import { hasBudget as gameHasBudget } from "@/lib/gameConfig";
 import { listPoolTeams } from "@/lib/poolSearch";
+import { getProjectionFreshness, formatFreshness } from "@/lib/projectionFreshness";
 import Kit from "@/components/Kit";
 import RatingsBrowseTable from "@/components/RatingsBrowseTable";
 
@@ -57,25 +58,27 @@ function RatingRow({ row, rank }: { row: TopRatedRow; rank: number }) {
   // eflfantasy/page.tsx's own club_name: p.team_name usage).
   const displayName = row.position === "CLUB" ? row.team_name : row.full_name;
   return (
-    <li className="flex items-center justify-between gap-2">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="w-4 shrink-0 text-[10px] font-bold text-navy-500">{rank}</span>
-        <Kit teamName={row.team_name} size="sm" />
-        <div className="min-w-0">
-          <span className="block truncate text-xs font-medium text-white">{displayName}</span>
-          <span className="block truncate text-[10px] text-navy-500">
-            {formatFixtureShort(row.opponent_team_name, row.fixture_is_home, row.fixture_kickoff_at)}
-          </span>
+    <li className="flex flex-col gap-1 border-b border-navy-800 pb-2 last:border-b-0 last:pb-0">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="w-4 shrink-0 text-[10px] font-bold text-navy-500">{rank}</span>
+          <Kit teamName={row.team_name} size="sm" />
+          <span className="truncate text-xs font-medium text-white">{displayName}</span>
         </div>
+        <span className="shrink-0 text-xs font-bold text-sky-300">{formatRating(row.hail_mary_rating)}/10</span>
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">
-        <span className="text-xs font-bold text-sky-300">{formatRating(row.hail_mary_rating)}/10</span>
-        {tier && <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${tier.toneClass}`}>{tier.label}</span>}
-        {basisTag && (
-          <span title={basisTag.title} className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${basisTag.toneClass}`}>
-            {basisTag.label}
-          </span>
-        )}
+      <div className="flex flex-wrap items-center justify-between gap-1 pl-6">
+        <span className="truncate text-[10px] text-navy-500">
+          {formatFixtureShort(row.opponent_team_name, row.fixture_is_home, row.fixture_kickoff_at)}
+        </span>
+        <div className="flex shrink-0 items-center gap-1">
+          {tier && <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${tier.toneClass}`}>{tier.label}</span>}
+          {basisTag && (
+            <span title={basisTag.title} className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${basisTag.toneClass}`}>
+              {basisTag.label}
+            </span>
+          )}
+        </div>
       </div>
     </li>
   );
@@ -105,13 +108,14 @@ export default async function HailMaryRatingsPage({
     ? Math.min(Math.max(requestedGameweek, gwInfo.minGameweek), gwInfo.maxGameweek)
     : gwInfo.displayGameweek;
 
-  const [{ data: topRated }, teams] = await Promise.all([
+  const [{ data: topRated }, teams, projectionsUpdatedAt] = await Promise.all([
     supabase.rpc("get_top_rated_players", {
       p_game_slug: activeSlug,
       p_gameweek: viewedGameweek,
       p_limit: 5,
     }),
     listPoolTeams(activeSlug),
+    getProjectionFreshness(supabase, activeSlug),
   ]);
   const rows = (topRated ?? []) as TopRatedRow[];
   const byPosition = new Map<string, TopRatedRow[]>();
@@ -142,6 +146,17 @@ export default async function HailMaryRatingsPage({
             <p className="mt-1 max-w-xl text-xs text-navy-400">
               Who Mary rates highest this gameweek, by position - top 5 per position, switchable by game and gameweek.
             </p>
+            {/* "when has this game mode's projections last actually been
+                updated" (2026-08-23 user request) - same real freshness
+                stamp already shown on every game board, keyed to
+                whichever game is currently selected so switching games
+                shows that game's own last-successful-run time, not a
+                shared/blended one. */}
+            {projectionsUpdatedAt && (
+              <p className="mt-1 text-[10px] text-navy-600" title={new Date(projectionsUpdatedAt).toLocaleString("en-GB")}>
+                {formatFreshness(projectionsUpdatedAt)}
+              </p>
+            )}
           </div>
           {/* Not GameweekSwitcher - that component only ever manages its
               own bare ?gameweek= param (confirmed via its real usage on
@@ -190,7 +205,12 @@ export default async function HailMaryRatingsPage({
           ))}
         </div>
 
-        <div className={`mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 ${columns.length === 5 ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}>
+        {/* 2-wide always (not 4/5-wide on large screens) - a narrow box
+            crushed the player name/fixture text once the rating grew a
+            tier pill AND a basis pill (2026-08-23 user report: "hiding
+            the name"). GK/DEF stack over MID/FWD (over CLUB, for EFL
+            Fantasy) instead of forcing everything into one cramped row. */}
+        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
           {columns.map((col) => {
             const colRows = (byPosition.get(col.code) ?? []).sort((a, b) => a.rnk - b.rnk);
             return (
