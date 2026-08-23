@@ -12,6 +12,12 @@ export type SquadSummaryPlayer = {
   position: "GK" | "DEF" | "MID" | "FWD";
   price: number;
   score: number | null;
+  // The 1-10 Hail Mary Rating (migration 0135) - individual-player
+  // mentions below name this, never raw points. The squad-total sentence
+  // stays in real points (confirmed with the user - "how many points
+  // will this XI score" is a different question from "how good is each
+  // player," and ratings can't be summed).
+  rating: number | null;
 };
 
 export type SquadSummaryInput = {
@@ -29,7 +35,7 @@ export type SquadSummaryInput = {
   // Mary's optimal pick (the user can captain whoever they like), so the
   // sentence below only claims "highest-projected" when that's genuinely
   // true rather than asserting it unconditionally.
-  captain: { fullName: string; score: number } | null;
+  captain: { fullName: string; score: number; rating: number | null } | null;
   topStrength: string | null; // health.strengths[0]
   topWeakness: string | null; // health.weaknesses[0]
   nextStepTransferCount: number | null; // gameweekPlan[0]?.transfers.length, null if no plan
@@ -49,21 +55,23 @@ export function buildSquadSummary(input: SquadSummaryInput): string[] {
   );
 
   const topScorers = players
-    .filter((p) => p.score != null)
+    .filter((p) => p.rating != null)
     .slice()
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0) || (b.score ?? 0) - (a.score ?? 0))
     .slice(0, 3);
   if (topScorers.length > 0) {
-    const names = topScorers.map((p) => `${p.fullName} (${p.score!.toFixed(1)} pts)`).join(", ");
+    const names = topScorers.map((p) => `${p.fullName} (${p.rating}/10)`).join(", ");
     sentences.push(`The squad leans on ${names} as its biggest projected contributors.`);
   }
 
   if (captain) {
     const isTopScorer = topScorers.length > 0 && topScorers[0].fullName === captain.fullName;
     sentences.push(
-      isTopScorer
-        ? `${captain.fullName} carries the armband as the highest-projected starter this gameweek at ${captain.score.toFixed(1)} pts.`
-        : `${captain.fullName} is captain this gameweek, projected for ${captain.score.toFixed(1)} pts.`
+      isTopScorer && captain.rating != null
+        ? `${captain.fullName} carries the armband as the highest-rated starter this gameweek at ${captain.rating}/10.`
+        : captain.rating != null
+          ? `${captain.fullName} is captain this gameweek, rated ${captain.rating}/10.`
+          : `${captain.fullName} is captain this gameweek.`
     );
   }
 

@@ -131,7 +131,12 @@ export async function fetchAllPaginated<T>(fetchPage: (from: number, to: number)
   return rows;
 }
 
-export type GameweekProjectionRow<TInputs> = { game_player_id: number; hail_mary_score: number | null; inputs: TInputs | null };
+export type GameweekProjectionRow<TInputs> = {
+  game_player_id: number;
+  hail_mary_score: number | null;
+  hail_mary_rating: number | null;
+  inputs: TInputs | null;
+};
 
 /**
  * Real projections for one specific gameweek, scoped to a known, small
@@ -173,7 +178,7 @@ export async function getProjectionsForPlayerIds<TInputs = unknown>(
   type Row = GameweekProjectionRow<TInputs> & { id: number; created_at: string };
   const { data } = await supabase
     .from("projections")
-    .select("id, game_player_id, hail_mary_score, inputs, created_at")
+    .select("id, game_player_id, hail_mary_score, hail_mary_rating, inputs, created_at")
     .in("game_player_id", gamePlayerIds)
     .eq("gameweek", gameweek)
     .order("created_at", { ascending: false })
@@ -185,7 +190,12 @@ export async function getProjectionsForPlayerIds<TInputs = unknown>(
   for (const r of data ?? []) {
     if (seen.has(r.game_player_id)) continue;
     seen.add(r.game_player_id);
-    rows.push({ game_player_id: r.game_player_id, hail_mary_score: r.hail_mary_score, inputs: r.inputs });
+    rows.push({
+      game_player_id: r.game_player_id,
+      hail_mary_score: r.hail_mary_score,
+      hail_mary_rating: r.hail_mary_rating,
+      inputs: r.inputs,
+    });
   }
   return rows;
 }

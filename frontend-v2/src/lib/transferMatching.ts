@@ -7,6 +7,14 @@ export type TransferCandidate = {
   teamName: string;
   price: number;
   score: number;
+  /** The 1-10 Hail Mary Rating (migration 0135) - the primary sort/gate
+   * key for every function below now (score stays the tiebreak within a
+   * tied rating - see pruneDominatedCandidates/findBuyCandidatesForOutgoing).
+   * Comparisons here are always within one position (every caller filters
+   * p.position === outgoing.position first), which is exactly rating's
+   * own safe reference frame - see hailMaryRating.ts's own docstring for
+   * why it's unsafe to compare ratings ACROSS positions. */
+  rating: number | null;
   position: "GK" | "DEF" | "MID" | "FWD";
   formStatus?: FormStatus | null;
 };
@@ -31,14 +39,27 @@ export type MatchResult<T> = { candidate: T; delta: number };
  * higher-scoring candidate always survives regardless of price, this only
  * removes candidates that are strictly worse value than another option.
  */
-export function pruneDominatedCandidates<T extends { price: number; score: number }>(candidates: T[]): T[] {
+export function pruneDominatedCandidates<T extends { price: number; score: number; rating: number | null }>(candidates: T[]): T[] {
   const byPrice = [...candidates].sort((a, b) => a.price - b.price);
   const kept: T[] = [];
-  let bestScoreSoFar = -Infinity;
+  let bestRatingSoFar = -Infinity;
+  let bestScoreAtThatRating = -Infinity;
   for (const c of byPrice) {
-    if (c.score > bestScoreSoFar) {
+    const rating = c.rating ?? -Infinity;
+    // Rating-primary, score-tiebreak within a tied rating - a real
+    // improvement over the pure-score version for the bug this function
+    // exists to fix: near-identical scorers now naturally share one
+    // rating bucket and dedupe by price directly, instead of an
+    // arbitrary fractional-point difference deciding survival.
+    const improves = rating > bestRatingSoFar || (rating === bestRatingSoFar && c.score > bestScoreAtThatRating);
+    if (improves) {
       kept.push(c);
-      bestScoreSoFar = c.score;
+      // Either a strictly new (higher) rating tier - score resets to this
+      // candidate's own - or a same-tier improvement, where c.score is
+      // already > the old bestScoreAtThatRating by the condition above.
+      // Both cases land on the same assignment.
+      bestScoreAtThatRating = c.score;
+      bestRatingSoFar = rating;
     }
   }
   return kept;
@@ -67,10 +88,17 @@ export function findBuyCandidatesForOutgoing(
       const clubCountWithoutOut = (clubCounts.get(p.teamId) ?? 0) - (p.teamId === outgoing.teamId ? 1 : 0);
       if (clubCountWithoutOut + 1 > maxPerClub) return false;
     }
+    // Rating-primary upgrade gate: a same-rating-but-higher-score
+    // candidate still counts as a real (if small) upgrade; a same-rating-
+    // and-not-higher-score one doesn't. Falls back to score-only if
+    // either side has no rating yet (not recomputed this run).
+    if (p.rating != null && outgoing.rating != null) {
+      return p.rating > outgoing.rating || (p.rating === outgoing.rating && p.score > outgoing.score);
+    }
     return p.score > outgoing.score;
   });
 
-  candidates.sort((a, b) => b.score - a.score);
+  candidates.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0) || b.score - a.score);
   return candidates.map((candidate) => ({ candidate, delta: candidate.score - outgoing.score }));
 }
 
@@ -128,6 +156,6 @@ export function findLegalReplacementsForOutgoing(
   });
 
   const pruned = pruneDominatedCandidates(candidates);
-  pruned.sort((a, b) => b.score - a.score);
+  pruned.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0) || b.score - a.score);
   return pruned.map((candidate) => ({ candidate, delta: candidate.score - outgoing.score }));
 }

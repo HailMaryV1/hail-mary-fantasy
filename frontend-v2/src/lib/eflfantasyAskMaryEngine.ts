@@ -96,6 +96,7 @@ type PoolRow = {
   team_id: number;
   team_name: string;
   hail_mary_score: number | null;
+  hail_mary_rating: number | null;
   lineup: string | null;
   status: string | null;
   form: number | null;
@@ -276,6 +277,18 @@ export async function runAskMaryAnalysis(
     return hms != null ? Number(hms) : 0;
   }
 
+  // Hail Mary Rating (migration 0135) has no per-horizon-step equivalent
+  // of avgFor's scoreMapForStep RPC - it's a within-position/gameweek/game
+  // percentile computed once by compute_projections.py and stored on
+  // game_player_pool, not something derivable per future gameweek offset.
+  // Always the pool's current rating, same source buildLegInput already
+  // reads hail_mary_score from directly (poolByGamePlayerId) rather than
+  // through avgFor/scoreMapForStep.
+  function ratingFor(gamePlayerId: number): number | null {
+    const r = poolByGamePlayerId.get(gamePlayerId)?.hail_mary_rating;
+    return r != null ? Number(r) : null;
+  }
+
   // No bench, no CLUB picks in this sum - a flat total over the 7 player
   // slots only (same reasoning as dreamteamAskMaryEngine.ts's
   // optimalXITotal). CLUB picks are scored/optimized entirely separately
@@ -324,6 +337,12 @@ export async function runAskMaryAnalysis(
         position: outPlayer.position,
         expectedPointsGain: realizedPointsGain ?? inCand.score - outScore,
         hailMaryScoreDiff: (inPoolRow?.hail_mary_score != null ? Number(inPoolRow.hail_mary_score) : 0) - (outPoolRow?.hail_mary_score != null ? Number(outPoolRow.hail_mary_score) : 0),
+        ratingGain:
+          inPoolRow?.hail_mary_rating != null && outPoolRow?.hail_mary_rating != null
+            ? inPoolRow.hail_mary_rating - outPoolRow.hail_mary_rating
+            : null,
+        incomingRating: inPoolRow?.hail_mary_rating ?? null,
+        outgoingRating: outPoolRow?.hail_mary_rating ?? null,
         fixtureSwingDiff: (inTeamRating?.swingValue ?? 0) - (outTeamRating?.swingValue ?? 0),
         priceDelta: 0, // no budget in this game at all
         incomingMinutesSecurity: LINEUP_SECURITY_SCORES[inPoolRow?.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
@@ -392,7 +411,7 @@ export async function runAskMaryAnalysis(
         // Pre-season only (see eflSeasonOutlook.ts) - never buy into a
         // club the bookmakers rate a genuine relegation favourite.
         .filter((p) => !relegationRiskTeamIds.has(p.team_id))
-        .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: 0, score: avgFor(scoreMapForStep, p.game_player_id), position: p.position, formStatus: p.formStatus }));
+        .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: 0, score: avgFor(scoreMapForStep, p.game_player_id), rating: ratingFor(p.game_player_id), position: p.position, formStatus: p.formStatus }));
 
       const currentTotal = playersTotal(workingSquad, scoreMapForStep);
 
@@ -402,7 +421,7 @@ export async function runAskMaryAnalysis(
         const outScore = avgFor(scoreMapForStep, outPlayer.game_player_id);
         const legalCandidates = findLegalReplacementsForOutgoing(
           poolCandidates,
-          { gamePlayerId: outPlayer.game_player_id, fullName: outPlayer.full_name, teamId: outPlayer.team_id, teamName: outPlayer.team_name, price: 0, score: outScore, position: outPlayer.position },
+          { gamePlayerId: outPlayer.game_player_id, fullName: outPlayer.full_name, teamId: outPlayer.team_id, teamName: outPlayer.team_name, price: 0, score: outScore, rating: ratingFor(outPlayer.game_player_id), position: outPlayer.position },
           workingSquadIds,
           Number.POSITIVE_INFINITY, // no budget - every candidate is "affordable"
           new Map(),

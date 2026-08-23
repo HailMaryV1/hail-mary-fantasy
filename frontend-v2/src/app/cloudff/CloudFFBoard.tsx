@@ -10,6 +10,7 @@ import PlayerActionMenu, { type PlayerAction } from "@/components/PlayerActionMe
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import SaveTeamButton from "@/components/SaveTeamButton";
+import HailMaryRatingBadge from "@/components/HailMaryRatingBadge";
 import ProjectionFreshness from "@/components/ProjectionFreshness";
 import { searchPool } from "@/lib/poolSearch";
 import { saveTeamForGameweek } from "./actions";
@@ -30,6 +31,12 @@ export type BoardPlayer = {
   team_name: string;
   price: number;
   score: number | null;
+  /** The 1-10 Hail Mary Rating (migration 0135) - threaded alongside score
+   * from the same real source (player_projection_summary/game_player_pool's
+   * hail_mary_rating column, or search_game_player_pool's hailMaryRating).
+   * Data plumbing only for now - still unused for display/sort here, see
+   * hailMaryRating.ts's own docstring for the follow-up that changes that. */
+  rating: number | null;
   fixtures: (FixtureTile | null)[];
   rotationRisk?: RotationRiskInfo | null;
   // Real per-gameweek projections from the same decomposed-scoring engine
@@ -61,7 +68,7 @@ type DisplayMode = "next1" | "next2" | "next3" | "pts" | "pred";
 type SortBy = "pts" | "goals" | "assists" | "bonus" | "price" | "owned";
 
 const SORT_OPTIONS: [SortBy, string][] = [
-  ["pts", "Pts"],
+  ["pts", "Rating"],
   ["goals", "Goals"],
   ["assists", "Assists"],
   ["bonus", "Bonus"],
@@ -269,6 +276,7 @@ export default function CloudFFBoard({
           team_name: r.team_name,
           price: r.price,
           score: r.hail_mary_score,
+          rating: r.hailMaryRating,
           fixtures: buildFixtures(r.team_id),
           goalProjected: r.goalProjected,
           assistProjected: r.assistProjected,
@@ -314,14 +322,11 @@ export default function CloudFFBoard({
   const clampedPoolPage = Math.min(poolPage, totalPoolPages);
   const pagedPool = isPoolServerDriven ? filteredPool : filteredPool.slice((poolPage - 1) * POOL_PAGE_SIZE, poolPage * POOL_PAGE_SIZE);
 
-  function statTextFor(p: { score: number | null }): string {
-    switch (displayMode) {
-      case "pred":
-        return p.score != null ? `${p.score >= 0 ? "+" : ""}${p.score.toFixed(1)}` : "-";
-      case "pts":
-      default:
-        return p.score != null ? `${p.score.toFixed(1)} pts` : "-";
-    }
+  // "pred" used to prefix a "+" onto the same raw score "pts" showed -
+  // never a real delta between two players - so both modes converge on
+  // the same rating text now that raw points aren't user-facing.
+  function statTextFor(p: { rating: number | null }): string {
+    return p.rating != null ? `${p.rating}/10` : "-";
   }
 
   const fixtureModeCount: Record<string, number> = { next1: 1, next2: 2, next3: 3 };
@@ -339,6 +344,7 @@ export default function CloudFFBoard({
         is_starting: true,
         price: p.price,
         score: p.score,
+        rating: p.rating,
         isEmpty: true,
         emptyLabel: `Sold ${p.full_name}`,
       };
@@ -359,6 +365,7 @@ export default function CloudFFBoard({
       is_starting: true,
       price: display.price,
       score: display.score,
+      rating: display.rating,
       rotationRisk: p.rotationRisk,
       ffscoutStatus: p.ffscoutStatus,
       ffscoutStartProbability: p.ffscoutStartProbability,
@@ -450,7 +457,7 @@ export default function CloudFFBoard({
     });
   }
 
-  const sortColumnLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "Pts";
+  const sortColumnLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "Rating";
 
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
@@ -568,8 +575,7 @@ export default function CloudFFBoard({
                         ["next1", "Next GW Fix"],
                         ["next2", "Next 2 GW Fix"],
                         ["next3", "Next 3 GW Fix"],
-                        ["pts", "Pts"],
-                        ["pred", `Pred +/- GW${viewedGameweek}`],
+                        ["pts", "Rating"],
                       ] as [DisplayMode, string][]
                     ).map(([mode, label]) => (
                       <button
@@ -746,7 +752,7 @@ export default function CloudFFBoard({
                             </div>
                           </td>
                           <td className="py-1.5 pr-2 text-sky-400">
-                            {sortBy === "pts" ? (p.score != null ? p.score.toFixed(1) : "-") : sortValue(p, sortBy).toFixed(2)}
+                            {sortBy === "pts" ? <HailMaryRatingBadge rating={p.rating} /> : sortValue(p, sortBy).toFixed(2)}
                           </td>
                           {p.fixtures.slice(0, 6).map((f, i) => (
                             <td key={i} className="px-1 py-1.5 text-center">

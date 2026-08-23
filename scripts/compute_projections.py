@@ -2542,10 +2542,12 @@ def upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, peri
                 do update set hail_mary_score = excluded.hail_mary_score, inputs = excluded.inputs,
                               period_start = excluded.period_start, period_end = excluded.period_end,
                               updated_at = now()
+            returning id
             """,
             (algo_id, game_player_id, UPCOMING_SEASON, gameweek, period_start, period_end, round(score, 3),
              psycopg2.extras.Json(inputs)),
         )
+        return cur.fetchone()[0]
     else:
         cur.execute(
             """
@@ -2557,10 +2559,87 @@ def upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, peri
                 where gameweek is null
                 do update set hail_mary_score = excluded.hail_mary_score, inputs = excluded.inputs,
                               updated_at = now()
+            returning id
             """,
             (algo_id, game_player_id, UPCOMING_SEASON, period_start, period_end, round(score, 3),
              psycopg2.extras.Json(inputs)),
         )
+        return cur.fetchone()[0]
+
+
+# Hail Mary Rating: a 1-10 within-position/gameweek/game percentile
+# rating derived from hail_mary_score - see migration 0135's docstring
+# for why it's stored (not computed at read time). assign_ratings is the
+# pure ranking math (unit-testable, no DB access); write_ratings is the
+# batched DB write, shared by both the main per-player loop below and
+# compute_club_scores' own separate loop for EFL Fantasy's CLUB rows.
+def assign_ratings(scores):
+    """scores: list of float hail_mary_score values for ONE position
+    group (already scoped to one game+gameweek by the caller). Returns a
+    same-length list of int ratings 1-10, same order as the input.
+
+    Quantile bucketing (dense-rank percentile), not linear scaling off
+    the max - linear scaling would crush almost the whole group into
+    ratings 1-2 the moment one outlier exists (a Haaland-tier score
+    sitting far above a normal position group is common, not rare).
+    Ties (including the common case of many players tied at exactly
+    0.00) always land in the same bucket, never split by arbitrary sort
+    order.
+    """
+    rounded = [round(float(s), 2) for s in scores]
+    max_s = max(rounded) if rounded else 0.0
+
+    if max_s <= 0:
+        # All-zero group (covers group-size-1-at-zero for free) - a
+        # projected 0.00 never gets dressed up as a 10 just because
+        # everyone around it is also at zero.
+        return [1] * len(rounded)
+
+    distinct_desc = sorted({v for v in rounded if True}, reverse=True)
+    k = len(distinct_desc)
+
+    if k == 1:
+        # Every player ties on one non-zero value - trivially the best
+        # (and only) scorer of the group.
+        return [10] * len(rounded)
+
+    rank_by_value = {v: i + 1 for i, v in enumerate(distinct_desc)}  # 1 = top value
+    rating_by_value = {}
+    for v, rank in rank_by_value.items():
+        percentile = (k - rank) / (k - 1)  # top value -> 1.0, bottom -> 0.0
+        # round-half-up, not Python's banker's-rounding round() default.
+        rating = int(math.floor(1 + percentile * 9 + 0.5))
+        rating_by_value[v] = max(1, min(10, rating))
+
+    return [rating_by_value[v] for v in rounded]
+
+
+def write_ratings(cur, id_position_score_rows):
+    """id_position_score_rows: list of (projection_id, position, score)
+    tuples for ONE (game, gameweek) run - every row already written by
+    upsert_projection this run. Groups by position, runs assign_ratings
+    per group, writes every rating in one batched UPDATE keyed on the
+    numeric projection id (sidesteps any gameweek/period-mode matching
+    ambiguity entirely - the id is already known and unambiguous)."""
+    by_position = {}
+    for projection_id, position, score in id_position_score_rows:
+        by_position.setdefault(position, []).append((projection_id, score))
+
+    updates = []
+    for rows in by_position.values():
+        ids = [r[0] for r in rows]
+        scores = [r[1] for r in rows]
+        ratings = assign_ratings(scores)
+        updates.extend(zip(ids, ratings))
+
+    if not updates:
+        return
+    psycopg2.extras.execute_values(
+        cur,
+        "update projections set hail_mary_rating = data.rating from (values %s) as data(id, rating) where projections.id = data.id",
+        updates,
+        template="(%s, %s)",
+    )
 
 
 def compute_club_scores(cur, game_id, algo_id, fixtures_by_player, position_avg_rates, weights, scoring_rules, gameweek, period_start, period_end):
@@ -2625,6 +2704,7 @@ def compute_club_scores(cur, game_id, algo_id, fixtures_by_player, position_avg_
         (game_id,),
     )
     written = 0
+    club_rating_rows = []
     for game_player_id, player_id in cur.fetchall():
         club_fixtures = fixtures_by_player.get(player_id, [])
         if not club_fixtures:
@@ -2663,8 +2743,13 @@ def compute_club_scores(cur, game_id, algo_id, fixtures_by_player, position_avg_
             "fixtures": fixture_breakdown,
             "explanation": f"Projects {score:.1f} pts from real win/draw/clean-sheet probabilities for this fixture.",
         }
-        upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
+        projection_id = upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
+        club_rating_rows.append((projection_id, "CLUB", score))
         written += 1
+    # CLUB is just another position bucket for rating purposes - ranked
+    # independently, never mixed with GK/DEF/MID/FWD (see assign_ratings'
+    # own docstring).
+    write_ratings(cur, club_rating_rows)
     print(f"Wrote {written} club projections (real win/draw/clean-sheet odds x CLUB scoring matrix).")
 
 
@@ -3100,6 +3185,7 @@ def main():
             period_end = max(all_kickoffs).date().isoformat()
 
         written = 0
+        rating_rows = []
         for game_player_id, position, player_id in players:
             player_fixtures = fixtures_by_player.get(player_id, [])
             if not player_fixtures:
@@ -3505,8 +3591,15 @@ def main():
                             details={"gameweek": gameweek, "old_score": round(old_score, 3), "new_score": round(score, 3)},
                         )
 
-            upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
+            projection_id = upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
+            rating_rows.append((projection_id, position, score))
             written += 1
+
+        # Hail Mary Rating - every player in `players` has now been
+        # scored and written this run, so this is the first point the
+        # WHOLE position/gameweek/game pool exists to rank against. See
+        # assign_ratings'/write_ratings' own docstrings.
+        write_ratings(cur, rating_rows)
 
         if game_slug == "eflfantasy" and use_v2:
             compute_club_scores(

@@ -299,6 +299,13 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           team_name: id.team_name,
           teamId: id.team_id,
           score: scoreFor(id.game_player_id),
+          // No rating equivalent exists for a locked-in past gameweek -
+          // score here is a REAL scored result (actuals), a completely
+          // different data source from the projection-derived Hail Mary
+          // Rating (migration 0135). Faking one from today's live pool row
+          // would silently mismatch gameweeks, so null is the honest value
+          // (same "never fake one" rule the migration itself documents).
+          rating: null,
           fixtures: buildFixtures(id.team_id),
         }));
       boardClubs = lockedIdentities
@@ -308,6 +315,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           club_name: id.team_name,
           teamId: id.team_id,
           score: actuals.get(id.game_player_id)?.points ?? null,
+          rating: null, // see boardSquad's rating comment above
           fixtures: buildFixtures(id.team_id),
           nextFixtureLabel: nextFixtureLabelByTeamId.get(id.team_id) ?? null,
           lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(id.game_player_id) ?? null,
@@ -323,6 +331,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           team_name: p.team_name,
           teamId: p.team_id,
           score: actuals.get(p.game_player_id)?.points ?? null,
+          rating: null, // see boardSquad's rating comment above
           // Raw code (e.g. "efl_league_one"), not the friendly label - the
           // league <select>'s option values are raw codes too (see
           // EFLFantasyBoard.tsx), matching what the server-driven pool
@@ -342,6 +351,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
           club_name: p.team_name,
           teamId: p.team_id,
           score: actuals.get(p.game_player_id)?.points ?? null,
+          rating: null, // see boardSquad's rating comment above
           competition: p.competition,
           fixtures: buildFixtures(p.team_id),
           nextFixtureLabel: nextFixtureLabelByTeamId.get(p.team_id) ?? null,
@@ -385,6 +395,13 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       getTeamKickoffMap(supabase, game.id, viewedGameweek),
     ]);
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+    // Hail Mary Rating (migration 0135) - parallel map to scoreByGamePlayerId
+    // above, same source query (getProjectionsForPlayerIds), reading the
+    // 1-10 rating column instead of the raw score. Real value stays null
+    // until compute_projections.py has rated this exact player/gameweek row
+    // - never coalesced to 0 the way score is, since 0 isn't a valid rating
+    // (unlike score, where 0 is a legitimate real projection).
+    const ratingByGamePlayerId = new Map<number, number | null>(scoreRows.map((r) => [r.game_player_id, r.hail_mary_rating]));
     // Per-player locking (real EFL Fantasy rule, user-confirmed 2026-08-20:
     // "a player is locked once they kick off ... it locks game by game") -
     // a team_id whose own fixture in the viewed gameweek has already kicked
@@ -400,6 +417,8 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
     const reserveGamePlayerIds = (reserveRowsRaw ?? []).map((r) => r.game_player_id);
     const reserveScoreRows = reserveGamePlayerIds.length > 0 ? await getProjectionsForPlayerIds(supabase, viewedGameweek, reserveGamePlayerIds) : [];
     const reserveScoreByGamePlayerId = new Map<number, number>(reserveScoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+    // See ratingByGamePlayerId's docstring above - same reserve-scoped fetch.
+    const reserveRatingByGamePlayerId = new Map<number, number | null>(reserveScoreRows.map((r) => [r.game_player_id, r.hail_mary_rating]));
     boardReserves = { DEF: [], MID: [], FWD: [] };
     for (const r of reserveRowsRaw ?? []) {
       boardReserves[r.position].push({
@@ -408,6 +427,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         team_name: r.game_players.players.teams.name,
         teamId: r.game_players.players.team_id,
         score: reserveScoreByGamePlayerId.get(r.game_player_id) ?? null,
+        rating: reserveRatingByGamePlayerId.get(r.game_player_id) ?? null,
         fixtures: buildFixtures(r.game_players.players.team_id),
       });
     }
@@ -421,6 +441,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         team_name: p.team_name,
         teamId: p.team_id,
         score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
+        rating: ratingByGamePlayerId.get(p.game_player_id) ?? null,
         fixtures: buildFixtures(p.team_id),
       }));
     boardClubs = squadPlayers
@@ -434,6 +455,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
         club_name: p.team_name,
         teamId: p.team_id,
         score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
+        rating: ratingByGamePlayerId.get(p.game_player_id) ?? null,
         fixtures: buildFixtures(p.team_id),
         nextFixtureLabel: nextFixtureLabelByTeamId.get(p.team_id) ?? null,
         lastSeasonAvgPoints: lastSeasonPointsByGamePlayerId.get(p.game_player_id) ?? null,
@@ -446,6 +468,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       team_name: r.team_name,
       teamId: r.team_id,
       score: r.hail_mary_score,
+      rating: r.hailMaryRating,
       competition: r.competition,
       fixtures: buildFixtures(r.team_id),
       ownershipPct: r.ownershipPct,
@@ -469,6 +492,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
       club_name: r.team_name,
       teamId: r.team_id,
       score: r.hail_mary_score,
+      rating: r.hailMaryRating,
       competition: r.competition,
       fixtures: buildFixtures(r.team_id),
       nextFixtureLabel: nextFixtureLabelByTeamId.get(r.team_id) ?? null,
@@ -522,7 +546,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
 
   const squadSummary = isPlanningView
     ? buildSquadSummary({
-        players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: 0, score: p.score })),
+        players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: 0, score: p.score, rating: p.rating })),
         totalProjectedPoints,
         teamValue: 0,
         budgetRemaining: 0,

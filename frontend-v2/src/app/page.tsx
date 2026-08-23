@@ -49,6 +49,17 @@ export default async function LandingPage() {
             </Link>
           );
         })}
+        {/* Static tile, not from the `games` query above - the Hail Mary
+            Weekly Ratings page isn't a game with its own squad/players,
+            it's a cross-game leaderboard browse view (see /ratings). */}
+        <Link
+          href="/ratings"
+          className="group relative aspect-square overflow-hidden rounded-2xl border border-navy-800 bg-navy-900 shadow-lg shadow-black/40 transition-all hover:-translate-y-1 hover:border-sky-500 hover:shadow-xl hover:shadow-sky-950/50"
+        >
+          <span className="flex h-full w-full items-center justify-center px-2 text-center text-sm font-medium text-navy-200">
+            Hail Mary Weekly Ratings
+          </span>
+        </Link>
       </nav>
     </div>
   );

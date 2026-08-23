@@ -92,6 +92,18 @@ export type MoveCandidateInput = {
   position: "GK" | "DEF" | "MID" | "FWD";
   expectedPointsGain: number; // incoming avg-per-GW minus outgoing, x horizon gameweeks - already unnormalized points
   hailMaryScoreDiff: number; // incoming current single-GW score minus outgoing
+  // The 1-10 Hail Mary Rating trio (migration 0135) - used ONLY for the
+  // reasoning sentence below, never fed into the weighted blend above.
+  // expectedPointsGain/hailMaryScoreDiff stay exactly as they are: two
+  // genuinely different real-points time horizons (multi-gameweek vs
+  // single-gameweek), both legitimately comparable ACROSS positions in
+  // this function's own cross-position normalized blend - rating is not
+  // safe to compare across positions (see hailMaryRating.ts's own
+  // docstring), so it can only ever be a per-candidate qualitative note,
+  // never a blended numeric input.
+  ratingGain: number | null; // incomingRating - outgoingRating, null if either side has no rating yet
+  incomingRating: number | null;
+  outgoingRating: number | null;
   fixtureSwingDiff: number; // incoming team's swingValue minus outgoing team's
   priceDelta: number; // incoming price minus outgoing price (positive = costs more)
   incomingMinutesSecurity: number; // 0-1, from LINEUP_SECURITY_SCORES
@@ -214,10 +226,13 @@ export function scoreMoveCandidates(candidates: MoveCandidateInput[], strategy: 
     else if (c.incomingMinutesSecurity < 0.85 || confidence < 70) risk = "medium";
 
     const reasons: MoveReason[] = [];
-    if (c.expectedPointsGain > 0.05) {
+    // Gated on rating (a bucket move), not the old expectedPointsGain >
+    // 0.05 fractional-point threshold - a rating-bucket move is a more
+    // meaningful signal now that raw points aren't user-facing anywhere.
+    if (c.ratingGain != null && c.ratingGain > 0 && c.incomingRating != null && c.outgoingRating != null) {
       reasons.push({
         code: "expected_points",
-        text: `${c.inName} is projected to outscore ${c.outName} by ${round1(c.expectedPointsGain)} points over the selected horizon.`,
+        text: `${c.inName} rates higher than ${c.outName} for the coming gameweeks (${c.incomingRating}/10 vs ${c.outgoingRating}/10).`,
       });
     }
     if (c.fixtureSwingDiff > 0.05) {

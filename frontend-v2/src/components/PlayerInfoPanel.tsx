@@ -18,6 +18,7 @@ import {
   type EngineExplanation,
 } from "@/lib/engineExplainability";
 import { getTeamColors } from "@/lib/teamColors";
+import HailMaryRatingBadge from "./HailMaryRatingBadge";
 import TrendChart from "./TrendChart";
 import type { TrendPoint } from "@/lib/projectionTrend";
 
@@ -151,8 +152,8 @@ export default function PlayerInfoPanel({
 
           <div className="flex items-center justify-between rounded-lg bg-navy-950 px-3 py-2">
             <div>
-              <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Projected Points</p>
-              <p className="text-xl font-bold text-sky-400">{data.finalScore.toFixed(1)}</p>
+              <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Hail Mary Rating</p>
+              <HailMaryRatingBadge rating={data.rating} size="lg" />
             </div>
             <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${confidenceTone(data.dataConfidence.label)}`}>
               {data.dataConfidence.label} confidence
@@ -208,10 +209,14 @@ export default function PlayerInfoPanel({
             </div>
           )}
 
+          {/* Gated on raw score, not rating - rating is never truly "0"
+              (worst case is 1), so gating on it would keep this section
+              visible even for a player with zero real projection history.
+              The chart itself displays rating, per hailMaryRating.ts. */}
           {trend && trend.some((p) => p.score > 0) && (
             <div className="rounded-lg border border-navy-800 bg-navy-950 p-3">
-              <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Projection trend</p>
-              <TrendChart points={trend.map((p) => ({ label: `GW${p.gameweek}`, value: p.score }))} />
+              <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Rating trend</p>
+              <TrendChart points={trend.map((p) => ({ label: `GW${p.gameweek}`, value: p.rating ?? 0 }))} />
             </div>
           )}
 

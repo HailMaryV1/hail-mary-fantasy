@@ -224,7 +224,7 @@ export default async function DreamTeamAskMaryPage() {
   );
 }
 
-function CaptainOption({ label, player }: { label: string; player: { full_name: string; team_name: string; score: number } | null }) {
+function CaptainOption({ label, player }: { label: string; player: { full_name: string; team_name: string; score: number; rating: number | null } | null }) {
   return (
     <div className="rounded-lg border border-navy-800 bg-navy-950 p-3">
       <p className="text-[10px] font-medium uppercase tracking-wide text-sky-400">{label}</p>

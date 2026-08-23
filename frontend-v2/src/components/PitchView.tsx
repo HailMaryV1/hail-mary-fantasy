@@ -4,6 +4,7 @@ import Kit from "./Kit";
 import StatusPill from "./StatusPill";
 import FormPill from "./FormPill";
 import RotationRiskBadge from "./RotationRiskBadge";
+import HailMaryRatingBadge from "./HailMaryRatingBadge";
 import { shortenPlayerName } from "@/lib/playerName";
 import type { FormStatus } from "@/lib/formStatus";
 import type { RotationRiskInfo } from "@/lib/rotationRisk";
@@ -19,6 +20,10 @@ export type PitchPlayer = {
   // which no game actually has.
   price: number | null;
   score: number | null;
+  /** The 1-10 Hail Mary Rating (migration 0135) - what's actually shown
+   * on the chip; score above is a backend-only value now, still passed
+   * through for sort/tiebreak use by callers, never rendered directly. */
+  rating: number | null;
   lineup?: string | null;
   status?: string | null;
   // Real team news from fantasyfootballscout.co.uk (2026-08-19 user
@@ -178,7 +183,7 @@ export default function PitchView({
             (player.statText !== undefined ? (
               <span className="text-xs font-bold text-sky-300">{player.statText}</span>
             ) : (
-              player.score != null && <span className="text-xs font-bold text-sky-300">{player.score.toFixed(1)} pts</span>
+              player.rating != null && <HailMaryRatingBadge rating={player.rating} />
             ))}
           {player.statTiles !== undefined && (
             <span className="mt-0.5 flex flex-wrap items-center justify-center gap-0.5">

@@ -102,6 +102,22 @@ const CONFIDENCE_COLORS: Record<string, { bg: string; fg: string }> = {
   Low: { bg: "#451414", fg: "#f87171" },
 };
 
+// Hex-value mirror of hailMaryRating.ts's ratingTier() tone classes -
+// satori (this file's renderer) needs inline colors, not Tailwind
+// classNames, so the same 5-band scheme is duplicated here as hex pairs
+// rather than trying to resolve a Tailwind class string at render time.
+const RATING_TIER_COLORS: { min: number; label: string; bg: string; fg: string }[] = [
+  { min: 10, label: "Nailed On", bg: "#0f3d2e", fg: "#34d399" },
+  { min: 8, label: "Strong Pick", bg: "#0f3d3a", fg: "#2dd4bf" },
+  { min: 6, label: "Solid Option", bg: "#0c2f4a", fg: "#38bdf8" },
+  { min: 4, label: "Fringe Pick", bg: "#4a2c06", fg: "#fbbf24" },
+  { min: 1, label: "Longshot", bg: "#451414", fg: "#f87171" },
+];
+function ratingTierColors(rating: number | null): { label: string; bg: string; fg: string } | null {
+  if (rating == null) return null;
+  return RATING_TIER_COLORS.find((t) => rating >= t.min) ?? null;
+}
+
 export function formatKickoff(iso: string): string {
   return new Date(iso).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
@@ -113,7 +129,7 @@ export type PlayerCardFixture = {
   isHome: boolean;
 };
 
-export type PlayerCardTrendPoint = { gameweek: number; score: number };
+export type PlayerCardTrendPoint = { gameweek: number; score: number; rating: number | null };
 
 export type PlayerCardInput = {
   fullName: string;
@@ -127,6 +143,11 @@ export type PlayerCardInput = {
   hasBudget: boolean;
   gameweek: number | null;
   finalScore: number;
+  // The 1-10 Hail Mary Rating (migration 0135) - what's actually shown on
+  // the card; finalScore above is a backend-only value now, kept only to
+  // compute the underlying panels (e.g. Bookies-Say-style breakdown, if
+  // ever added here) - never rendered directly.
+  rating: number | null;
   confidenceLabel: "High" | "Medium" | "Low";
   logoDataUri: string | null;
   kitDataUri: string | null;
@@ -178,6 +199,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
     hasBudget,
     gameweek,
     finalScore,
+    rating,
     confidenceLabel,
     logoDataUri,
     kitDataUri,
@@ -248,13 +270,17 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
   const trendChart =
     trend.length >= 2
       ? (() => {
-          const scores = trend.map((t) => t.score);
-          const minScore = Math.min(...scores);
-          const maxScore = Math.max(...scores);
+          // Ratings only (score stays backend-only) - a missing rating
+          // (not yet recomputed for that gameweek) plots as 0, same
+          // "off the bottom of the scale" convention PlayerInfoPanel's
+          // own trend chart uses.
+          const ratings = trend.map((t) => t.rating ?? 0);
+          const minScore = Math.min(...ratings);
+          const maxScore = Math.max(...ratings);
           const range = maxScore - minScore || 1;
           const points = trend.map((t, i) => ({
             x: (i / (trend.length - 1)) * chartInnerWidth,
-            y: CHART_H - ((t.score - minScore) / range) * (CHART_H - 12) - 6,
+            y: CHART_H - (((t.rating ?? 0) - minScore) / range) * (CHART_H - 12) - 6,
           }));
           // Deterministic absolute positions, not a flex spacer - a flex:1
           // spacer inside an absolutely-positioned column turned out
@@ -267,7 +293,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
           const VALUE_LABEL_H = 22;
           const GW_LABEL_TOP = CHART_H + 10;
           return slot(TREND_PANEL_TOP, TREND_PANEL_H, { flexDirection: "column", padding: `${s(14)}px ${s(24)}px` }, [
-            label({ fontSize: s(14), color: NAVY[500], letterSpacing: s(2) }, "Projection Trend"),
+            label({ fontSize: s(14), color: NAVY[500], letterSpacing: s(2) }, "Rating Trend"),
             h(
               "div",
               {
@@ -299,7 +325,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
                       width: s(80),
                     },
                   },
-                  heading({ fontSize: s(16), color: "#ffffff", textAlign: "center" }, t.score.toFixed(1))
+                  heading({ fontSize: s(16), color: "#ffffff", textAlign: "center" }, t.rating != null ? String(t.rating) : "—")
                 ),
                 h(
                   "div",
@@ -471,24 +497,51 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
         ])
       : null,
 
-    // projected points - second, taller pre-drawn panel slot
+    // Hail Mary Rating - second, taller pre-drawn panel slot. finalScore
+    // (raw projected points) still drives this number's computation but
+    // is never itself rendered - see hailMaryRating.ts's own docstring.
     slot(POINTS_PANEL_TOP, POINTS_PANEL_H, { alignItems: "center", justifyContent: "space-between", padding: `0 ${s(30)}px` }, [
       h(
         "div",
         { style: { display: "flex", flexDirection: "column" } },
-        label({ fontSize: s(19), color: NAVY[500], letterSpacing: s(2) }, "Projected Points"),
-        heading({ fontSize: s(92), color: SKY[400], lineHeight: 1 }, finalScore.toFixed(1))
+        label({ fontSize: s(19), color: NAVY[500], letterSpacing: s(2) }, "Hail Mary Rating"),
+        h(
+          "div",
+          { style: { display: "flex", alignItems: "baseline", gap: s(8) } },
+          heading({ fontSize: s(92), color: SKY[400], lineHeight: 1 }, rating != null ? String(rating) : "—"),
+          label({ fontSize: s(28), color: NAVY[500], lineHeight: 1 }, "/10")
+        )
       ),
-      label(
-        {
-          fontSize: s(21),
-          color: confidence.fg,
-          backgroundColor: confidence.bg,
-          borderRadius: 999,
-          padding: `${s(10)}px ${s(20)}px`,
-          display: "flex",
-        },
-        `${confidenceLabel} confidence`
+      h(
+        "div",
+        { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: s(10) } },
+        label(
+          {
+            fontSize: s(21),
+            color: confidence.fg,
+            backgroundColor: confidence.bg,
+            borderRadius: 999,
+            padding: `${s(10)}px ${s(20)}px`,
+            display: "flex",
+          },
+          `${confidenceLabel} confidence`
+        ),
+        (() => {
+          const tier = ratingTierColors(rating);
+          return tier
+            ? label(
+                {
+                  fontSize: s(21),
+                  color: tier.fg,
+                  backgroundColor: tier.bg,
+                  borderRadius: 999,
+                  padding: `${s(10)}px ${s(20)}px`,
+                  display: "flex",
+                },
+                tier.label
+              )
+            : null;
+        })(),
       ),
     ]),
 

@@ -146,6 +146,7 @@ export async function GET(request: NextRequest) {
       hasBudget: hasBudget(gameSlug),
       gameweek: data.gameweek,
       finalScore: data.finalScore,
+      rating: data.rating,
       confidenceLabel: data.dataConfidence.label,
       logoDataUri,
       kitDataUri,

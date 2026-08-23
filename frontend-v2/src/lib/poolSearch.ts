@@ -28,6 +28,12 @@ export type PoolSearchRow = {
   price: number;
   competition: string | null;
   hail_mary_score: number | null;
+  /** The 1-10 within-position/gameweek/game rating (migration 0135) -
+   * this is what should be SHOWN to a user; hail_mary_score above is a
+   * backend-only value now (still real, still queried for sorting/
+   * tiebreaks, never displayed). Null until compute_projections.py's
+   * next run touches this exact player/gameweek row. */
+  hailMaryRating: number | null;
   goalProjected: number;
   assistProjected: number;
   bonusProjected: number;
@@ -141,6 +147,7 @@ export async function searchPool(params: {
     price: number | string;
     competition: string | null;
     hail_mary_score: number | string | null;
+    hail_mary_rating: number | null;
     goal_projected: number | string;
     assist_projected: number | string;
     bonus_projected: number | string;
@@ -179,6 +186,7 @@ export async function searchPool(params: {
     price: Number(r.price),
     competition: r.competition,
     hail_mary_score: r.hail_mary_score != null ? Number(r.hail_mary_score) : null,
+    hailMaryRating: r.hail_mary_rating,
     goalProjected: Number(r.goal_projected),
     assistProjected: Number(r.assist_projected),
     bonusProjected: Number(r.bonus_projected),

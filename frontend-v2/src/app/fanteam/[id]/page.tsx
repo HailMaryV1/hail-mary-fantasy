@@ -45,6 +45,9 @@ type PoolRow = {
   team_name: string;
   price: number;
   hail_mary_score: number | null;
+  // The 1-10 Hail Mary Rating (migration 0135) - real column on
+  // game_player_pool, same coalesce fallback as hail_mary_score above.
+  hail_mary_rating: number | null;
   lineup: string | null;
   status: string | null;
 };
@@ -201,6 +204,12 @@ export default async function FanTeamSquadPage({
           team_id: id.team_id,
           price: id.price,
           score: actuals.get(id.game_player_id)?.points ?? null,
+          // No real rating source here - this is a locked-past-gameweek
+          // squad resolved via resolvePlayerIdentities (real actual
+          // points), not the pool/projections rows the rating column
+          // lives on. Genuinely nothing to thread through, unlike score
+          // above (which has its own real actuals source).
+          rating: null,
           isCaptain: id.game_player_id === lock.snapshot.captainGamePlayerId,
           isViceCaptain: id.game_player_id === lock.snapshot.viceCaptainGamePlayerId,
           isStarting: sp.is_starting,
@@ -222,6 +231,11 @@ export default async function FanTeamSquadPage({
           team_id: p.team_id,
           price: Number(p.price),
           score: actuals.get(p.game_player_id)?.points ?? null,
+          // Real column on the same game_player_pool row already selected
+          // above - the latest/current rating (game_player_pool's own
+          // coalesce fallback), not a rating specific to viewedGameweek
+          // (no such historical rating is stored).
+          rating: p.hail_mary_rating,
           fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
           ...emptyStats,
         }))
@@ -253,6 +267,10 @@ export default async function FanTeamSquadPage({
     );
 
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+    // Parallel rating map, same real source (getProjectionsForPlayerIds's
+    // rows) as scoreByGamePlayerId above - null until compute_projections.py
+    // has rated this exact player/gameweek row, never faked.
+    const ratingByGamePlayerId = new Map<number, number | null>(scoreRows.map((r) => [r.game_player_id, r.hail_mary_rating]));
     const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
       scoreRows.map((r) => {
         const primaryStats = r.inputs?.fixtures?.[0]?.stats;
@@ -275,6 +293,7 @@ export default async function FanTeamSquadPage({
       team_id: p.team_id,
       price: Number(p.price),
       score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
+      rating: ratingByGamePlayerId.get(p.game_player_id) ?? null,
       isCaptain: p.game_player_id === squad.captain_game_player_id,
       isViceCaptain: p.game_player_id === squad.vice_captain_game_player_id,
       isStarting: p.is_starting,
@@ -322,6 +341,7 @@ export default async function FanTeamSquadPage({
       team_id: r.team_id,
       price: r.price,
       score: r.hail_mary_score,
+      rating: r.hailMaryRating,
       fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${r.team_id}:${viewedGameweek + i}`) ?? null),
       goalProjected: r.goalProjected,
       assistProjected: r.assistProjected,
@@ -345,11 +365,11 @@ export default async function FanTeamSquadPage({
   const currentCaptain = boardSquad.find((p) => p.isCaptain);
   const squadSummary = isPlanningView
     ? buildSquadSummary({
-        players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score })),
+        players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score, rating: p.rating })),
         totalProjectedPoints,
         teamValue,
         budgetRemaining: bank,
-        captain: currentCaptain ? { fullName: currentCaptain.full_name, score: currentCaptain.score ?? 0 } : null,
+        captain: currentCaptain ? { fullName: currentCaptain.full_name, score: currentCaptain.score ?? 0, rating: currentCaptain.rating } : null,
         // Fixture/health-derived reasoning and the forward-looking transfer
         // plan live only in the full Ask Mary analysis (runAskMaryAnalysis) -
         // deliberately not run on every squad-board page load, same reasoning

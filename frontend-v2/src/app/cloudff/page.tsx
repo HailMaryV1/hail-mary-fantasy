@@ -39,6 +39,10 @@ type PoolRow = {
   team_name: string;
   price: number;
   hail_mary_score: number | null;
+  // The 1-10 Hail Mary Rating (migration 0135) - already selected by this
+  // query's select("*") since game_player_pool's view carries it; just
+  // wasn't in this local type shape until now.
+  hail_mary_rating: number | null;
   ownership_pct: number | null;
 };
 
@@ -196,6 +200,12 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
           team_name: id.team_name,
           price: id.price,
           score: actuals.get(id.game_player_id)?.points ?? null,
+          // No real rating exists for a locked/actual-results view - the
+          // 1-10 rating (migration 0135) is only ever computed against a
+          // pre-match projection, never an after-the-fact real score, same
+          // reason emptyStats below hardcodes the projected-stat fields to
+          // 0 rather than reusing today's live pool numbers.
+          rating: null,
           fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${id.team_id}:${viewedGameweek + i}`) ?? null),
           ...emptyStats,
         }));
@@ -212,6 +222,9 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
           team_name: p.team_name,
           price: Number(p.price),
           score: actuals.get(p.game_player_id)?.points ?? null,
+          // Same reasoning as boardSquad above - no real rating for an
+          // actual-results view.
+          rating: null,
           fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
           ...emptyStats,
         }))
@@ -255,6 +268,12 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       )?.code ?? null;
 
     const scoreByGamePlayerId = new Map<number, number>(scoreRows.map((r) => [r.game_player_id, Number(r.hail_mary_score ?? 0)]));
+    // The 1-10 Hail Mary Rating (migration 0135) - same rows as
+    // scoreByGamePlayerId above, real data straight from
+    // getProjectionsForPlayerIds. Kept nullable (unlike score's ?? 0
+    // fallback) since a genuinely un-rated row should show as unrated, not
+    // as a fake rock-bottom rating.
+    const ratingByGamePlayerId = new Map<number, number | null>(scoreRows.map((r) => [r.game_player_id, r.hail_mary_rating]));
     const statsByGamePlayerId = new Map<number, { goalProjected: number; assistProjected: number; bonusProjected: number }>(
       scoreRows.map((r) => {
         const primaryStats = r.inputs?.fixtures?.[0]?.stats;
@@ -276,6 +295,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       team_name: p.team_name,
       price: Number(p.price),
       score: scoreByGamePlayerId.get(p.game_player_id) ?? null,
+      rating: ratingByGamePlayerId.get(p.game_player_id) ?? null,
       fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${p.team_id}:${viewedGameweek + i}`) ?? null),
       rotationRisk: rotationRiskByPlayerId.get(p.player_id) ?? null,
       ffscoutStatus: ffscoutStatusByPlayerId.get(p.player_id)?.status ?? null,
@@ -330,6 +350,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
       team_name: r.team_name,
       price: r.price,
       score: r.hail_mary_score,
+      rating: r.hailMaryRating,
       fixtures: Array.from({ length: 6 }, (_, i) => tilesByTeamGw.get(`${r.team_id}:${viewedGameweek + i}`) ?? null),
       goalProjected: r.goalProjected,
       assistProjected: r.assistProjected,
@@ -351,7 +372,7 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
   const totalProjectedPoints = boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
   const squadSummary = isPlanningView
     ? buildSquadSummary({
-        players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score })),
+        players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score, rating: p.rating })),
         totalProjectedPoints,
         teamValue,
         budgetRemaining: bank,

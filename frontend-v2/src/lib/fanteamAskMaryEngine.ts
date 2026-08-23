@@ -107,6 +107,11 @@ type PoolRow = {
   team_name: string;
   price: number;
   hail_mary_score: number | null;
+  // The 1-10 Hail Mary Rating (migration 0135) - real column on
+  // game_player_pool, same coalesce(current-gameweek, latest) fallback as
+  // hail_mary_score above. Threaded into every TransferCandidate built
+  // from this row, same source hail_mary_score already uses.
+  hail_mary_rating: number | null;
   lineup: string | null;
   status: string | null;
   form: number | null;
@@ -147,7 +152,18 @@ type WorkingSquadPlayer = {
   price: number;
 };
 
-type CaptaincyPick = { game_player_id: number; full_name: string; team_name: string; score: number; lineup: string | null };
+type CaptaincyPick = {
+  game_player_id: number;
+  full_name: string;
+  team_name: string;
+  score: number;
+  // The 1-10 Hail Mary Rating (migration 0135), same real
+  // game_player_pool source as score above - not yet displayed anywhere
+  // (that's a separate follow-up), just threaded through alongside score
+  // for when it is.
+  rating: number | null;
+  lineup: string | null;
+};
 
 export type AskMaryAnalysis = {
   squadPlayers: {
@@ -373,7 +389,17 @@ export async function runAskMaryAnalysis(
    * squads.
    */
   function optimalXITotal(squad: WorkingSquadPlayer[], scoreMapForStep: Map<number, number>): number {
-    const withScores = squad.map((p) => ({ game_player_id: p.game_player_id, position: p.position, score: avgFor(scoreMapForStep, p.game_player_id) }));
+    // rating: null throughout - avgFor is a multi-gameweek averaged
+    // hypothetical, not one real gameweek's rating, so suggestBestXI's
+    // rating-primary sort correctly falls back to plain score ranking
+    // here (never a real rating to compare, honestly represented as
+    // such rather than reusing a stale single-gameweek value).
+    const withScores = squad.map((p) => ({
+      game_player_id: p.game_player_id,
+      position: p.position,
+      score: avgFor(scoreMapForStep, p.game_player_id),
+      rating: null,
+    }));
     const best = suggestBestXI(withScores, formations);
     if (!best) return withScores.reduce((sum, p) => sum + p.score, 0);
 
@@ -434,6 +460,12 @@ export async function runAskMaryAnalysis(
         position: outPlayer.position,
         expectedPointsGain: realizedPointsGain ?? inCand.score - outScore,
         hailMaryScoreDiff: (inPoolRow?.hail_mary_score != null ? Number(inPoolRow.hail_mary_score) : 0) - (outPoolRow?.hail_mary_score != null ? Number(outPoolRow.hail_mary_score) : 0),
+        ratingGain:
+          inPoolRow?.hail_mary_rating != null && outPoolRow?.hail_mary_rating != null
+            ? inPoolRow.hail_mary_rating - outPoolRow.hail_mary_rating
+            : null,
+        incomingRating: inPoolRow?.hail_mary_rating ?? null,
+        outgoingRating: outPoolRow?.hail_mary_rating ?? null,
         fixtureSwingDiff: (inTeamRating?.swingValue ?? 0) - (outTeamRating?.swingValue ?? 0),
         priceDelta: inCand.price - outPlayer.price,
         incomingMinutesSecurity: LINEUP_SECURITY_SCORES[inPoolRow?.lineup ?? ""] ?? DEFAULT_SECURITY_SCORE,
@@ -477,7 +509,7 @@ export async function runAskMaryAnalysis(
             !boughtIds.has(p.game_player_id) &&
             !highRiskGamePlayerIds.has(p.game_player_id)
         )
-        .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: Number(p.price), score: avgFor(scoreMapForStep, p.game_player_id), position: p.position }));
+        .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: Number(p.price), score: avgFor(scoreMapForStep, p.game_player_id), rating: p.hail_mary_rating, position: p.position }));
       // Pareto-prune before capping to 15 - see transferMatching.ts's
       // pruneDominatedCandidates. Without this, several near-identical
       // low scorers could fill the whole top-15 at inflated prices,
@@ -608,7 +640,7 @@ export async function runAskMaryAnalysis(
     for (let slot = 0; slot < MAX_TRANSFERS_PER_STEP; slot++) {
       const poolCandidates: TransferCandidate[] = (pool ?? [])
         .filter((p) => !soldIds.has(p.game_player_id))
-        .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: Number(p.price), score: avgFor(scoreMapForStep, p.game_player_id), position: p.position, formStatus: p.formStatus }));
+        .map((p) => ({ gamePlayerId: p.game_player_id, fullName: p.full_name, teamId: p.team_id, teamName: p.team_name, price: Number(p.price), score: avgFor(scoreMapForStep, p.game_player_id), rating: p.hail_mary_rating, position: p.position, formStatus: p.formStatus }));
 
       const currentXITotal = optimalXITotal(workingSquad, scoreMapForStep);
 
@@ -618,7 +650,16 @@ export async function runAskMaryAnalysis(
         const outScore = avgFor(scoreMapForStep, outPlayer.game_player_id);
         const legalCandidates = findLegalReplacementsForOutgoing(
           poolCandidates,
-          { gamePlayerId: outPlayer.game_player_id, fullName: outPlayer.full_name, teamId: outPlayer.team_id, teamName: outPlayer.team_name, price: outPlayer.price, score: outScore, position: outPlayer.position },
+          {
+            gamePlayerId: outPlayer.game_player_id,
+            fullName: outPlayer.full_name,
+            teamId: outPlayer.team_id,
+            teamName: outPlayer.team_name,
+            price: outPlayer.price,
+            score: outScore,
+            rating: poolByGamePlayerId.get(outPlayer.game_player_id)?.hail_mary_rating ?? null,
+            position: outPlayer.position,
+          },
           workingSquadIds,
           workingBudget,
           workingClubCounts,
@@ -868,7 +909,14 @@ export async function runAskMaryAnalysis(
   }
   const captaincyPool: CaptaincyPick[] = squadPlayers
     .filter((p) => p.is_starting)
-    .map((p) => ({ game_player_id: p.game_player_id, full_name: p.full_name, team_name: p.team_name, lineup: p.lineup, score: avgForCaptain(p.game_player_id) }))
+    .map((p) => ({
+      game_player_id: p.game_player_id,
+      full_name: p.full_name,
+      team_name: p.team_name,
+      lineup: p.lineup,
+      score: avgForCaptain(p.game_player_id),
+      rating: poolByGamePlayerId.get(p.game_player_id)?.hail_mary_rating ?? null,
+    }))
     .sort((a, b) => b.score - a.score);
   const bestCaptain = captaincyPool[0] ?? null;
   const viceCaptain = captaincyPool[1] ?? null;

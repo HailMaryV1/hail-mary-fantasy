@@ -243,6 +243,10 @@ export type EngineExplanation = {
   price: number;
   gameweek: number | null;
   finalScore: number;
+  /** The 1-10 Hail Mary Rating (migration 0135) - what should be shown
+   * to a user; finalScore above is a backend-only value now. Null until
+   * compute_projections.py's next run touches this row. */
+  rating: number | null;
   pointsPer90: number;
   gamesNinety: number;
   explanation: string;
@@ -321,6 +325,7 @@ export type SummaryRow = {
   team_name: string;
   price: number;
   hail_mary_score: number;
+  hail_mary_rating: number | null;
   gameweek: number | null;
   inputs: RawInputs | null;
 };
@@ -381,6 +386,7 @@ export function parseEngineExplanation(gameSlug: string, row: SummaryRow): Engin
     price: Number(row.price),
     gameweek: row.gameweek,
     finalScore: Number(row.hail_mary_score),
+    rating: row.hail_mary_rating,
     pointsPer90: inputs.points_per_90 ?? 0,
     gamesNinety: inputs.games90 ?? 0,
     explanation: inputs.explanation ?? "",
@@ -498,7 +504,7 @@ export async function fetchEngineExplanation(
 ): Promise<EngineExplanation | null> {
   const { data } = await supabase
     .from("player_projection_summary")
-    .select("game_player_id, full_name, position, team_name, price, hail_mary_score, gameweek, inputs")
+    .select("game_player_id, full_name, position, team_name, price, hail_mary_score, hail_mary_rating, gameweek, inputs")
     .eq("game_slug", gameSlug)
     .eq("game_player_id", gamePlayerId)
     .maybeSingle<SummaryRow>();
@@ -535,12 +541,12 @@ export async function fetchEngineExplanationForGameweek(
       .single<{ id: number; position_code: string; price: number; players: { full_name: string; teams: { name: string } } }>(),
     supabase
       .from("projections")
-      .select("hail_mary_score, gameweek, inputs")
+      .select("hail_mary_score, hail_mary_rating, gameweek, inputs")
       .eq("game_player_id", gamePlayerId)
       .eq("gameweek", gameweek)
       .order("created_at", { ascending: false })
       .limit(1)
-      .maybeSingle<{ hail_mary_score: number; gameweek: number; inputs: RawInputs | null }>(),
+      .maybeSingle<{ hail_mary_score: number; hail_mary_rating: number | null; gameweek: number; inputs: RawInputs | null }>(),
   ]);
   if (!playerRow || !projRow) return null;
 
@@ -551,6 +557,7 @@ export async function fetchEngineExplanationForGameweek(
     team_name: playerRow.players.teams.name,
     price: Number(playerRow.price),
     hail_mary_score: Number(projRow.hail_mary_score),
+    hail_mary_rating: projRow.hail_mary_rating,
     gameweek: projRow.gameweek,
     inputs: projRow.inputs,
   };

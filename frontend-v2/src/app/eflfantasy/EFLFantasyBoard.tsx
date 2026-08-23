@@ -9,6 +9,7 @@ import Kit from "@/components/Kit";
 import GameweekSwitcher from "@/components/GameweekSwitcher";
 import OddsRefreshButton from "@/components/OddsRefreshButton";
 import SaveTeamButton from "@/components/SaveTeamButton";
+import HailMaryRatingBadge from "@/components/HailMaryRatingBadge";
 import ProjectionFreshness from "@/components/ProjectionFreshness";
 import { searchPool } from "@/lib/poolSearch";
 import { isLegalPositionSwap } from "@/lib/eflFormation";
@@ -54,6 +55,14 @@ export type BoardPlayer = RealPlayerStats & {
   team_name: string;
   teamId: number;
   score: number | null;
+  // Hail Mary Rating (migration 0135) - the 1-10 within-position/gameweek/
+  // game percentile this score derives from. Threaded alongside score
+  // everywhere score already flows (data plumbing only for now - see
+  // HailMaryRatingBadge.tsx/hailMaryRating.ts for the not-yet-wired
+  // display layer). Nullable for the same reason score is: no real value
+  // until compute_projections.py has actually touched this player/
+  // gameweek row.
+  rating: number | null;
   fixtures: (FixtureTile | null)[];
   competition?: string | null;
   // Live ownership % (2026-08-10 user request) - fantasy.efl.com's own
@@ -72,6 +81,9 @@ export type BoardClub = {
   club_name: string;
   teamId: number;
   score: number | null;
+  // See BoardPlayer.rating's docstring above - same convention, same
+  // migration 0135 source.
+  rating: number | null;
   fixtures: (FixtureTile | null)[];
   // Full (non-abbreviated) opponent name for the "Why These Clubs" prose
   // line only - the colour-coded pills use fixtures[]'s abbreviated
@@ -93,6 +105,9 @@ export type ReservePick = {
   team_name: string;
   teamId: number;
   score: number | null;
+  // See BoardPlayer.rating's docstring above - same convention, same
+  // migration 0135 source.
+  rating: number | null;
   fixtures: (FixtureTile | null)[];
 };
 const RESERVE_POSITIONS: ReservePosition[] = ["DEF", "MID", "FWD"];
@@ -102,7 +117,7 @@ const FIXTURE_MODE_COUNT: Record<string, number> = { next1: 1, next2: 2, next3: 
 
 type SortBy = "pts" | "owned" | "real_pts" | "tackles" | "clearances" | "blocks" | "interceptions" | "key_passes" | "shots_on_target" | "saves";
 const SORT_OPTIONS: [SortBy, string][] = [
-  ["pts", "Projected Pts"],
+  ["pts", "Rating"],
   ["real_pts", "Total Pts (real)"],
   ["owned", "% Owned"],
   ["tackles", "Tackles"],
@@ -330,6 +345,7 @@ export default function EFLFantasyBoard({
             team_name: r.team_name,
             teamId: r.team_id,
             score: r.hail_mary_score,
+            rating: r.hailMaryRating,
             competition: r.competition,
             fixtures: buildFixtures(r.team_id),
             ownershipPct: r.ownershipPct,
@@ -369,6 +385,7 @@ export default function EFLFantasyBoard({
             club_name: r.team_name,
             teamId: r.team_id,
             score: r.hail_mary_score,
+            rating: r.hailMaryRating,
             competition: r.competition,
             fixtures: buildFixtures(r.team_id),
           }))
@@ -419,7 +436,8 @@ export default function EFLFantasyBoard({
     is_starting: true,
     price: null,
     score: p.score,
-    statText: FIXTURE_TOGGLE_ENABLED && displayMode in FIXTURE_MODE_COUNT ? undefined : `${p.score != null ? p.score.toFixed(1) : "-"} pts`,
+    rating: p.rating,
+    statText: FIXTURE_TOGGLE_ENABLED && displayMode in FIXTURE_MODE_COUNT ? undefined : `${p.rating != null ? p.rating : "-"}/10`,
     statTiles:
       FIXTURE_TOGGLE_ENABLED && displayMode in FIXTURE_MODE_COUNT
         ? fixtureTilesFor(p.fixtures, FIXTURE_MODE_COUNT[displayMode])
@@ -434,12 +452,13 @@ export default function EFLFantasyBoard({
     team_name: c.club_name,
     is_starting: true,
     price: null,
-    statText: FIXTURE_TOGGLE_ENABLED && displayMode in FIXTURE_MODE_COUNT ? undefined : `${c.score != null ? c.score.toFixed(1) : "-"} pts`,
+    statText: FIXTURE_TOGGLE_ENABLED && displayMode in FIXTURE_MODE_COUNT ? undefined : `${c.rating != null ? c.rating : "-"}/10`,
     statTiles:
       FIXTURE_TOGGLE_ENABLED && displayMode in FIXTURE_MODE_COUNT
         ? fixtureTilesFor(c.fixtures, FIXTURE_MODE_COUNT[displayMode])
         : pitchFixtureTile(c.fixtures[0]),
     score: c.score,
+    rating: c.rating,
     isEmpty: pendingOutClubIds.has(c.game_player_id),
     emptyLabel: `Sold ${c.club_name}`,
   }));
@@ -531,6 +550,7 @@ export default function EFLFantasyBoard({
                         team_name: menuPlayer.team_name,
                         teamId: menuPlayer.teamId,
                         score: menuPlayer.score,
+                        rating: menuPlayer.rating,
                         fixtures: menuPlayer.fixtures,
                       }),
                   },
@@ -658,6 +678,7 @@ export default function EFLFantasyBoard({
       team_name: outgoing.team_name,
       teamId: outgoing.teamId,
       score: outgoing.score,
+      rating: outgoing.rating,
       fixtures: outgoing.fixtures,
     };
     startTransferTransition(async () => {
@@ -892,7 +913,7 @@ export default function EFLFantasyBoard({
                               ) : (
                                 <span className="text-[9px] text-navy-700">-</span>
                               )}
-                              <span className="text-[10px] text-navy-500">{pick.score != null ? pick.score.toFixed(1) : "-"}</span>
+                              <span className="text-[10px] text-navy-500">{pick.rating != null ? `${pick.rating}/10` : "-"}</span>
                             </div>
                             <div className="mt-1 flex items-center gap-1.5">
                               <button
@@ -1042,7 +1063,7 @@ export default function EFLFantasyBoard({
                     <thead>
                       <tr className="text-navy-500">
                         <th className="pb-2 pr-2 font-medium">Player</th>
-                        <th className="pb-2 pr-2 font-medium" title="Projected points for this gameweek">Proj</th>
+                        <th className="pb-2 pr-2 font-medium" title="Hail Mary Rating for this gameweek">Rating</th>
                         <th className="pb-2 pr-2 font-medium" title="Real points scored so far this season">Total Pts</th>
                         {Array.from({ length: 6 }, (_, i) => (
                           <th key={i} className="px-1 pb-2 text-center font-medium">
@@ -1095,7 +1116,9 @@ export default function EFLFantasyBoard({
                                 </div>
                               </div>
                             </td>
-                            <td className="py-1.5 pr-2 text-sky-400">{p.score != null ? p.score.toFixed(1) : "-"}</td>
+                            <td className="py-1.5 pr-2 text-sky-400">
+                              <HailMaryRatingBadge rating={p.rating} />
+                            </td>
                             <td className="py-1.5 pr-2 text-white">{p.realTotalPoints != null ? p.realTotalPoints.toFixed(1) : "-"}</td>
                             {p.fixtures.slice(0, 6).map((f, i) => (
                               <td key={i} className="px-1 py-1.5 text-center">
@@ -1124,7 +1147,7 @@ export default function EFLFantasyBoard({
                     <thead>
                       <tr className="text-navy-500">
                         <th className="pb-2 pr-2 font-medium">Club</th>
-                        <th className="pb-2 pr-2 font-medium">Pts</th>
+                        <th className="pb-2 pr-2 font-medium">Rating</th>
                         {Array.from({ length: 6 }, (_, i) => (
                           <th key={i} className="px-1 pb-2 text-center font-medium">
                             GW{viewedGameweek + i}
@@ -1169,7 +1192,9 @@ export default function EFLFantasyBoard({
                                 </div>
                               </div>
                             </td>
-                            <td className="py-1.5 pr-2 text-sky-400">{c.score != null ? c.score.toFixed(1) : "-"}</td>
+                            <td className="py-1.5 pr-2 text-sky-400">
+                              <HailMaryRatingBadge rating={c.rating} />
+                            </td>
                             {c.fixtures.slice(0, 6).map((f, i) => (
                               <td key={i} className="px-1 py-1.5 text-center">
                                 {f ? (

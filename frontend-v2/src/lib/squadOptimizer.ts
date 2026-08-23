@@ -8,12 +8,19 @@ export type Formation = { code: string; gk_count: number; def_count: number; mid
  * handful) then finds the best formation too.
  */
 export function suggestBestXI(
-  players: { game_player_id: number; position: "GK" | "DEF" | "MID" | "FWD"; score: number }[],
+  players: { game_player_id: number; position: "GK" | "DEF" | "MID" | "FWD"; score: number; rating: number | null }[],
   formations: Formation[]
 ): { formationCode: string; startingGamePlayerIds: number[]; total: number } | null {
   const byPosition: Record<string, typeof players> = { GK: [], DEF: [], MID: [], FWD: [] };
   players.forEach((p) => byPosition[p.position].push(p));
-  Object.values(byPosition).forEach((list) => list.sort((a, b) => b.score - a.score));
+  // Rating-primary, score-tiebreak - safe here since every comparison is
+  // WITHIN one position (see hailMaryRating.ts's own docstring on why
+  // ratings can't be compared across positions). The cross-position
+  // `total` below stays a sum of raw scores unchanged - summing ratings
+  // across positions would make formation comparison worse, and this
+  // total is never itself shown to a user (whatever's displayed is a
+  // separate, deliberate decision - see PlayerInfoPanel/board files).
+  Object.values(byPosition).forEach((list) => list.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0) || b.score - a.score));
 
   let best: { formationCode: string; startingGamePlayerIds: number[]; total: number } | null = null;
   for (const f of formations) {
@@ -51,13 +58,16 @@ export function suggestBestXI(
  * recommending a pick the real site would immediately reject.
  */
 export function suggestBestClubs(
-  clubs: { game_player_id: number; score: number }[],
+  clubs: { game_player_id: number; score: number; rating: number | null }[],
   pickCountByGamePlayerId: Map<number, number>,
   count = 2
 ): number[] {
+  // CLUB is ranked as its own independent group (never mixed with GK/DEF/
+  // MID/FWD - confirmed via get_top_rated_players), so rating-primary is
+  // safe here too, same reasoning as suggestBestXI above.
   return clubs
     .filter((c) => (pickCountByGamePlayerId.get(c.game_player_id) ?? 0) < 5)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0) || b.score - a.score)
     .slice(0, count)
     .map((c) => c.game_player_id);
 }
