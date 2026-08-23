@@ -2400,6 +2400,117 @@ def data_confidence_label(score):
     return "Low"
 
 
+def modular_coverage(module_has_data, module_weights):
+    """0-100: what fraction of this position's CONFIGURED module weight
+    was satisfied by a real value this gameweek - the coverage half of
+    compute_data_confidence, deliberately WITHOUT its historical-sample
+    damping. Sample size (games90) measures something different - how
+    much a player's own history is worth trusting - from whether this
+    gameweek's actual signal sources are present, and conflating them
+    breaks the Hail Mary Rating's real-odds/confidence eligibility bar
+    (is_rating_eligible) early in a season: games90 sits near 0 for
+    EVERY player alike right after kickoff (confirmed live 2026-08-23 -
+    it capped compute_data_confidence at 39/100 for Haaland, same as a
+    genuinely thin-data player, wiping out ratings league-wide), which
+    isn't a real data-quality signal at that point, just a season-age
+    artifact every player shares equally."""
+    if not module_weights:
+        return 0
+    total_weight = sum(module_weights.values())
+    if total_weight <= 0:
+        return 0
+    available_weight = sum(weight for module, weight in module_weights.items() if module_has_data.get(module))
+    return round(100 * max(0.0, min(1.0, available_weight / total_weight)))
+
+
+# Real user decision 2026-08-23: a player with no real market backing
+# their projection ("estimated"/"unavailable" bookmaker_data_source) and
+# poor module coverage should never get a Hail Mary Rating at all - "I
+# don't like the fallback because it throws in some right rubbish".
+# Gated on modular_coverage (module availability only), not
+# compute_data_confidence's games90-damped score - see modular_coverage's
+# own docstring for why. Applies to the rating only, never to
+# hail_mary_score itself (Ask Mary's cross-position captaincy/booster
+# math, and the squad-total point figures, still need a real number for
+# every owned player regardless of data quality - see this file's other
+# "never fake a number, but don't refuse to produce one either" spots).
+MIN_RATING_CONFIDENCE = 50
+
+# EFL Fantasy's real pool is mostly Championship/League One/League Two -
+# The Odds API/SportMonks real coverage is Premier League (+major cups/
+# European competitions) only (see reference_hail_mary_infra memory) -
+# real bookmaker odds essentially never exist for those tiers. Requiring
+# real odds there would leave most position groups empty most
+# gameweeks - real user decision 2026-08-23: loosen the bar to
+# confidence-only for this one game; every other game (whose pools are
+# entirely real Premier League players) still requires both.
+GAMES_REQUIRING_REAL_ODDS = {"dreamteam", "fanteam", "cloudff"}
+
+
+def has_real_bookmaker_signal(module_detail):
+    """True if at least one of this player's position-relevant modular
+    stats (has a real points_each - not applicable to this position) is
+    backed by a REAL bookmaker market observation, not an estimated/
+    scaled baseline or nothing at all - see bookmaker_data_source's own
+    real/estimated/unavailable docstring."""
+    if not module_detail:
+        return False
+    return any(
+        detail.get("points_each") is not None and detail.get("bookmaker_data_source") == "real"
+        for detail in module_detail.values()
+    )
+
+
+def has_recent_form_signal(module_detail):
+    """True if at least one of this player's position-relevant modular
+    stats has a REAL Recent Form rate behind it - recency-weighted
+    performance from this season's own completed gameweeks (see
+    build_recent_form_rates/compute_recent_form_stat), not a guess. Real
+    user decision 2026-08-23: "if there is enough recent data... this
+    should be used in every instance... it has to have some reason to
+    predict a player doing well" - real observed recent-season stats are
+    exactly that, same "genuine signal, not estimated" bar as
+    has_real_bookmaker_signal, just a different real source. Null (not
+    yet a real signal) until enough of the current season has actually
+    been played - Recent Form's own zero-drift gate, not a bug - so
+    early in a season (goalscorer/assist bookmaker markets also not open
+    yet at that point - see GAMES_REQUIRING_REAL_ODDS) some position
+    groups will still legitimately have no eligible players for a few
+    gameweeks, same honest "no fabricated rating" behavior as everywhere
+    else."""
+    if not module_detail:
+        return False
+    return any(
+        detail.get("points_each") is not None and detail.get("modules", {}).get("recent_form", {}).get("raw_rate") is not None
+        for detail in module_detail.values()
+    )
+
+
+def is_rating_eligible(game_slug, coverage_score, uses_real_odds, uses_recent_form):
+    if coverage_score < MIN_RATING_CONFIDENCE:
+        return False
+    if game_slug in GAMES_REQUIRING_REAL_ODDS and not (uses_real_odds or uses_recent_form):
+        return False
+    return True
+
+
+def clear_ratings(cur, projection_ids):
+    """Explicitly null out hail_mary_rating for rows that don't meet
+    is_rating_eligible this run - a rating earned on a past run (real
+    odds/confidence existed then) must not silently survive once they
+    stop being real, so this is a real UPDATE every run touches, not a
+    skip. Never fakes a number - matches every other rating write's
+    "null until it's real" rule."""
+    if not projection_ids:
+        return
+    psycopg2.extras.execute_values(
+        cur,
+        "update projections set hail_mary_rating = null from (values %s) as data(id) where projections.id = data.id",
+        [(pid,) for pid in projection_ids],
+        template="(%s)",
+    )
+
+
 def build_module_detail_report(module_rates_by_stat, position, scoring_rules, expected_minutes_fraction, player_id, fixture, hub_features):
     """The Engine Validation report's core per-stat, per-module table -
     see frontend/src/lib/engineExplainability.ts, the shared TS layer
@@ -2705,6 +2816,7 @@ def compute_club_scores(cur, game_id, algo_id, fixtures_by_player, position_avg_
     )
     written = 0
     club_rating_rows = []
+    unrated_club_projection_ids = []
     for game_player_id, player_id in cur.fetchall():
         club_fixtures = fixtures_by_player.get(player_id, [])
         if not club_fixtures:
@@ -2744,12 +2856,23 @@ def compute_club_scores(cur, game_id, algo_id, fixtures_by_player, position_avg_
             "explanation": f"Projects {score:.1f} pts from real win/draw/clean-sheet probabilities for this fixture.",
         }
         projection_id = upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
-        club_rating_rows.append((projection_id, "CLUB", score))
+        # CLUB rows have no data_confidence/module_detail concept (see
+        # this function's own inputs shape) - probability_source on the
+        # primary fixture IS the real-vs-fallback signal here, same
+        # "real odds only" bar as every other rated stat (2026-08-23 user
+        # decision), applied regardless of GAMES_REQUIRING_REAL_ODDS since
+        # real match win/draw odds either exist for this fixture or they
+        # don't - there's no separate confidence score to loosen instead.
+        if fixture_breakdown and fixture_breakdown[0]["probability_source"] == "real_odds":
+            club_rating_rows.append((projection_id, "CLUB", score))
+        else:
+            unrated_club_projection_ids.append(projection_id)
         written += 1
     # CLUB is just another position bucket for rating purposes - ranked
     # independently, never mixed with GK/DEF/MID/FWD (see assign_ratings'
     # own docstring).
     write_ratings(cur, club_rating_rows)
+    clear_ratings(cur, unrated_club_projection_ids)
     print(f"Wrote {written} club projections (real win/draw/clean-sheet odds x CLUB scoring matrix).")
 
 
@@ -3186,6 +3309,7 @@ def main():
 
         written = 0
         rating_rows = []
+        unrated_projection_ids = []
         for game_player_id, position, player_id in players:
             player_fixtures = fixtures_by_player.get(player_id, [])
             if not player_fixtures:
@@ -3592,7 +3716,24 @@ def main():
                         )
 
             projection_id = upsert_projection(cur, algo_id, game_player_id, gameweek, period_start, period_end, score, inputs)
-            rating_rows.append((projection_id, position, score))
+            # Real user decision 2026-08-23: a rating is only earned with
+            # real bookmaker odds OR real Recent Form backing it (either
+            # is a genuine observed signal, not a guess - except EFL
+            # Fantasy, whose pool structurally never gets real odds - see
+            # GAMES_REQUIRING_REAL_ODDS) and reasonable module coverage -
+            # everyone else stays null (never a rating built on "rubbish"
+            # estimated/fallback data), same rule this file already
+            # applies to every other real-vs-fabricated number.
+            rating_eligible = is_rating_eligible(
+                game_slug,
+                modular_coverage(module_has_data, module_weights_by_position.get(position, {})),
+                has_real_bookmaker_signal(primary_module_detail),
+                has_recent_form_signal(primary_module_detail),
+            )
+            if rating_eligible:
+                rating_rows.append((projection_id, position, score))
+            else:
+                unrated_projection_ids.append(projection_id)
             written += 1
 
         # Hail Mary Rating - every player in `players` has now been
@@ -3600,6 +3741,7 @@ def main():
         # WHOLE position/gameweek/game pool exists to rank against. See
         # assign_ratings'/write_ratings' own docstrings.
         write_ratings(cur, rating_rows)
+        clear_ratings(cur, unrated_projection_ids)
 
         if game_slug == "eflfantasy" and use_v2:
             compute_club_scores(
