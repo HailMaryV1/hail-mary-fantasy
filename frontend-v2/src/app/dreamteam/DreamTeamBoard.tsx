@@ -67,23 +67,28 @@ export type BoardPlayer = {
   // request, see migration 0127).
   ffscoutDetail?: string | null;
   ffscoutExpectedReturnDate?: string | null;
+  // Live ownership % (2026-08-23 user request - "feed the ownership data
+  // in also for Dream Team and FanTeam") - Dream Team's own players feed
+  // has a real percentSelected field, same as EFL Fantasy's, just never
+  // read until now (see import_dreamteam.py). Optional (not just
+  // nullable), same convention as rotationRisk above - only ever
+  // populated for pool rows, never squad members.
+  ownershipPct?: number | null;
 };
 
 export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain">;
 
 type Booster = "goal_bonus" | "twelfth_man" | "max_captain";
 type DisplayMode = "next1" | "next2" | "next3" | "pts" | "pred";
-type SortBy = "pts" | "goals" | "assists" | "bonus" | "price";
+type SortBy = "pts" | "goals" | "assists" | "bonus" | "price" | "owned";
 
-// % Owned isn't offered here - Dream Team's real feed has no such field
-// (confirmed live 2026-08-10), and this app never shows a made-up number
-// in place of one. Price is real (a genuine budget game), so that one is.
 const SORT_OPTIONS: [SortBy, string][] = [
   ["pts", "Rating"],
   ["goals", "Goals"],
   ["assists", "Assists"],
   ["bonus", "Bonus"],
   ["price", "Price"],
+  ["owned", "% Owned"],
 ];
 const VALUE_BANDS = [1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 7, 8.5];
 
@@ -97,6 +102,8 @@ function sortValue(p: PoolPlayer, sortBy: SortBy): number {
       return p.bonusProjected;
     case "price":
       return p.price;
+    case "owned":
+      return p.ownershipPct ?? -Infinity;
     case "pts":
     default:
       return p.score ?? -Infinity;
@@ -334,6 +341,7 @@ export default function DreamTeamBoard({
           ffscoutDetail: r.ffscoutDetail,
           ffscoutExpectedReturnDate: r.ffscoutExpectedReturnDate,
           rotationRisk: r.rotationRisk,
+          ownershipPct: r.ownershipPct,
         }))
       );
       setPoolTotalCount(result.totalCount);

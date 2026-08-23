@@ -414,11 +414,18 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
             (game_id, player_id, external_id),
         )
         row = cur.fetchone()
+        # selectedRatio: FanTeam's own live ownership % (2026-08-23 user
+        # request - "feed the ownership data in also for Dream Team and
+        # FanTeam"), a string percentage already present in every
+        # playerChoices entry - missing entirely for a player nobody's
+        # picked yet, never treat that absence as a real 0.
+        ownership_pct = float(pc["selectedRatio"]) if pc.get("selectedRatio") is not None else None
         if row:
             game_player_id = row[0]
             cur.execute(
-                "update game_players set external_id = %s, position_code = %s, price = %s, is_active = true, updated_at = now() where id = %s",
-                (external_id, live_position, pc["price"], game_player_id),
+                "update game_players set external_id = %s, position_code = %s, price = %s, is_active = true, "
+                "ownership_pct = %s, updated_at = now() where id = %s",
+                (external_id, live_position, pc["price"], ownership_pct, game_player_id),
             )
         else:
             live_team_name = team_name_by_id.get(live_team_id, "an unknown club")
@@ -431,14 +438,14 @@ def import_players(cur, game_id, players_data, team_id_by_real_id):
             )
             cur.execute(
                 """
-                insert into game_players (game_id, player_id, external_id, position_code, price, is_active)
-                values (%s, %s, %s, %s, %s, true)
+                insert into game_players (game_id, player_id, external_id, position_code, price, is_active, ownership_pct)
+                values (%s, %s, %s, %s, %s, true, %s)
                 on conflict (game_id, external_id) do update
                     set player_id = excluded.player_id, position_code = excluded.position_code, price = excluded.price,
-                        is_active = true, updated_at = now()
+                        is_active = true, ownership_pct = excluded.ownership_pct, updated_at = now()
                 returning id
                 """,
-                (game_id, player_id, external_id, live_position, pc["price"]),
+                (game_id, player_id, external_id, live_position, pc["price"], ownership_pct),
             )
             game_player_id = cur.fetchone()[0]
 

@@ -44,9 +44,14 @@ export type PoolSearchRow = {
   goalProjected: number;
   assistProjected: number;
   bonusProjected: number;
-  /** Live ownership % (2026-08-10 user request) - only real for EFL
-   * Fantasy and Cloud FF (see migration 0114's docstring); null on
-   * Dream Team/FanTeam, whose real feeds have no such field. */
+  /** Live ownership % (2026-08-10 user request, extended to Dream Team/
+   * FanTeam 2026-08-23) - real for all 4 games now: EFL Fantasy/Cloud FF
+   * from their own percentSelected/Ownership fields (migration 0114),
+   * Dream Team from percentSelected (import_dreamteam.py), FanTeam from
+   * selectedRatio (import_fanteam_live.py). Null only when a game's
+   * import hasn't run since this field started being captured, or a
+   * player genuinely has zero picks and the source omits the key
+   * entirely rather than sending a real 0. */
   ownershipPct: number | null;
   /** Real stats (2026-08-19 user request, mirroring fantasy.efl.com's own
    * player popup) - see migration 0121's docstring. realTotalPoints is a

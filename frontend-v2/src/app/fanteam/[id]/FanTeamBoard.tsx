@@ -59,6 +59,13 @@ export type BoardPlayer = {
   ffscoutStartProbability?: number | null;
   ffscoutDetail?: string | null;
   ffscoutExpectedReturnDate?: string | null;
+  // Live ownership % (2026-08-23 user request - "feed the ownership data
+  // in also for Dream Team and FanTeam") - FanTeam's own playerChoices
+  // feed has a real selectedRatio field, just never read until now (see
+  // import_fanteam_live.py). Optional (not just nullable), same
+  // convention as rotationRisk above - only ever populated for pool
+  // rows, never squad members.
+  ownershipPct?: number | null;
 };
 
 export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain" | "isStarting" | "benchOrder">;
@@ -66,17 +73,15 @@ export type PoolPlayer = Omit<BoardPlayer, "isCaptain" | "isViceCaptain" | "isSt
 export type Formation = { code: string; gk_count: number; def_count: number; mid_count: number; fwd_count: number };
 
 type DisplayMode = "next1" | "next2" | "next3" | "pts" | "pred";
-type SortBy = "pts" | "goals" | "assists" | "bonus" | "price";
+type SortBy = "pts" | "goals" | "assists" | "bonus" | "price" | "owned";
 
-// % Owned isn't offered here - FanTeam's real feed has no such field
-// (confirmed - see swingOpportunity.ts), and this app never shows a
-// made-up number in place of one.
 const SORT_OPTIONS: [SortBy, string][] = [
   ["pts", "Rating"],
   ["goals", "Goals"],
   ["assists", "Assists"],
   ["bonus", "Bonus"],
   ["price", "Price"],
+  ["owned", "% Owned"],
 ];
 const VALUE_BANDS = [4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 9, 10, 12, 14];
 
@@ -90,6 +95,8 @@ function sortValue(p: PoolPlayer, sortBy: SortBy): number {
       return p.bonusProjected;
     case "price":
       return p.price;
+    case "owned":
+      return p.ownershipPct ?? -Infinity;
     case "pts":
     default:
       return p.score ?? -Infinity;
@@ -416,6 +423,7 @@ export default function FanTeamBoard({
           ffscoutDetail: r.ffscoutDetail,
           ffscoutExpectedReturnDate: r.ffscoutExpectedReturnDate,
           rotationRisk: r.rotationRisk,
+          ownershipPct: r.ownershipPct,
         }))
       );
       setPoolTotalCount(result.totalCount);

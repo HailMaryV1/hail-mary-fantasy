@@ -46,7 +46,8 @@ export type BoardPlayer = {
   bonusProjected: number;
   // Live ownership % (2026-08-10 user request) - Cloud FF's own
   // getPlayerStats endpoint has a real, confirmed-live "Ownership" field
-  // (e.g. Haaland at 92.8%), unlike Dream Team/FanTeam which have none.
+  // (e.g. Haaland at 92.8%). Dream Team and FanTeam gained their own
+  // real ownership sources 2026-08-23 (DreamTeamBoard.tsx/FanTeamBoard.tsx).
   // Optional (not just nullable) same as rotationRisk above - only ever
   // populated for pool rows, never on squad members, so every squad-
   // player construction site doesn't need to thread through a value that

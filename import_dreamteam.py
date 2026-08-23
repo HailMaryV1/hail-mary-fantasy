@@ -363,11 +363,18 @@ def import_players(cur, game_id, players_data):
         # so each game must store its own canonical value rather than one
         # shared players.position clobbered by whichever importer ran last.
         native_position = canonical_position(p["position"])
+        # percentSelected: Dream Team's own live ownership % (2026-08-23
+        # user request - "feed the ownership data in also for Dream Team
+        # and FanTeam"), same real field name/shape as EFL Fantasy's
+        # (import_eflfantasy.py) - already present in every player row
+        # this importer already parses, just never read before now.
+        ownership_pct = p.get("percentSelected")
         if row:
             game_player_id, old_price = row
             cur.execute(
-                "update game_players set external_id = %s, position_code = %s, price = %s, is_active = true, updated_at = now() where id = %s",
-                (external_id, native_position, p["price"], game_player_id),
+                "update game_players set external_id = %s, position_code = %s, price = %s, is_active = true, "
+                "ownership_pct = %s, updated_at = now() where id = %s",
+                (external_id, native_position, p["price"], ownership_pct, game_player_id),
             )
             # Dream Team's own backend already applies its real ±£0.3m/GW
             # price-update rule (section 1.2.5.6) server-side - this just
@@ -388,13 +395,13 @@ def import_players(cur, game_id, players_data):
             )
             cur.execute(
                 """
-                insert into game_players (game_id, player_id, external_id, position_code, price, is_active)
-                values (%s, %s, %s, %s, %s, true)
+                insert into game_players (game_id, player_id, external_id, position_code, price, is_active, ownership_pct)
+                values (%s, %s, %s, %s, %s, true, %s)
                 on conflict (game_id, external_id) do update
                     set player_id = excluded.player_id, position_code = excluded.position_code, price = excluded.price,
-                        is_active = true, updated_at = now()
+                        is_active = true, ownership_pct = excluded.ownership_pct, updated_at = now()
                 """,
-                (game_id, player_id, external_id, native_position, p["price"]),
+                (game_id, player_id, external_id, native_position, p["price"], ownership_pct),
             )
             created += 1
         status_written += 1
