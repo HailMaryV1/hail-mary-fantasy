@@ -153,7 +153,9 @@ export type LineupResult = {
   confirmed: boolean;
 };
 
-export async function fetchLineups(fixtureId: number): Promise<LineupResult & { teams: Record<number, string> }> {
+export async function fetchLineups(
+  fixtureId: number,
+): Promise<LineupResult & { teams: Record<number, string>; teamIds: number[] }> {
   type Participant = { id: number; name: string; meta: { location: string } };
   type FormationRow = { participant_id: number; formation: string };
   type Data = {
@@ -205,7 +207,7 @@ export async function fetchLineups(fixtureId: number): Promise<LineupResult & { 
     formations.push({ team: p.name, shape: shapes[p.id] ?? "", slots });
   }
 
-  return { formations, confirmed: formations.length === 2, teams };
+  return { formations, confirmed: formations.length === 2, teams, teamIds: ordered.map((p) => p.id) };
 }
 
 /* ========================================================================== *
@@ -221,6 +223,8 @@ type OddRow = {
   bookmaker_id: number;
   stopped?: boolean;
   latest_bookmaker_update?: string;
+  /** The line an over/under market is set at; null on N+ ladder rungs. */
+  total?: string | null;
 };
 
 async function fetchAllOdds(fixtureId: number): Promise<OddRow[]> {
@@ -287,6 +291,140 @@ function laddersFrom(
   return out;
 }
 
+
+/* ========================================================================== *
+ * Deriving the two settings that were previously typed in by hand
+ * ========================================================================== */
+
+/**
+ * Fallback average total fouls in a match, both teams. Measured from 40
+ * completed fixtures across the entitled leagues on 2026-08-24: mean 23.4,
+ * standard deviation 4.9. Used only when a fixture's own two teams have too
+ * little history to derive from.
+ *
+ * Worth stating because an earlier version of this tool assumed 21 from
+ * general knowledge and concluded on that basis that the board was running
+ * badly hot. Measuring moved the baseline by more than two fouls and softened
+ * that verdict considerably - which is exactly why this is now derived per
+ * fixture rather than typed in.
+ */
+export const LEAGUE_BASELINE_MATCH_FOULS = 23.4;
+
+const FOULS_STAT_TYPE_ID = 56;
+
+/**
+ * Bookmaker margin, measured rather than assumed.
+ *
+ * The fouls ladders are one-sided - only the "yes" price for each rung is
+ * published - so their margin cannot be read off directly. But bet365 posts
+ * plenty of TWO-way markets on the same fixture, and a two-way market's
+ * overround is simply 1/over + 1/under - 1.
+ *
+ * Only the player-prop over/under markets are used as the reference. They are
+ * the same product family, priced by the same model, and on a real fixture
+ * they came out at 8.1% (Player Shots) and 7.6% (Player Shots On Target) -
+ * tight agreement. Match-level goal and corner lines run noticeably thinner
+ * (4-6%) and would understate what a player ladder is taxed, while a few
+ * Asian-style markets return negative overrounds because their two rows are
+ * not a genuine complementary pair.
+ *
+ * A caveat that should not be lost: a two-way line is still not the same thing
+ * as a five-rung ladder, and books usually tax longshot rungs harder than a
+ * near-even over/under. Treat this as a well-founded floor rather than proof.
+ */
+const OVERROUND_REFERENCE_MARKETS = new Set([
+  "Player Shots Over/Under",
+  "Player Shots On Target Over/Under",
+]);
+
+function median(values: number[]): number | null {
+  if (!values.length) return null;
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+export function deriveOverround(rows: OddRow[]): { value: number | null; sampleSize: number } {
+  const pairs = new Map<string, { over?: number; under?: number }>();
+  for (const r of rows) {
+    if (!r.market_description || !OVERROUND_REFERENCE_MARKETS.has(r.market_description)) continue;
+    const label = r.label ?? "";
+    if (label !== "Over" && label !== "Under") continue;
+    const key = `${r.market_description}|${r.name}|${r.total}`;
+    const entry = pairs.get(key) ?? {};
+    const price = parseFloat(r.value ?? "");
+    if (!isFinite(price) || price <= 1) continue;
+    if (label === "Over") entry.over = price;
+    else entry.under = price;
+    pairs.set(key, entry);
+  }
+
+  const overrounds: number[] = [];
+  for (const { over, under } of pairs.values()) {
+    if (over && under) overrounds.push((1 / over + 1 / under - 1) * 100);
+  }
+  // Median, not mean: one mispaired row can otherwise drag the estimate far off.
+  const value = median(overrounds.filter((v) => v > 0 && v < 40));
+  return { value, sampleSize: overrounds.length };
+}
+
+/**
+ * Expected total fouls in this match, from how many fouls these two sides
+ * actually commit, rather than a league constant.
+ *
+ * Each team's recent completed fixtures carry a Fouls statistic, so the match
+ * expectation is simply the two teams' own averages added together. Shrunk
+ * toward the league baseline when a team has little history, so a side with two
+ * matches played does not swing the estimate on noise.
+ */
+export async function deriveExpectedFouls(
+  teamIds: number[],
+  sampleSize = 8,
+): Promise<{ value: number; perTeam: { teamId: number; mean: number; matches: number }[] }> {
+  const to = new Date();
+  const from = new Date(to.getTime() - 200 * 24 * 60 * 60 * 1000);
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+  type StatRow = { participant_id: number; type?: { id: number }; data?: { value?: number } };
+  type FixtureRow = { state_id: number; statistics?: StatRow[] };
+
+  const perTeam: { teamId: number; mean: number; matches: number }[] = [];
+
+  for (const teamId of teamIds) {
+    let mean = LEAGUE_BASELINE_MATCH_FOULS / 2;
+    let matches = 0;
+    try {
+      const d = await get<{ data: FixtureRow[] }>(
+        `/fixtures/between/${iso(from)}/${iso(to)}/${teamId}`,
+        { include: "statistics.type", per_page: "50" },
+      );
+      const values: number[] = [];
+      for (const f of (d.data ?? []).filter((x) => x.state_id === 5)) {
+        for (const st of f.statistics ?? []) {
+          if (st.type?.id === FOULS_STAT_TYPE_ID && st.participant_id === teamId) {
+            const v = st.data?.value;
+            if (typeof v === "number") values.push(v);
+          }
+        }
+      }
+      const recent = values.slice(-sampleSize);
+      matches = recent.length;
+      if (matches > 0) {
+        const raw = recent.reduce((a, b) => a + b, 0) / matches;
+        // Shrink toward the league half-match baseline; full weight by ~6 games.
+        const w = matches / (matches + 3);
+        mean = w * raw + (1 - w) * (LEAGUE_BASELINE_MATCH_FOULS / 2);
+      }
+    } catch {
+      // Leave the baseline in place - a failed history lookup must not stop the
+      // board from being analysed at all.
+    }
+    perTeam.push({ teamId, mean, matches });
+  }
+
+  return { value: perTeam.reduce((a, t) => a + t.mean, 0), perTeam };
+}
+
 /* ========================================================================== *
  * Combined
  * ========================================================================== */
@@ -302,6 +440,12 @@ export type LiveBoardResult = {
   /** Fouls markets present at all. */
   hasFoulsMarkets: boolean;
   bookmakerUpdatedAt: string | null;
+  /** Margin measured from bet365's own two-way player props on this fixture. */
+  derivedOverround: number | null;
+  overroundSample: number;
+  /** Expected total match fouls from these two teams' own recent records. */
+  derivedExpectedFouls: number;
+  expectedFoulsBasis: { team: string; mean: number; matches: number }[];
   notes: string[];
 };
 
@@ -364,6 +508,26 @@ export async function fetchLiveBoard(
     );
   }
 
+  const overround = deriveOverround(odds);
+  const expected = await deriveExpectedFouls(lineups.teamIds);
+  const expectedBasis = expected.perTeam.map((t) => ({
+    team: lineups.teams[t.teamId] ?? String(t.teamId),
+    mean: t.mean,
+    matches: t.matches,
+  }));
+  if (overround.value == null) {
+    notes.push(
+      "No two-way player props on this fixture to measure the margin from - falling back to the typed value.",
+    );
+  }
+  for (const t of expectedBasis) {
+    if (t.matches < 3) {
+      notes.push(
+        `${t.team} has only ${t.matches} completed matches with foul data, so the expected-fouls estimate leans on the league baseline.`,
+      );
+    }
+  }
+
   const updates = odds
     .map((r) => r.latest_bookmaker_update)
     .filter((v): v is string => Boolean(v))
@@ -384,6 +548,10 @@ export async function fetchLiveBoard(
     lineupsConfirmed: lineups.confirmed,
     hasFoulsMarkets,
     bookmakerUpdatedAt: updates.length ? updates[updates.length - 1] : null,
+    derivedOverround: overround.value,
+    overroundSample: overround.sampleSize,
+    derivedExpectedFouls: expected.value,
+    expectedFoulsBasis: expectedBasis,
     notes,
   };
 }

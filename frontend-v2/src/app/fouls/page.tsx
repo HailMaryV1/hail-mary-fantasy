@@ -37,6 +37,10 @@ type LiveState = {
   lineupsConfirmed: boolean;
   hasFoulsMarkets: boolean;
   bookmakerUpdatedAt: string | null;
+  derivedOverround: number | null;
+  overroundSample: number;
+  derivedExpectedFouls: number;
+  expectedFoulsBasis: { team: string; mean: number; matches: number }[];
   notes: string[];
   fixtureName: string;
 };
@@ -67,6 +71,12 @@ export default function FoulsPage() {
   const [overround, setOverround] = useState(DEFAULT_ASSUMED_OVERROUND);
   const [expectedFouls, setExpectedFouls] = useState(21);
   const [tab, setTab] = useState<"likely" | "edges" | "duels" | "combos">("likely");
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
+  // Set true once the user edits a setting by hand, so a refresh stops
+  // overwriting their number with the derived one.
+  const [overroundTouched, setOverroundTouched] = useState(false);
+  const [foulsTouched, setFoulsTouched] = useState(false);
 
   useEffect(() => {
     fetch("/api/fouls/fixtures?days=10")
@@ -82,14 +92,51 @@ export default function FoulsPage() {
       const r = await fetch(`/api/fouls/board?fixtureId=${id}`);
       const d = await r.json();
       if (d.error) throw new Error(d.error);
-      setLive(d as LiveState);
+      const board = d as LiveState;
+      setLive(board);
+      setLastLoaded(new Date());
+      // Derived settings become the defaults, but never clobber a value the
+      // user has deliberately changed.
+      if (!overroundTouched && board.derivedOverround != null) {
+        setOverround(Math.round(board.derivedOverround * 10) / 10);
+      }
+      if (!foulsTouched && board.derivedExpectedFouls > 0) {
+        setExpectedFouls(Math.round(board.derivedExpectedFouls * 10) / 10);
+      }
     } catch (err) {
       setLive(null);
       setLoadError((err as Error).message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [overroundTouched, foulsTouched]);
+
+  /**
+   * Polling cadence, matched to how this market actually behaves rather than to
+   * a round number.
+   *
+   * Hourly is right for the long wait - fouls ladders open late and unevenly,
+   * so most of the time the only question is whether they have appeared yet.
+   * But the moment that matters is roughly an hour before kickoff, when the
+   * confirmed elevens land and the duel map becomes available at the same time
+   * as the market makes its final moves. An hourly poll can miss that window by
+   * fifty-nine minutes, so the interval tightens as kickoff approaches.
+   */
+  const refreshMs = useMemo(() => {
+    const fixture = fixtures.find((f) => f.id === fixtureId);
+    if (!fixture) return 60 * 60 * 1000;
+    const minutesToKickoff = (new Date(fixture.kickoff.replace(" ", "T") + "Z").getTime() - Date.now()) / 60000;
+    if (minutesToKickoff < -150) return 0;          // long finished, stop polling
+    if (minutesToKickoff < 180) return 5 * 60 * 1000;  // lineups land in here
+    if (minutesToKickoff < 720) return 15 * 60 * 1000; // matchday
+    return 60 * 60 * 1000;                              // the long wait
+  }, [fixtures, fixtureId]);
+
+  useEffect(() => {
+    if (!autoRefresh || source !== "live" || !fixtureId || refreshMs <= 0) return;
+    const t = setInterval(() => loadFixture(fixtureId), refreshMs);
+    return () => clearInterval(t);
+  }, [autoRefresh, source, fixtureId, refreshMs, loadFixture]);
 
   const result = useMemo(() => {
     try {
@@ -233,8 +280,18 @@ export default function FoulsPage() {
                 disabled={!fixtureId || loading}
                 className="rounded bg-sky-500 px-4 py-1.5 text-sm font-medium text-navy-950 disabled:opacity-40"
               >
-                {loading ? "Loading…" : "Refresh"}
+                {loading ? "Loading…" : "Refresh now"}
               </button>
+              <label className="flex items-center gap-2 text-xs text-navy-300">
+                <input
+                  type="checkbox"
+                  checked={autoRefresh}
+                  onChange={(e) => setAutoRefresh(e.target.checked)}
+                  className="accent-sky-500"
+                />
+                Auto-refresh
+                {refreshMs > 0 ? ` every ${Math.round(refreshMs / 60000)} min` : " (fixture finished)"}
+              </label>
             </div>
 
             {loadError && <p className="mt-3 text-sm text-rose-400">{loadError}</p>}
@@ -255,6 +312,11 @@ export default function FoulsPage() {
                 <span className="rounded bg-navy-800 px-2 py-1 text-navy-400">
                   {live.board.committed.length} committed · {live.board.toBeFouled.length} to-be-fouled ladders
                 </span>
+                {lastLoaded && (
+                  <span className="rounded bg-navy-800 px-2 py-1 text-navy-400">
+                    pulled {lastLoaded.toLocaleTimeString()}
+                  </span>
+                )}
               </div>
             )}
             {live?.notes?.map((n) => (
@@ -299,15 +361,31 @@ export default function FoulsPage() {
         <section className="mb-8 flex flex-wrap items-end gap-6 rounded-lg bg-navy-900 p-4 ring-1 ring-navy-700">
           <Field
             label="Assumed overround %"
-            hint="Bookmaker margin per rung. Cannot be read off one-sided prices, so it must be supplied."
+            hint={
+              live?.derivedOverround != null
+                ? `Measured at ${live.derivedOverround.toFixed(1)}% from ${live.overroundSample} of bet365's own two-way player props on this fixture. Override if you disagree.`
+                : "Bookmaker margin per rung. One-sided ladder prices cannot reveal it, so it is supplied."
+            }
             value={overround}
-            onChange={setOverround}
+            onChange={(v) => {
+              setOverroundTouched(true);
+              setOverround(v);
+            }}
           />
           <Field
             label="Expected match fouls"
-            hint="Both full teams. Used only to judge whether the board is running hot."
+            hint={
+              live?.expectedFoulsBasis?.length
+                ? `From these sides' own records: ${live.expectedFoulsBasis
+                    .map((t) => `${t.team} ${t.mean.toFixed(1)} (${t.matches} games)`)
+                    .join(", ")}.`
+                : "Both full teams. Used only to judge whether the board is running hot."
+            }
             value={expectedFouls}
-            onChange={setExpectedFouls}
+            onChange={(v) => {
+              setFoulsTouched(true);
+              setExpectedFouls(v);
+            }}
           />
         </section>
 
