@@ -41,6 +41,12 @@ type LiveState = {
   overroundSample: number;
   derivedExpectedFouls: number;
   expectedFoulsBasis: { team: string; mean: number; matches: number }[];
+  model: Record<string, { mu: number; confidence: number }>;
+  modelPlayers: {
+    playerName: string; team: string; committed: number; suffered: number;
+    confidence: number; effectiveNinetys: number; expectedMinutes: number;
+  }[];
+  modelCoverage: { covered: number; requested: number };
   notes: string[];
   fixtureName: string;
 };
@@ -115,28 +121,57 @@ export default function FoulsPage() {
    * Polling cadence, matched to how this market actually behaves rather than to
    * a round number.
    *
-   * Hourly is right for the long wait - fouls ladders open late and unevenly,
-   * so most of the time the only question is whether they have appeared yet.
-   * But the moment that matters is roughly an hour before kickoff, when the
-   * confirmed elevens land and the duel map becomes available at the same time
-   * as the market makes its final moves. An hourly poll can miss that window by
-   * fifty-nine minutes, so the interval tightens as kickoff approaches.
+   * Hourly suits the long wait - fouls ladders open late and unevenly, so most
+   * of the time the only question is whether they have appeared yet. But the
+   * moment that matters is roughly an hour before kickoff, when the confirmed
+   * elevens land and the duel map unlocks just as the market makes its final
+   * moves. An hourly poll can miss that window by fifty-nine minutes.
+   *
+   * Written as a self-rescheduling timeout rather than a fixed interval, so the
+   * delay is recomputed from the clock on every cycle and genuinely tightens as
+   * kickoff approaches. A useMemo over Date.now() would have been frozen at
+   * whatever the gap was when the fixture was first selected - and is an impure
+   * read besides, which is what the lint rule was pointing at.
    */
-  const refreshMs = useMemo(() => {
-    const fixture = fixtures.find((f) => f.id === fixtureId);
-    if (!fixture) return 60 * 60 * 1000;
-    const minutesToKickoff = (new Date(fixture.kickoff.replace(" ", "T") + "Z").getTime() - Date.now()) / 60000;
-    if (minutesToKickoff < -150) return 0;          // long finished, stop polling
-    if (minutesToKickoff < 180) return 5 * 60 * 1000;  // lineups land in here
-    if (minutesToKickoff < 720) return 15 * 60 * 1000; // matchday
-    return 60 * 60 * 1000;                              // the long wait
-  }, [fixtures, fixtureId]);
+  const kickoffOf = useCallback(
+    (id: number | null) => {
+      const fixture = fixtures.find((f) => f.id === id);
+      if (!fixture) return null;
+      return new Date(fixture.kickoff.replace(" ", "T") + "Z").getTime();
+    },
+    [fixtures],
+  );
 
   useEffect(() => {
-    if (!autoRefresh || source !== "live" || !fixtureId || refreshMs <= 0) return;
-    const t = setInterval(() => loadFixture(fixtureId), refreshMs);
-    return () => clearInterval(t);
-  }, [autoRefresh, source, fixtureId, refreshMs, loadFixture]);
+    if (!autoRefresh || source !== "live" || !fixtureId) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+
+    const delayFor = () => {
+      const kickoff = kickoffOf(fixtureId);
+      if (kickoff == null) return 60 * 60 * 1000;
+      const minutes = (kickoff - Date.now()) / 60000;
+      if (minutes < -150) return 0; // long finished
+      if (minutes < 180) return 5 * 60 * 1000; // lineups land in here
+      if (minutes < 720) return 15 * 60 * 1000; // matchday
+      return 60 * 60 * 1000; // the long wait
+    };
+
+    const schedule = () => {
+      const delay = delayFor();
+      if (delay <= 0 || cancelled) return;
+      timer = setTimeout(() => {
+        loadFixture(fixtureId);
+        schedule();
+      }, delay);
+    };
+    schedule();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [autoRefresh, source, fixtureId, kickoffOf, loadFixture]);
 
   const result = useMemo(() => {
     try {
@@ -174,7 +209,11 @@ export default function FoulsPage() {
       }
 
       const fit = fitBoard(board, overround);
-      const analysis = analyseBoard(fit, formations[0], formations[1]);
+      // The historical model only exists on the live path - a pasted board has
+      // no player ids to look anyone up by.
+      const modelMu =
+        source === "live" && live?.model ? new Map(Object.entries(live.model)) : undefined;
+      const analysis = analyseBoard(fit, formations[0], formations[1], { modelMu });
       const sim = simulateBoard(analysis, { draws: 20000, seed: 7 });
       const temp = boardTemperature(sim, expectedFouls);
 
@@ -192,7 +231,7 @@ export default function FoulsPage() {
       const combos = searchCombos(sim, candidates, { maxLegs: 3, top: 8, minJointProb: 0.05 });
       const startersTotal = fit.committed.reduce((a, f) => a + f.mu, 0);
 
-      return { errors: [], warnings, board, fit, analysis, sim, temp, combos, startersTotal };
+      return { errors: [], warnings, board, fit, analysis, sim, temp, combos, startersTotal, modelMu };
     } catch (err) {
       return { errors: [`Could not analyse this board: ${(err as Error).message}`] };
     }
@@ -282,7 +321,10 @@ export default function FoulsPage() {
               >
                 {loading ? "Loading…" : "Refresh now"}
               </button>
-              <label className="flex items-center gap-2 text-xs text-navy-300">
+              <label
+                className="flex items-center gap-2 text-xs text-navy-300"
+                title="Every 5 min inside 3 hours of kickoff, 15 min on matchday, hourly otherwise"
+              >
                 <input
                   type="checkbox"
                   checked={autoRefresh}
@@ -290,7 +332,6 @@ export default function FoulsPage() {
                   className="accent-sky-500"
                 />
                 Auto-refresh
-                {refreshMs > 0 ? ` every ${Math.round(refreshMs / 60000)} min` : " (fixture finished)"}
               </label>
             </div>
 
@@ -303,6 +344,9 @@ export default function FoulsPage() {
                 </Pill>
                 <Pill ok={live.lineupsConfirmed}>
                   {live.lineupsConfirmed ? "Lineups confirmed" : "Lineups not out yet"}
+                </Pill>
+                <Pill ok={live.modelCoverage?.covered > 0}>
+                  Foul history {live.modelCoverage?.covered ?? 0}/{live.modelCoverage?.requested ?? 0} players
                 </Pill>
                 {live.bookmakerUpdatedAt && (
                   <span className="rounded bg-navy-800 px-2 py-1 text-navy-400">

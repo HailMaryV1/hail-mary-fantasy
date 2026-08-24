@@ -43,12 +43,17 @@ import { applyMargin, nbSurvival, fairPrice } from "./foulsEdge";
  * are committed by someone but suffered by nobody, so they appear on the
  * committed board and never on the to-be-fouled board.
  *
- * This is a stated assumption, not a measurement from our own data. It is the
- * single most influential constant in this file: the team conservation verdict
- * moves with it directly, so it is exposed as an option on every entry point
- * rather than buried. 0.90 is the working default.
+ * MEASURED, not assumed: 91,645 fouls drawn against 95,023 fouls committed
+ * across 6,614 player-seasons (migration 0142). It previously sat at 0.90 on
+ * nothing more than judgement, and that mattered - the conservation test scales
+ * one board by this number before comparing it to the other, so a value six
+ * points too low inflated the apparent gap and some of the "cross-board edge"
+ * this tool reported was really just this constant.
+ *
+ * Still exposed as an option on every entry point, since it is the single most
+ * influential number in this file.
  */
-export const ATTRIBUTION_RATE = 0.9;
+export const ATTRIBUTION_RATE = 0.964;
 
 /* ========================================================================== *
  * Formation
@@ -61,6 +66,8 @@ export type Flank = "L" | "C" | "R";
 export type FormationSlot = {
   name: string;
   shirt?: number | null;
+  /** SportMonks player id, when the slot came from a real lineup. */
+  playerId?: number | null;
   team: string;
   role: Role;
   flank: Flank;
@@ -529,6 +536,27 @@ export type ReconcileOptions = {
   duelWeight?: number;
   /** Ignore edges on rungs priced longer than this (deep tail, thin liquidity). */
   maxDecimal?: number;
+  /**
+   * Our own expectation per `market|player`, from the historical foul model
+   * (foulModel.ts), with the confidence its sample supports.
+   *
+   * This is the only input here that is not derived from the board itself.
+   * Everything else finds the bookmaker disagreeing with the bookmaker; this
+   * lets the tool disagree with the bookmaker.
+   */
+  modelMu?: Map<string, { mu: number; confidence: number }>;
+  /**
+   * Ceiling on how far the model can pull a price, before per-player
+   * confidence scales it down.
+   *
+   * Kept well below 1 on purpose. The model predicts a player's foul rate
+   * genuinely well (0.789 year over year), but the market sees things it
+   * cannot: the referee, team news, whether a booked player is being managed,
+   * what the game state is likely to be. Treating our number as equal to the
+   * price would be overconfident; treating it as worthless wastes the only
+   * independent signal available.
+   */
+  modelWeight?: number;
 };
 
 /**
@@ -571,6 +599,7 @@ export function analyseBoard(
   const attribution = opts.attribution ?? ATTRIBUTION_RATE;
   const wCons = opts.conservationWeight ?? 0.5;
   const wDuel = opts.duelWeight ?? 0.25;
+  const wModel = opts.modelWeight ?? 0.35;
   const maxDecimal = opts.maxDecimal ?? 26;
 
   const home = homeFormation.team;
@@ -615,6 +644,21 @@ export function analyseBoard(
         if (Math.abs(Math.log(ratio)) > 0.12) {
           reasons.push(
             `duel map implies ${structural.toFixed(2)} fouls suffered vs board's ${f.mu.toFixed(2)}`,
+          );
+        }
+      }
+
+      // --- historical model -------------------------------------------
+      const model = opts.modelMu?.get(`${market}|${f.name}`);
+      if (model && model.mu > 1e-6 && f.mu > 1e-6) {
+        // Scale by confidence so a player with three seasons behind them moves
+        // the number and a new signing with 200 minutes barely does.
+        const effective = wModel * Math.max(0, Math.min(1, model.confidence));
+        const ratio = model.mu / f.mu;
+        logMu += effective * Math.log(ratio);
+        if (Math.abs(Math.log(ratio)) > 0.15 && effective > 0.05) {
+          reasons.push(
+            `record says ${model.mu.toFixed(2)} vs market ${f.mu.toFixed(2)} (${Math.round(model.confidence * 100)}% sample)`,
           );
         }
       }

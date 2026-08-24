@@ -33,6 +33,8 @@
 import type { Board, PlayerLadder, OddsQuote } from "./foulsEdge";
 import { toDecimal, decimalToFractional } from "./foulsEdge";
 import type { Formation, FormationSlot, Role, Flank } from "./foulsMatchup";
+import { loadFoulModel } from "./foulModelStore";
+import { projectFixture, type ModelledPlayer } from "./foulModel";
 
 const BASE = "https://api.sportmonks.com/v3/football";
 
@@ -107,6 +109,7 @@ export async function listFixtures(fromISO: string, toISO: string): Promise<Fixt
  * ========================================================================== */
 
 type LineupRow = {
+  player_id: number;
   player_name: string;
   jersey_number: number | null;
   formation_field: string | null;
@@ -197,6 +200,7 @@ export async function fetchLineups(
       return {
         name: r.player_name,
         shirt: r.jersey_number,
+        playerId: r.player_id,
         team: p.name,
         role: POSITION_ROLE[r.position_id] ?? "MID",
         flank: flankOf(lateral),
@@ -446,6 +450,15 @@ export type LiveBoardResult = {
   /** Expected total match fouls from these two teams' own recent records. */
   derivedExpectedFouls: number;
   expectedFoulsBasis: { team: string; mean: number; matches: number }[];
+  /**
+   * Our own expectation per player, keyed "committed|Name" / "toBeFouled|Name"
+   * so the engine can look it up directly against a ladder.
+   */
+  model: Record<string, { mu: number; confidence: number }>;
+  /** Per-player model detail, for display. */
+  modelPlayers: ModelledPlayer[];
+  /** How many of the 22 starters had any foul history at all. */
+  modelCoverage: { covered: number; requested: number };
   notes: string[];
 };
 
@@ -528,6 +541,53 @@ export async function fetchLiveBoard(
     }
   }
 
+  // --- our own model ----------------------------------------------------
+  const model: Record<string, { mu: number; confidence: number }> = {};
+  const modelPlayers: ModelledPlayer[] = [];
+  let modelCoverage = { covered: 0, requested: 0 };
+  try {
+    const slotIds: number[] = [];
+    for (const f of lineups.formations) {
+      for (const s of f.slots) if (s.playerId) slotIds.push(s.playerId);
+    }
+    const loaded = await loadFoulModel(slotIds, lineups.teamIds);
+    modelCoverage = { covered: loaded.covered, requested: slotIds.length };
+
+    // Opponent profile is the OTHER team's squad, which is what the crosswise
+    // adjustment in projectFixture needs.
+    const teamIdByName = new Map<string, number>();
+    for (const [id, name] of Object.entries(lineups.teams)) teamIdByName.set(name, Number(id));
+
+    for (const f of lineups.formations) {
+      const ownId = teamIdByName.get(f.team);
+      const opponentId = lineups.teamIds.find((id) => id !== ownId) ?? null;
+      const opponent = opponentId != null ? (loaded.teamProfiles.get(opponentId) ?? null) : null;
+      for (const slot of f.slots) {
+        if (!slot.playerId) continue;
+        const rate = loaded.rates.get(slot.playerId);
+        if (!rate) continue;
+        const projected = projectFixture(rate, f.team, opponent);
+        // Key on the BOARD's spelling of the name, not the lineup's - the two
+        // feeds disagree about diacritics and the engine looks these up by the
+        // board's name.
+        const boardName =
+          committed.find((l) => normalise(l.name) === normalise(slot.name))?.name ?? slot.name;
+        modelPlayers.push({ ...projected, playerName: boardName });
+        model[`committed|${boardName}`] = { mu: projected.committed, confidence: projected.confidence };
+        model[`toBeFouled|${boardName}`] = { mu: projected.suffered, confidence: projected.confidence };
+      }
+    }
+    if (modelCoverage.requested > 0 && modelCoverage.covered < modelCoverage.requested * 0.6) {
+      notes.push(
+        `Foul history covers only ${modelCoverage.covered} of ${modelCoverage.requested} starters - the model correction will be weak. Run scripts/import_foul_stats.py if this looks wrong.`,
+      );
+    }
+  } catch (err) {
+    // A missing or unreachable history table must never stop the board being
+    // analysed; the market-consistency checks stand on their own.
+    notes.push(`Historical foul model unavailable: ${(err as Error).message}`);
+  }
+
   const updates = odds
     .map((r) => r.latest_bookmaker_update)
     .filter((v): v is string => Boolean(v))
@@ -552,6 +612,9 @@ export async function fetchLiveBoard(
     overroundSample: overround.sampleSize,
     derivedExpectedFouls: expected.value,
     expectedFoulsBasis: expectedBasis,
+    model,
+    modelPlayers,
+    modelCoverage,
     notes,
   };
 }
