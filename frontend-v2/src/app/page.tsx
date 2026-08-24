@@ -60,6 +60,22 @@ export default async function LandingPage() {
             Hail Mary Weekly Ratings
           </span>
         </Link>
+        {/* Also static, and for a stronger reason than the ratings tile above:
+            /fouls isn't a fantasy game at all, it's a betting-market tool with
+            its own engine and no shared scoring model. It could never come from
+            the `games` query. The second line says so, so the tile isn't
+            mistaken for a fifth game. */}
+        <Link
+          href="/fouls"
+          className="group relative aspect-square overflow-hidden rounded-2xl border border-navy-800 bg-navy-900 shadow-lg shadow-black/40 transition-all hover:-translate-y-1 hover:border-sky-500 hover:shadow-xl hover:shadow-sky-950/50"
+        >
+          <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-2 text-center">
+            <span className="text-sm font-medium text-navy-200">Fouls Board</span>
+            <span className="text-[11px] leading-tight text-navy-400">
+              Betting edge finder
+            </span>
+          </span>
+        </Link>
       </nav>
     </div>
   );
