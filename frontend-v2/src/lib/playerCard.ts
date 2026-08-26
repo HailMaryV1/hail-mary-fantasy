@@ -1,5 +1,6 @@
 import { createElement as h, type ReactNode } from "react";
 import { getTeamColors } from "./teamColors";
+import { fixtureDifficultyTier } from "./fixtureDifficultyColor";
 
 /**
  * Pure element-builder for the shareable "Hail Mary Projection Card" PNG
@@ -150,7 +151,7 @@ export type PlayerCardTargetScore = {
   fixtureDifficultyRating: number | null;
   fixtureQuantityRating: number | null;
   liveOddsRating: number | null;
-  windowFixtures: { opponentTeamName: string | null; isHome: boolean }[];
+  windowFixtures: { opponentTeamName: string | null; isHome: boolean; difficultyRaw: number | null }[];
 };
 
 export type PlayerCardInput = {
@@ -426,12 +427,29 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
           )
         ),
         targetScore.windowFixtures.length > 0
-          ? label(
-              { fontSize: s(13), color: NAVY[500] },
-              targetScore.windowFixtures
-                .slice(0, 3)
-                .map((f) => `${f.isHome ? "vs" : "at"} ${f.opponentTeamName ?? "TBC"}`)
-                .join("  ·  ")
+          ? h(
+              "div",
+              { style: { display: "flex", flexWrap: "wrap", gap: s(6) } },
+              ...targetScore.windowFixtures.slice(0, 3).map((f, i) => {
+                const tier = fixtureDifficultyTier(f.difficultyRaw);
+                return h(
+                  "span",
+                  {
+                    key: i,
+                    style: {
+                      display: "flex",
+                      fontFamily: "Oswald",
+                      fontWeight: 500,
+                      fontSize: s(13),
+                      borderRadius: s(6),
+                      padding: `${s(3)}px ${s(8)}px`,
+                      backgroundColor: tier ? tier.bg : NAVY[900],
+                      color: tier ? tier.fg : NAVY[500],
+                    },
+                  },
+                  `${f.isHome ? "vs" : "at"} ${f.opponentTeamName ?? "TBC"}`
+                );
+              })
             )
           : null,
       ])

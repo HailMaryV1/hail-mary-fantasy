@@ -148,7 +148,7 @@ export async function GET(request: NextRequest) {
         live_odds_rating: number | null;
         start_gameweek: number;
         end_gameweek: number;
-        inputs: { window_fixtures?: { opponent_team_name: string | null; is_home: boolean }[] };
+        inputs: { window_fixtures?: { opponent_team_name: string | null; is_home: boolean; difficulty_raw: number | null }[] };
       }>();
     if (tsRow) {
       targetScoreCard = {
@@ -160,7 +160,11 @@ export async function GET(request: NextRequest) {
         fixtureDifficultyRating: tsRow.fixture_difficulty_rating,
         fixtureQuantityRating: tsRow.fixture_quantity_rating,
         liveOddsRating: tsRow.live_odds_rating,
-        windowFixtures: (tsRow.inputs?.window_fixtures ?? []).map((f) => ({ opponentTeamName: f.opponent_team_name, isHome: f.is_home })),
+        windowFixtures: (tsRow.inputs?.window_fixtures ?? []).map((f) => ({
+          opponentTeamName: f.opponent_team_name,
+          isHome: f.is_home,
+          difficultyRaw: f.difficulty_raw,
+        })),
       };
     }
   }

@@ -18,6 +18,8 @@ import {
   type EngineExplanation,
 } from "@/lib/engineExplainability";
 import { getTeamColors } from "@/lib/teamColors";
+import { getPlayerTargetScoreWindow, type TargetScoreWindow } from "@/lib/targetScoreActions";
+import { fixtureDifficultyTier } from "@/lib/fixtureDifficultyColor";
 import HailMaryRatingBadge from "./HailMaryRatingBadge";
 import TrendChart from "./TrendChart";
 import type { TrendPoint } from "@/lib/projectionTrend";
@@ -69,12 +71,14 @@ export default function PlayerInfoPanel({
   const [data, setData] = useState<EngineExplanation | null | undefined>(undefined);
   const [trend, setTrend] = useState<TrendPoint[] | undefined>(undefined);
   const [realStats, setRealStats] = useState<PlayerRealStats | null | undefined>(undefined);
+  const [targetScoreWindow, setTargetScoreWindow] = useState<TargetScoreWindow | null | undefined>(undefined);
 
   useEffect(() => {
     let cancelled = false;
     setData(undefined);
     setTrend(undefined);
     setRealStats(undefined);
+    setTargetScoreWindow(undefined);
     const explanationPromise =
       viewedGameweek != null ? getPlayerExplanationForGameweek(gameSlug, gamePlayerId, viewedGameweek) : getPlayerExplanation(gameSlug, gamePlayerId);
     explanationPromise.then((result) => {
@@ -89,10 +93,21 @@ export default function PlayerInfoPanel({
     getPlayerRealStatsAction(gamePlayerId).then((result) => {
       if (!cancelled) setRealStats(result);
     });
+    // Real fixture window for the horizon being viewed (2026-08-26 user
+    // request) - only fetched when opened from /ratings with a horizon
+    // selected; data.primaryFixture (single nearest fixture) stays the
+    // fallback everywhere else this panel opens from.
+    if (horizon != null && viewedGameweek != null) {
+      getPlayerTargetScoreWindow(gamePlayerId, viewedGameweek, horizon).then((result) => {
+        if (!cancelled) setTargetScoreWindow(result);
+      });
+    } else {
+      setTargetScoreWindow(null);
+    }
     return () => {
       cancelled = true;
     };
-  }, [gameSlug, gamePlayerId, viewedGameweek]);
+  }, [gameSlug, gamePlayerId, viewedGameweek, horizon]);
 
   return (
     <div className="rounded-xl border border-navy-700 bg-navy-900 p-4">
@@ -132,29 +147,76 @@ export default function PlayerInfoPanel({
             )}
           </div>
 
-          {data.primaryFixture && (
-            <div className="flex items-center gap-2 rounded-lg border border-navy-800 bg-navy-950 px-3 py-2 text-xs">
-              {data.primaryFixture.opponentTeamName && (
-                <span
-                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold"
-                  style={{
-                    backgroundColor: getTeamColors(data.primaryFixture.opponentTeamName).primary,
-                    color: getTeamColors(data.primaryFixture.opponentTeamName).secondary,
-                  }}
-                >
-                  {getTeamColors(data.primaryFixture.opponentTeamName).abbr}
-                </span>
+          {targetScoreWindow && targetScoreWindow.fixtures.length > 0 ? (
+            // Real fixture window for the selected horizon (2026-08-26
+            // user request: "verbruggen player info should show the 3
+            // fixtures - use the difficulty pills with differing
+            // colours too") - one row per real fixture, not just the
+            // nearest, each tagged with its own position-weighted
+            // difficulty tier.
+            <div className="flex flex-col gap-1.5">
+              {targetScoreWindow.startGameweek !== targetScoreWindow.endGameweek && (
+                <p className="text-[10px] uppercase tracking-wide text-navy-500">
+                  GW{targetScoreWindow.startGameweek}–GW{targetScoreWindow.endGameweek}
+                </p>
               )}
-              <div>
-                <p className="font-semibold text-white">
-                  {data.primaryFixture.isHome ? "vs " : "at "}
-                  {data.primaryFixture.opponentTeamName ?? "Unknown opponent"}
-                </p>
-                <p className="text-navy-500">
-                  {formatKickoff(data.primaryFixture.kickoffAt)} · {competitionLabel(data.primaryFixture.competition)}
-                </p>
-              </div>
+              {targetScoreWindow.fixtures.map((f, i) => {
+                const tier = fixtureDifficultyTier(f.difficultyRaw);
+                return (
+                  <div key={i} className="flex items-center gap-2 rounded-lg border border-navy-800 bg-navy-950 px-3 py-2 text-xs">
+                    {f.opponentTeamName && (
+                      <span
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold"
+                        style={{ backgroundColor: getTeamColors(f.opponentTeamName).primary, color: getTeamColors(f.opponentTeamName).secondary }}
+                      >
+                        {getTeamColors(f.opponentTeamName).abbr}
+                      </span>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold text-white">
+                        {f.isHome ? "vs " : "at "}
+                        {f.opponentTeamName ?? "Unknown opponent"}
+                      </p>
+                      {f.kickoffAt && <p className="text-navy-500">{formatKickoff(f.kickoffAt)}</p>}
+                    </div>
+                    {tier && (
+                      <span
+                        title={`Fixture Difficulty: ${tier.label}`}
+                        className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold"
+                        style={{ backgroundColor: tier.bg, color: tier.fg }}
+                      >
+                        {tier.label}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+          ) : (
+            data.primaryFixture && (
+              <div className="flex items-center gap-2 rounded-lg border border-navy-800 bg-navy-950 px-3 py-2 text-xs">
+                {data.primaryFixture.opponentTeamName && (
+                  <span
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold"
+                    style={{
+                      backgroundColor: getTeamColors(data.primaryFixture.opponentTeamName).primary,
+                      color: getTeamColors(data.primaryFixture.opponentTeamName).secondary,
+                    }}
+                  >
+                    {getTeamColors(data.primaryFixture.opponentTeamName).abbr}
+                  </span>
+                )}
+                <div>
+                  <p className="font-semibold text-white">
+                    {data.primaryFixture.isHome ? "vs " : "at "}
+                    {data.primaryFixture.opponentTeamName ?? "Unknown opponent"}
+                  </p>
+                  <p className="text-navy-500">
+                    {formatKickoff(data.primaryFixture.kickoffAt)} · {competitionLabel(data.primaryFixture.competition)}
+                  </p>
+                </div>
+              </div>
+            )
           )}
 
           <div className="flex items-center justify-between rounded-lg bg-navy-950 px-3 py-2">

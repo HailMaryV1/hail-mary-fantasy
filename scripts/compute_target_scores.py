@@ -224,26 +224,34 @@ def fetch_window_fixture_counts(cur, game_id, start_gameweek, horizon):
     return {(competition, team_id): count for team_id, competition, count in cur.fetchall()}
 
 
+def single_fixture_difficulty_raw(position, fixture):
+    """Position-weighted opponent hardship (0-1, higher = harder) for ONE
+    fixture - reuses DEFAULT_WEIGHTS' own attack/clean_sheet position
+    split: FWD (attack=1.0) -> hard when the opponent defends well
+    (opponent_clean_sheet_score). GK (clean_sheet=1.0) -> hard when the
+    opponent attacks well (opponent_attack_score). DEF/MID blend both.
+    None if this fixture has no real team_fixture_difficulty coverage on
+    either side, or the position has no weight entry (e.g. an unmapped
+    position). Shared by compute_fixture_difficulty_raw's window AVERAGE
+    below and by main()'s per-fixture window_fixtures display (2026-08-26
+    user request - real per-fixture difficulty pills on the ratings page
+    and the downloadable card, not just one blended window-average)."""
+    pw = POSITION_WEIGHTS.get(position)
+    if not pw or fixture["opponent_attack_score"] is None or fixture["opponent_clean_sheet_score"] is None:
+        return None
+    return pw["attack"] * fixture["opponent_clean_sheet_score"] + pw["clean_sheet"] * fixture["opponent_attack_score"]
+
+
 def compute_fixture_difficulty_raw(position, fixtures_for_team):
     """Mean (not sum - would double-count with Fixture Quantity; not
     worst-case - one bad fixture shouldn't erase an otherwise good run)
-    across the window of a position-weighted opponent hardship blend,
-    reusing DEFAULT_WEIGHTS' own attack/clean_sheet position split:
-    FWD (attack=1.0) -> hard when the opponent defends well
-    (opponent_clean_sheet_score). GK (clean_sheet=1.0) -> hard when the
-    opponent attacks well (opponent_attack_score). DEF/MID blend both.
-    None if the team has zero window fixtures, or none have any real
-    team_fixture_difficulty coverage."""
-    usable = [
-        fx for fx in fixtures_for_team
-        if fx["opponent_attack_score"] is not None and fx["opponent_clean_sheet_score"] is not None
-    ]
-    if not usable:
+    across the window of single_fixture_difficulty_raw's per-fixture
+    value. None if the team has zero window fixtures, or none have any
+    real team_fixture_difficulty coverage."""
+    per_fixture = [single_fixture_difficulty_raw(position, fx) for fx in fixtures_for_team]
+    per_fixture = [v for v in per_fixture if v is not None]
+    if not per_fixture:
         return None
-    pw = POSITION_WEIGHTS.get(position)
-    if not pw:
-        return None
-    per_fixture = [pw["attack"] * fx["opponent_clean_sheet_score"] + pw["clean_sheet"] * fx["opponent_attack_score"] for fx in usable]
     return sum(per_fixture) / len(per_fixture)
 
 
@@ -414,6 +422,18 @@ def main():
                     "fixture_quantity": qty_rating_by_team.get(team_id),
                 }
                 composite = compute_composite(sub_ratings, weights)
+                # Real user request 2026-08-26: "use the difficulty pills
+                # with differing colours too" on the per-fixture window
+                # list, both on the ratings page and the card - each
+                # fixture needs its OWN position-weighted difficulty, not
+                # just the window average above (a team's fixture list is
+                # shared across positions, but how hard it plays differs
+                # by position - same reasoning compute_fixture_difficulty_
+                # raw itself is built on).
+                window_fixtures_for_position = [
+                    {**fx, "difficulty_raw": round(v, 4) if (v := single_fixture_difficulty_raw(position, fx)) is not None else None}
+                    for fx in fixtures_by_team.get(team_id, [])
+                ]
                 inputs = {
                     "form_raw": round(form_raw[gpid], 4) if form_raw[gpid] is not None else None,
                     "live_odds_raw": round(odds_raw[gpid], 4) if odds_raw[gpid] is not None else None,
@@ -421,7 +441,7 @@ def main():
                     "fixture_quantity_raw": qty_raw_by_team.get(team_id),
                     "weights_used": weights,
                     "sub_ratings": sub_ratings,
-                    "window_fixtures": fixtures_by_team.get(team_id, []),
+                    "window_fixtures": window_fixtures_for_position,
                 }
                 rows.append((gpid, horizon, gameweek, end_gameweek, composite, sub_ratings["form"], sub_ratings["fixture_difficulty"], sub_ratings["fixture_quantity"], sub_ratings["live_odds"], inputs))
 
