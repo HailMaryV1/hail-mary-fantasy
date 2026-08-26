@@ -109,18 +109,28 @@ LOOKAHEAD_DAYS = 21
 # fixture's odds response (market_id=1, label in Home/Draw/Away).
 FULLTIME_RESULT_MARKET_ID = 1
 
-# "Clean Sheet - Home"/"Clean Sheet - Away" (label="Yes"/"No", each row
-# carries a ready-made `probability` string e.g. "27.78%") - confirmed
-# live 2026-08-17 on a real near-kickoff fixture (Cardiff v Wrexham).
-# Added specifically to fill fixture_clean_sheet_probabilities, which
-# team_fixture_difficulty (migration 0010's view) already COALESCEs
-# ahead of the win%+half-draw% approximation - that table has been
-# empty since it was built because its only other intended source
-# (fixture_team_totals, reconstructed from a real 0.5-line goals
-# market) has never actually been populated by any provider. This is a
-# direct market for exactly the number needed, so it skips that
-# reconstruction entirely rather than adding a second approximation.
+# Real user report 2026-08-26 ("we shouldnt be building that probability
+# for the market odds page... this isnt good enough") - Premier League's
+# Clean Sheet market has a COMPLETELY DIFFERENT row shape than
+# Championship/League One/League Two's, confirmed live by pulling a real
+# fixture's raw odds (Crystal Palace v Man City, 2026-08-28):
+#   Championship-style: market_description "Clean Sheet - Home"/"Clean
+#     Sheet - Away", label="Yes"/"No" carries the yes/no split directly.
+#   Premier League-style: market_description "Clean Sheet" (one market,
+#     both teams), label="1"/"2" is the HOME/AWAY side, `name`
+#     ("Yes"/"No", NOT label) carries the yes/no split.
+# capture_clean_sheet_probabilities below previously only handled the
+# Championship shape - checking `label != "Yes"` on a PL row (where
+# label is always "1" or "2") silently matched nothing, every run, since
+# soccer_epl was added. This is EXACTLY the "no visibility until a user
+# happened to notice" failure mode this file's own docstring already
+# warns about for team-name mismatches - same lesson, a different field.
+# Confirmed correct against the real market: Palace 15.4% / City 38.1%
+# clean sheet on the raw pull, matching the real bookmaker site's own
+# displayed 15%/33% far better than the ~30%/70% win-prob-derived
+# fallback this bug left the site quietly showing instead.
 CLEAN_SHEET_MARKETS = {"Clean Sheet - Home": "home", "Clean Sheet - Away": "away"}
+CLEAN_SHEET_SIDE_BY_LABEL = {"1": "home", "2": "away"}
 
 # Known SportMonks spellings that differ from this project's canonical
 # `teams.name` - same pattern as import_fixtures_odds.py's
@@ -266,8 +276,20 @@ def capture_clean_sheet_probabilities(cur, fixture_id, odds_rows, home_team_id, 
     probs_by_side = {"home": [], "away": []}
 
     for r in odds_rows:
-        side = CLEAN_SHEET_MARKETS.get(r.get("market_description"))
-        if side is None or r.get("label") != "Yes":
+        desc = r.get("market_description")
+        if desc in CLEAN_SHEET_MARKETS:
+            # Championship/League One/League Two shape - see
+            # CLEAN_SHEET_MARKETS' own comment.
+            side = CLEAN_SHEET_MARKETS[desc]
+            is_yes = r.get("label") == "Yes"
+        elif desc == "Clean Sheet":
+            # Premier League shape - see CLEAN_SHEET_SIDE_BY_LABEL's own
+            # comment. label is the side ("1"/"2"), name carries yes/no.
+            side = CLEAN_SHEET_SIDE_BY_LABEL.get(r.get("label"))
+            is_yes = r.get("name") == "Yes"
+        else:
+            continue
+        if side is None or not is_yes:
             continue
         prob = _parse_probability_field(r)
         if prob is not None:
