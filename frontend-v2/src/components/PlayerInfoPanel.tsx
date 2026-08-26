@@ -167,54 +167,65 @@ export default function PlayerInfoPanel({
             </span>
           </div>
 
-          {realStats && (
-            <div className="rounded-lg border border-navy-800 bg-navy-950 p-3 text-xs">
-              <p className="font-semibold text-white">Fantasy Stats</p>
-              <p className="mt-0.5 text-navy-500">
-                {realStats.season ? `Real ${realStats.season} season results, not a projection.` : "Real results, not a projection."}
-              </p>
-              {realStats.lastGwPoints != null && (
-                <div className="mt-2 flex items-center justify-between rounded bg-navy-900 px-2 py-1.5">
-                  <span className="text-navy-300">GW{realStats.lastGw} points</span>
-                  <span className="font-semibold text-white">{realStats.lastGwPoints.toFixed(1)}</span>
-                </div>
-              )}
-              <div className="mt-2 grid grid-cols-3 gap-1.5">
-                {(
-                  [
-                    ["Total Pts", realStats.totalPoints],
-                    ["Minutes", realStats.minutesPlayed],
-                    ["Goals", realStats.goals],
-                    ["Assists", realStats.assists],
-                    ["Clean Sheets", realStats.cleanSheets],
-                    ["Saves", realStats.saves],
-                    ["Tackles", realStats.tackles],
-                    // Clearances/Blocks/Interceptions/Key Passes are only
-                    // ever real for EFL Fantasy (confirmed via
-                    // game_scoring_rules - dreamteam/fanteam/cloudff don't
-                    // score these at all) - showing them on Premier League
-                    // player cards was real user-reported clutter.
-                    ...(gameSlug === "eflfantasy"
-                      ? ([
-                          ["Clearances", realStats.clearances],
-                          ["Blocks", realStats.blocks],
-                          ["Interceptions", realStats.interceptions],
-                          ["Key Passes", realStats.keyPasses],
-                        ] as [string, number | null][])
-                      : []),
-                    ["Shots on Target", realStats.shotsOnTarget],
-                  ] as [string, number | null][]
-                )
-                  .filter(([, value]) => value != null)
-                  .map(([label, value]) => (
-                    <div key={label} className="rounded bg-navy-900 px-2 py-1.5 text-center">
-                      <p className="text-sm font-semibold text-white">{value}</p>
-                      <p className="text-[9px] uppercase tracking-wide text-navy-500">{label}</p>
+          {realStats &&
+            (() => {
+              const tiles = (
+                [
+                  ["Total Pts", realStats.totalPoints],
+                  ["Minutes", realStats.minutesPlayed],
+                  ["Goals", realStats.goals],
+                  ["Assists", realStats.assists],
+                  ["Clean Sheets", realStats.cleanSheets],
+                  ["Saves", realStats.saves],
+                  ["Tackles", realStats.tackles],
+                  // Clearances/Blocks/Interceptions/Key Passes are only
+                  // ever real for EFL Fantasy (confirmed via
+                  // game_scoring_rules - dreamteam/fanteam/cloudff don't
+                  // score these at all) - showing them on Premier League
+                  // player cards was real user-reported clutter.
+                  ...(gameSlug === "eflfantasy"
+                    ? ([
+                        ["Clearances", realStats.clearances],
+                        ["Blocks", realStats.blocks],
+                        ["Interceptions", realStats.interceptions],
+                        ["Key Passes", realStats.keyPasses],
+                      ] as [string, number | null][])
+                    : []),
+                  ["Shots on Target", realStats.shotsOnTarget],
+                ] as [string, number | null][]
+              ).filter(([, value]) => value != null);
+              return (
+                <div className="rounded-lg border border-navy-800 bg-navy-950 p-3 text-xs">
+                  <p className="font-semibold text-white">Fantasy Stats</p>
+                  <p className="mt-0.5 text-navy-500">
+                    {realStats.season ? `Real ${realStats.season} season results, not a projection.` : "Real results, not a projection."}
+                  </p>
+                  {realStats.lastGwPoints != null && (
+                    <div className="mt-2 flex items-center justify-between rounded bg-navy-900 px-2 py-1.5">
+                      <span className="text-navy-300">GW{realStats.lastGw} points</span>
+                      <span className="font-semibold text-white">{realStats.lastGwPoints.toFixed(1)}</span>
                     </div>
-                  ))}
-              </div>
-            </div>
-          )}
+                  )}
+                  {tiles.length > 0 ? (
+                    <div className="mt-2 grid grid-cols-3 gap-1.5">
+                      {tiles.map(([label, value]) => (
+                        <div key={label} className="rounded bg-navy-900 px-2 py-1.5 text-center">
+                          <p className="text-sm font-semibold text-white">{value}</p>
+                          <p className="text-[9px] uppercase tracking-wide text-navy-500">{label}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    // No real per-gameweek results captured yet - real
+                    // for Dream Team/Cloud FF until this gameweek's
+                    // fixtures actually finish (migration 0145's own
+                    // "never fake a number" fix), never an empty box
+                    // with nothing to explain it.
+                    <p className="mt-2 text-navy-600">No real results captured yet this gameweek - check back once it finishes.</p>
+                  )}
+                </div>
+              );
+            })()}
 
           {/* Gated on raw score, not rating - rating is never truly "0"
               (worst case is 1), so gating on it would keep this section
