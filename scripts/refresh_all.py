@@ -164,6 +164,14 @@ def recompute_section(game_slug, label):
             results.append(
                 run_step(f"Recompute {label} GW{gw}", ["scripts/compute_projections.py", game_slug, "--gameweek", str(gw)])
             )
+            # Target Score (2026-08-23 user request - horizon-aware
+            # 1/2/3/5-gameweek ranking) reads THIS gameweek's just-committed
+            # hail_mary_rating rather than recomputing anything, so it must
+            # run immediately after, not in a separate pass - see
+            # compute_target_scores.py's own docstring.
+            results.append(
+                run_step(f"Target scores {label} GW{gw}", ["scripts/compute_target_scores.py", game_slug, "--gameweek", str(gw)])
+            )
     return results
 
 
