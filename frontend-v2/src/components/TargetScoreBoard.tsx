@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { formatRating } from "@/lib/hailMaryRating";
-import { formatFixtureShort } from "@/lib/fixtureFormat";
 import Kit from "@/components/Kit";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
+
+type WindowFixture = { opponent_team_name: string | null; is_home: boolean; kickoff_at: string | null };
 
 export type TargetScoreRow = {
   position: string;
@@ -23,6 +24,9 @@ export type TargetScoreRow = {
   opponent_team_name: string | null;
   fixture_is_home: boolean | null;
   fixture_kickoff_at: string | null;
+  window_fixtures: WindowFixture[] | null;
+  last_gw: number | null;
+  last_gw_points: number | null;
 };
 
 // "When its ranking them i dont want 9/10 Nailed on - it means
@@ -39,15 +43,43 @@ function SubStat({ label, title, value }: { label: string; title: string; value:
   );
 }
 
+function shortDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+// "it should show the next fixtures that occur during those gameweeks
+// selected" (2026-08-26 user request) - every real fixture in the
+// window, not just the nearest one. A 1-gameweek window naturally has
+// just one entry, so this looks identical to the old single-fixture
+// display there - no special-casing needed.
+function WindowFixtures({ fixtures }: { fixtures: WindowFixture[] | null }) {
+  if (!fixtures || fixtures.length === 0) return <span className="truncate text-[10px] text-navy-600">No fixture in this window.</span>;
+  return (
+    <span className="truncate text-[10px] text-navy-500">
+      {fixtures.map((f, i) => (
+        <span key={i}>
+          {i > 0 && ", "}
+          {f.is_home ? "vs" : "at"} {f.opponent_team_name ?? "TBC"}
+          {f.kickoff_at ? ` (${shortDate(f.kickoff_at)})` : ""}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function TargetScoreRowItem({
   row,
   rank,
   horizon,
+  isLive,
+  liveGameweek,
   onOpen,
 }: {
   row: TargetScoreRow;
   rank: number;
   horizon: number;
+  isLive: boolean;
+  liveGameweek: number | null;
   onOpen: (gamePlayerId: number) => void;
 }) {
   // CLUB rows' full_name is the synthetic "<Team> Team" pick label (EFL
@@ -59,6 +91,11 @@ function TargetScoreRowItem({
   // row's rank at horizon=1) - target_score only becomes the headline
   // once it's also what's doing the ranking, horizon >= 2.
   const headline = formatRating(horizon === 1 ? row.hail_mary_rating : row.target_score);
+  // Live Gameweek tab: "what mary predicted... and whats actually
+  // happening" - only ever shows a real actual result once this exact
+  // gameweek has genuinely been graded (last_gw === liveGameweek);
+  // still pending otherwise, never a stale prior gameweek's number.
+  const actualPoints = isLive && row.last_gw === liveGameweek ? row.last_gw_points : undefined;
 
   return (
     <li className="flex flex-col gap-1 border-b border-navy-800 pb-2 last:border-b-0 last:pb-0">
@@ -71,13 +108,17 @@ function TargetScoreRowItem({
           <Kit teamName={row.team_name} size="sm" />
           <span className="truncate text-xs font-medium text-white">{displayName}</span>
         </button>
-        <span className="shrink-0 text-xs font-bold text-sky-300">{headline}/10</span>
+        <div className="flex shrink-0 items-center gap-2">
+          {isLive && (
+            <span className={`text-[10px] font-semibold ${actualPoints != null ? "text-emerald-400" : "text-navy-600"}`}>
+              {actualPoints != null ? `${actualPoints.toFixed(1)} pts` : "pending"}
+            </span>
+          )}
+          <span className="text-xs font-bold text-sky-300">{headline}/10</span>
+        </div>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-1.5 pl-6">
-        <span className="truncate text-[10px] text-navy-500">
-          {formatFixtureShort(row.opponent_team_name, row.fixture_is_home, row.fixture_kickoff_at)}
-          {horizon > 1 && row.end_gameweek != null && ` · thru GW${row.end_gameweek}`}
-        </span>
+        <WindowFixtures fixtures={row.window_fixtures} />
         <div className="flex shrink-0 items-center gap-2">
           <SubStat label="F" title="Form" value={row.form_rating} />
           <SubStat label="D" title="Fixture Difficulty" value={row.fixture_difficulty_rating} />
@@ -93,14 +134,22 @@ export default function TargetScoreBoard({
   columns,
   byPosition,
   gameSlug,
-  viewedGameweek,
+  anchorGameweek,
   horizon,
+  isLive = false,
 }: {
   columns: { code: string; label: string }[];
   byPosition: Map<string, TargetScoreRow[]>;
   gameSlug: string;
-  viewedGameweek: number;
+  // The gameweek this view's ranking/breakdown is actually anchored to -
+  // for horizon=1 this is whichever gameweek the switcher is browsing;
+  // for horizon>=2 it's always the gameweek right after the live one
+  // (see ratings/page.tsx); for the Live Gameweek tab it's the live
+  // gameweek itself. Threaded straight into PlayerInfoPanel so the
+  // detail panel and downloadable card always agree with what's shown.
+  anchorGameweek: number;
   horizon: number;
+  isLive?: boolean;
 }) {
   const [infoPlayerId, setInfoPlayerId] = useState<number | null>(null);
 
@@ -109,7 +158,7 @@ export default function TargetScoreBoard({
       <PlayerInfoPanel
         gameSlug={gameSlug}
         gamePlayerId={infoPlayerId}
-        viewedGameweek={viewedGameweek}
+        viewedGameweek={anchorGameweek}
         horizon={horizon}
         onBack={() => setInfoPlayerId(null)}
       />
@@ -128,7 +177,15 @@ export default function TargetScoreBoard({
             ) : (
               <ol className="mt-3 space-y-2">
                 {colRows.map((r, i) => (
-                  <TargetScoreRowItem key={r.game_player_id} row={r} rank={i + 1} horizon={horizon} onOpen={setInfoPlayerId} />
+                  <TargetScoreRowItem
+                    key={r.game_player_id}
+                    row={r}
+                    rank={i + 1}
+                    horizon={horizon}
+                    isLive={isLive}
+                    liveGameweek={isLive ? anchorGameweek : null}
+                    onOpen={setInfoPlayerId}
+                  />
                 ))}
               </ol>
             )}
