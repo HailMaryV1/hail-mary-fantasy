@@ -7,7 +7,7 @@ import { fetchEngineExplanation, fetchEngineExplanationForGameweek, competitionL
 import { getKitImage } from "@/lib/kitImages";
 import { hasBudget } from "@/lib/gameConfig";
 import { getPlayerProjectionTrend } from "@/lib/projectionTrend";
-import { buildPlayerCardElement, PLAYER_CARD_SIZE } from "@/lib/playerCard";
+import { buildPlayerCardElement, PLAYER_CARD_SIZE, type PlayerCardTargetScore } from "@/lib/playerCard";
 
 export const runtime = "nodejs";
 
@@ -63,6 +63,12 @@ export async function GET(request: NextRequest) {
   // link omits this param, unchanged.
   const gameweekParam = request.nextUrl.searchParams.get("gameweek");
   const gameweek = gameweekParam ? Number(gameweekParam) : NaN;
+  // Target Score horizon (2026-08-23 user request - /ratings' horizon
+  // selector) - only present when the download was triggered from that
+  // page. Absent everywhere else, which keeps the card's existing trend-
+  // chart panel unchanged for every other download site.
+  const horizonParam = request.nextUrl.searchParams.get("horizon");
+  const horizon = horizonParam ? Number(horizonParam) : NaN;
 
   const supabase = await createAuthServerClient();
   const {
@@ -126,6 +132,39 @@ export async function GET(request: NextRequest) {
   // the card never disagrees with what the player's own detail page shows.
   const trend = await getPlayerProjectionTrend(supabase, gamePlayerId, data.gameweek ?? 1, 5);
 
+  let targetScoreCard: PlayerCardTargetScore | null = null;
+  if (Number.isFinite(horizon) && data.gameweek != null) {
+    const { data: tsRow } = await supabase
+      .from("target_scores")
+      .select("target_score, form_rating, fixture_difficulty_rating, fixture_quantity_rating, live_odds_rating, start_gameweek, end_gameweek, inputs")
+      .eq("game_player_id", gamePlayerId)
+      .eq("horizon", horizon)
+      .eq("start_gameweek", data.gameweek)
+      .maybeSingle<{
+        target_score: number;
+        form_rating: number | null;
+        fixture_difficulty_rating: number | null;
+        fixture_quantity_rating: number | null;
+        live_odds_rating: number | null;
+        start_gameweek: number;
+        end_gameweek: number;
+        inputs: { window_fixtures?: { opponent_team_name: string | null; is_home: boolean }[] };
+      }>();
+    if (tsRow) {
+      targetScoreCard = {
+        horizon,
+        startGameweek: tsRow.start_gameweek,
+        endGameweek: tsRow.end_gameweek,
+        targetScore: Number(tsRow.target_score),
+        formRating: tsRow.form_rating,
+        fixtureDifficultyRating: tsRow.fixture_difficulty_rating,
+        fixtureQuantityRating: tsRow.fixture_quantity_rating,
+        liveOddsRating: tsRow.live_odds_rating,
+        windowFixtures: (tsRow.inputs?.window_fixtures ?? []).map((f) => ({ opponentTeamName: f.opponent_team_name, isHome: f.is_home })),
+      };
+    }
+  }
+
   const [logoDataUri, kitDataUri, backgroundDataUri, oswaldMedium, oswaldBold] = await Promise.all([
     loadPublicImageAsDataUri("logo.png"),
     (() => {
@@ -158,6 +197,7 @@ export async function GET(request: NextRequest) {
       cleanSheetProbability,
       goalProbability,
       assistProbability,
+      targetScore: targetScoreCard,
     }) as ConstructorParameters<typeof ImageResponse>[0],
     {
       width: PLAYER_CARD_SIZE,

@@ -41,6 +41,7 @@ export default function PlayerInfoPanel({
   onBack,
   fixtures,
   viewedGameweek,
+  horizon,
 }: {
   gameSlug: string;
   gamePlayerId: number;
@@ -57,6 +58,12 @@ export default function PlayerInfoPanel({
   // board correctly stayed put. Omitted by every other game, which keeps
   // reading whatever the shared view considers current, unchanged.
   viewedGameweek?: number;
+  // Which Target Score horizon (1/2/3/5) the caller is currently viewing
+  // (2026-08-23 user request - /ratings' horizon selector) - threaded
+  // into the downloadable card link only, so it can show that horizon's
+  // breakdown. Omitted everywhere else (no horizon concept outside the
+  // Ratings page), same no-op-elsewhere pattern as `fixtures` above.
+  horizon?: number;
 }) {
   // undefined = loading, null = no projection exists yet for this player
   const [data, setData] = useState<EngineExplanation | null | undefined>(undefined);
@@ -102,7 +109,7 @@ export default function PlayerInfoPanel({
             <div className="flex items-start justify-between gap-2">
               <h2 className="text-base font-semibold text-white">{data.fullName}</h2>
               <a
-                href={`/api/player-card?gameSlug=${gameSlug}&gamePlayerId=${gamePlayerId}${viewedGameweek != null ? `&gameweek=${viewedGameweek}` : ""}`}
+                href={`/api/player-card?gameSlug=${gameSlug}&gamePlayerId=${gamePlayerId}${viewedGameweek != null ? `&gameweek=${viewedGameweek}` : ""}${horizon != null ? `&horizon=${horizon}` : ""}`}
                 download={`hail-mary-${data.fullName.toLowerCase().replace(/\s+/g, "-")}.png`}
                 className="flex shrink-0 items-center gap-1 rounded-full border border-navy-700 bg-navy-950 px-2.5 py-1 text-[10px] font-semibold text-sky-400 hover:border-sky-500 hover:text-sky-300"
                 title="Download a shareable projection card for socials"

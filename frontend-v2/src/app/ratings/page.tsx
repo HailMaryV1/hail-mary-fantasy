@@ -2,13 +2,11 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo } from "@/lib/gameweek";
-import { formatRating, ratingTier, ratingBasisTag } from "@/lib/hailMaryRating";
-import { formatFixtureShort } from "@/lib/fixtureFormat";
 import { hasBudget as gameHasBudget } from "@/lib/gameConfig";
 import { listPoolTeams } from "@/lib/poolSearch";
 import { getProjectionFreshness, formatFreshness } from "@/lib/projectionFreshness";
-import Kit from "@/components/Kit";
 import RatingsBrowseTable from "@/components/RatingsBrowseTable";
+import TargetScoreBoard, { type TargetScoreRow } from "@/components/TargetScoreBoard";
 
 export const dynamic = "force-dynamic";
 
@@ -34,62 +32,20 @@ const POSITION_COLUMNS: { code: string; label: string }[] = [
   { code: "CLUB", label: "Clubs" },
 ];
 
-type TopRatedRow = {
-  position: string;
-  rnk: number;
-  game_player_id: number;
-  full_name: string;
-  team_id: number;
-  team_name: string;
-  hail_mary_rating: number | null;
-  hail_mary_rating_basis: "real_odds" | "recent_form" | "coverage_only" | null;
-  hail_mary_score: number;
-  opponent_team_name: string | null;
-  fixture_is_home: boolean | null;
-  fixture_kickoff_at: string | null;
-};
-
-function RatingRow({ row, rank }: { row: TopRatedRow; rank: number }) {
-  const tier = ratingTier(row.hail_mary_rating);
-  const basisTag = ratingBasisTag(row.hail_mary_rating_basis);
-  // CLUB rows' full_name is the synthetic "<Team> Team" pick label (EFL
-  // Fantasy's club-pick naming, migration 0087) - team_name ("Millwall")
-  // is the real display name everywhere else this shows up (see
-  // eflfantasy/page.tsx's own club_name: p.team_name usage).
-  const displayName = row.position === "CLUB" ? row.team_name : row.full_name;
-  return (
-    <li className="flex flex-col gap-1 border-b border-navy-800 pb-2 last:border-b-0 last:pb-0">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="w-4 shrink-0 text-[10px] font-bold text-navy-500">{rank}</span>
-          <Kit teamName={row.team_name} size="sm" />
-          <span className="truncate text-xs font-medium text-white">{displayName}</span>
-        </div>
-        <span className="shrink-0 text-xs font-bold text-sky-300">{formatRating(row.hail_mary_rating)}/10</span>
-      </div>
-      <div className="flex flex-wrap items-center justify-between gap-1 pl-6">
-        <span className="truncate text-[10px] text-navy-500">
-          {formatFixtureShort(row.opponent_team_name, row.fixture_is_home, row.fixture_kickoff_at)}
-        </span>
-        <div className="flex shrink-0 items-center gap-1">
-          {tier && <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${tier.toneClass}`}>{tier.label}</span>}
-          {basisTag && (
-            <span title={basisTag.title} className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${basisTag.toneClass}`}>
-              {basisTag.label}
-            </span>
-          )}
-        </div>
-      </div>
-    </li>
-  );
-}
+// The 4 horizons a player can be judged over (2026-08-23 user request) -
+// 1 keeps using the EXISTING Hail Mary Rating as its ranking signal (see
+// get_top_target_score_players' own docstring); 2/3/5 rank by the new
+// Target Score composite instead.
+const HORIZONS = [1, 2, 3, 5];
 
 export default async function HailMaryRatingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ game?: string; gameweek?: string }>;
+  searchParams: Promise<{ game?: string; gameweek?: string; horizon?: string }>;
 }) {
-  const { game: gameParam, gameweek: gameweekParam } = await searchParams;
+  const { game: gameParam, gameweek: gameweekParam, horizon: horizonParam } = await searchParams;
+  const requestedHorizon = Number(horizonParam);
+  const horizon = HORIZONS.includes(requestedHorizon) ? requestedHorizon : 1;
   const supabase = await createAuthServerClient();
   const {
     data: { user },
@@ -109,16 +65,17 @@ export default async function HailMaryRatingsPage({
     : gwInfo.displayGameweek;
 
   const [{ data: topRated }, teams, projectionsUpdatedAt] = await Promise.all([
-    supabase.rpc("get_top_rated_players", {
+    supabase.rpc("get_top_target_score_players", {
       p_game_slug: activeSlug,
       p_gameweek: viewedGameweek,
+      p_horizon: horizon,
       p_limit: 5,
     }),
     listPoolTeams(activeSlug),
     getProjectionFreshness(supabase, activeSlug),
   ]);
-  const rows = (topRated ?? []) as TopRatedRow[];
-  const byPosition = new Map<string, TopRatedRow[]>();
+  const rows = (topRated ?? []) as TargetScoreRow[];
+  const byPosition = new Map<string, TargetScoreRow[]>();
   for (const r of rows) {
     const list = byPosition.get(r.position) ?? [];
     list.push(r);
@@ -144,7 +101,7 @@ export default async function HailMaryRatingsPage({
           <div>
             <h1 className="text-lg font-semibold text-white">Hail Mary Weekly Ratings</h1>
             <p className="mt-1 max-w-xl text-xs text-navy-400">
-              Who Mary rates highest this gameweek, by position - top 5 per position, switchable by game and gameweek.
+              Who Mary rates highest over the selected horizon, by position - top 5 per position, switchable by game, gameweek and horizon.
             </p>
             {/* "when has this game mode's projections last actually been
                 updated" (2026-08-23 user request) - same real freshness
@@ -171,7 +128,7 @@ export default async function HailMaryRatingsPage({
               <span className="cursor-not-allowed rounded-full px-2 py-1 text-xs font-medium text-navy-700">←</span>
             ) : (
               <Link
-                href={`/ratings?game=${activeSlug}&gameweek=${viewedGameweek - 1}`}
+                href={`/ratings?game=${activeSlug}&gameweek=${viewedGameweek - 1}&horizon=${horizon}`}
                 className="rounded-full px-2 py-1 text-xs font-medium text-navy-300 hover:bg-navy-800 hover:text-white"
               >
                 ←
@@ -182,7 +139,7 @@ export default async function HailMaryRatingsPage({
               <span className="cursor-not-allowed rounded-full px-2 py-1 text-xs font-medium text-navy-700">→</span>
             ) : (
               <Link
-                href={`/ratings?game=${activeSlug}&gameweek=${viewedGameweek + 1}`}
+                href={`/ratings?game=${activeSlug}&gameweek=${viewedGameweek + 1}&horizon=${horizon}`}
                 className="rounded-full px-2 py-1 text-xs font-medium text-navy-300 hover:bg-navy-800 hover:text-white"
               >
                 →
@@ -195,7 +152,7 @@ export default async function HailMaryRatingsPage({
           {RATED_GAMES.map((g) => (
             <Link
               key={g.slug}
-              href={`/ratings?game=${g.slug}&gameweek=${viewedGameweek}`}
+              href={`/ratings?game=${g.slug}&gameweek=${viewedGameweek}&horizon=${horizon}`}
               className={`rounded-full px-3 py-1.5 text-xs font-medium ${
                 activeSlug === g.slug ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"
               }`}
@@ -205,29 +162,32 @@ export default async function HailMaryRatingsPage({
           ))}
         </div>
 
+        {/* Horizon selector (2026-08-23 user request) - "best for THIS
+            gameweek" (1, unchanged ranking) through "best over the next
+            5 gameweeks" (fixture-weighted). Same plain URL-param <Link>
+            pattern as the game pills above - no client state needed. */}
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-navy-500">Best for</span>
+          {HORIZONS.map((h) => (
+            <Link
+              key={h}
+              href={`/ratings?game=${activeSlug}&gameweek=${viewedGameweek}&horizon=${h}`}
+              className={`rounded-full px-3 py-1 text-xs font-medium ${
+                horizon === h ? "bg-emerald-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"
+              }`}
+            >
+              {h === 1 ? "This gameweek" : `Next ${h} gameweeks`}
+            </Link>
+          ))}
+        </div>
+
         {/* 2-wide always (not 4/5-wide on large screens) - a narrow box
             crushed the player name/fixture text once the rating grew a
             tier pill AND a basis pill (2026-08-23 user report: "hiding
             the name"). GK/DEF stack over MID/FWD (over CLUB, for EFL
             Fantasy) instead of forcing everything into one cramped row. */}
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {columns.map((col) => {
-            const colRows = (byPosition.get(col.code) ?? []).sort((a, b) => a.rnk - b.rnk);
-            return (
-              <div key={col.code} className="rounded-xl border border-navy-700 bg-navy-900 p-4">
-                <h2 className="text-xs font-semibold uppercase tracking-wide text-navy-400">{col.label}</h2>
-                {colRows.length === 0 ? (
-                  <p className="mt-3 text-xs text-navy-500">No real projections for this gameweek yet.</p>
-                ) : (
-                  <ol className="mt-3 space-y-2">
-                    {colRows.map((r, i) => (
-                      <RatingRow key={r.game_player_id} row={r} rank={i + 1} />
-                    ))}
-                  </ol>
-                )}
-              </div>
-            );
-          })}
+        <div className="mt-6">
+          <TargetScoreBoard columns={columns} byPosition={byPosition} gameSlug={activeSlug} viewedGameweek={viewedGameweek} horizon={horizon} />
         </div>
 
         <RatingsBrowseTable

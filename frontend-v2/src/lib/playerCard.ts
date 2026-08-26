@@ -131,6 +131,28 @@ export type PlayerCardFixture = {
 
 export type PlayerCardTrendPoint = { gameweek: number; score: number; rating: number | null };
 
+// Target Score breakdown (2026-08-23 user request - "All this should be
+// downloadable on a card. So should show all 3 [4] ratings, fixtures
+// within that chosen period, fixture quality in that chosen period") -
+// only present when the download was triggered from /ratings with a
+// horizon selected. When present, this REPLACES the trend-chart panel
+// below (the 4th slot) rather than adding a 5th - card-bg.png's 4 panel
+// slots are pre-drawn art with no spare room, and the trend chart's own
+// "past few gameweeks" story overlaps with (and matters less than) a
+// forward-looking horizon breakdown when that's specifically what was
+// asked for.
+export type PlayerCardTargetScore = {
+  horizon: number;
+  startGameweek: number;
+  endGameweek: number;
+  targetScore: number;
+  formRating: number | null;
+  fixtureDifficultyRating: number | null;
+  fixtureQuantityRating: number | null;
+  liveOddsRating: number | null;
+  windowFixtures: { opponentTeamName: string | null; isHome: boolean }[];
+};
+
 export type PlayerCardInput = {
   fullName: string;
   teamName: string;
@@ -163,6 +185,7 @@ export type PlayerCardInput = {
   cleanSheetProbability: number | null;
   goalProbability: number | null;
   assistProbability: number | null;
+  targetScore?: PlayerCardTargetScore | null;
 };
 
 // Trend line + area fill only, drawn as SVG (pure vector shapes, no text -
@@ -211,6 +234,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
     cleanSheetProbability,
     goalProbability,
     assistProbability,
+    targetScore,
   } = input;
 
   const isDefensivePosition = position === "GK" || position === "DEF";
@@ -347,6 +371,71 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
           ]);
         })()
       : null;
+
+  // Target Score breakdown - lands in the SAME 4th slot the trend chart
+  // uses (see PlayerCardTargetScore's docstring for why it replaces
+  // rather than adds to it). Compact by necessity (146 design-units
+  // tall): header + composite, a row of the 4 sub-ratings (blank, never
+  // "0", wherever that signal genuinely doesn't exist), then up to 3 of
+  // the window's real fixtures.
+  const SUB_RATING_LABELS: [string, number | null][] = targetScore
+    ? [
+        ["Form", targetScore.formRating],
+        ["Fix Diff", targetScore.fixtureDifficultyRating],
+        ["Fixtures", targetScore.fixtureQuantityRating],
+        ["Live Odds", targetScore.liveOddsRating],
+      ]
+    : [];
+  const targetScorePanel = targetScore
+    ? slot(TREND_PANEL_TOP, TREND_PANEL_H, { flexDirection: "column", padding: `${s(14)}px ${s(24)}px`, gap: s(10) }, [
+        h(
+          "div",
+          { style: { display: "flex", alignItems: "baseline", justifyContent: "space-between" } },
+          label(
+            { fontSize: s(14), color: NAVY[500], letterSpacing: s(1) },
+            targetScore.horizon === 1 ? "TARGET SCORE · THIS GAMEWEEK" : `TARGET SCORE · NEXT ${targetScore.horizon} GAMEWEEKS`
+          ),
+          h(
+            "div",
+            { style: { display: "flex", alignItems: "baseline", gap: s(6) } },
+            heading({ fontSize: s(34), color: SKY[400], lineHeight: 1 }, String(Math.round(targetScore.targetScore))),
+            label({ fontSize: s(15), color: NAVY[500], lineHeight: 1 }, "/10")
+          )
+        ),
+        h(
+          "div",
+          { style: { display: "flex", gap: s(10) } },
+          ...SUB_RATING_LABELS.map(([lbl, val], i) =>
+            h(
+              "div",
+              {
+                key: i,
+                style: {
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  flex: 1,
+                  backgroundColor: NAVY[900],
+                  borderRadius: s(10),
+                  padding: `${s(8)}px 0`,
+                },
+              },
+              heading({ fontSize: s(20), color: val != null ? "#ffffff" : NAVY[500] }, val != null ? String(val) : "—"),
+              label({ fontSize: s(10), color: NAVY[500], marginTop: s(2) }, lbl)
+            )
+          )
+        ),
+        targetScore.windowFixtures.length > 0
+          ? label(
+              { fontSize: s(13), color: NAVY[500] },
+              targetScore.windowFixtures
+                .slice(0, 3)
+                .map((f) => `${f.isHome ? "vs" : "at"} ${f.opponentTeamName ?? "TBC"}`)
+                .join("  ·  ")
+            )
+          : null,
+      ])
+    : null;
 
   return h(
     "div",
@@ -560,7 +649,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
       ),
     ]),
 
-    trendChart,
+    targetScore ? targetScorePanel : trendChart,
 
     // footer - below the chrome frame's own bottom edge, in the plain
     // background margin (same placement idea as the previous design)
