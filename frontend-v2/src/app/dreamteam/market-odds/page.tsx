@@ -144,8 +144,20 @@ export default async function DreamTeamMarketOddsPage({
                             <span className="font-bold">{side.expectedGoals != null ? side.expectedGoals.toFixed(2) : "-"}</span>
                           </td>
                           <td className="py-1.5 text-right">
-                            <span className="font-bold text-emerald-400">{side.cleanSheetPct.toFixed(0)}%</span>
-                            <DeltaTag value={side.cleanSheetPctDelta} />
+                            {side.cleanSheetSource === "real" ? (
+                              <>
+                                <span className="font-bold text-emerald-400">{side.cleanSheetPct.toFixed(0)}%</span>
+                                <DeltaTag value={side.cleanSheetPctDelta} />
+                              </>
+                            ) : (
+                              // "We shouldnt use the fallback - its
+                              // tricking the eye" (2026-08-26 user
+                              // request) - no real Clean Sheet market
+                              // posted for this fixture yet.
+                              <span title="No real clean sheet odds posted for this fixture yet" className="text-[10px] font-medium text-navy-600">
+                                Odds not posted yet
+                              </span>
+                            )}
                           </td>
                         </tr>
                       ))}

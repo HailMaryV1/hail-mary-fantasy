@@ -12,6 +12,18 @@ export type MarketOddsTeamSide = {
   winPctDelta: number;
   cleanSheetPct: number;
   cleanSheetPctDelta: number;
+  /** 'real' (a genuine SportMonks Clean Sheet market observation) or
+   * 'fdr' (no real clean-sheet market posted for this fixture yet -
+   * cleanSheetPct falls back to a win-probability-derived proxy).
+   * Real user request 2026-08-26: "We shouldnt use the fallback - its
+   * tricking the eye. IF there is no odds then the market page should
+   * say failed to pull odds" - callers must show this distinction, not
+   * just the number, whenever it's 'fdr'. See migration 0149's own
+   * docstring for the real bug this caught (Premier League's Clean
+   * Sheet market has a different row shape than Championship/League
+   * One/League Two's, silently missed every run since soccer_epl was
+   * added). */
+  cleanSheetSource: "real" | "fdr";
   /** Poisson-calibrated from the real 1X2 market (see compute_expected_
    * goals.py) - null only if the real odds this derives from haven't
    * arrived yet for this fixture. No delta - it's a derived estimate,
@@ -56,6 +68,7 @@ type RpcRow = {
   clean_sheet_pct: number | string;
   clean_sheet_pct_opening: number | string | null;
   expected_goals: number | string | null;
+  clean_sheet_source: "real" | "fdr";
 };
 
 /**
@@ -94,6 +107,7 @@ export async function fetchMarketOdds(
     winPctDelta: r.win_prob_opening != null ? Number(r.win_prob) - Number(r.win_prob_opening) : 0,
     cleanSheetPct: Number(r.clean_sheet_pct),
     cleanSheetPctDelta: r.clean_sheet_pct_opening != null ? Number(r.clean_sheet_pct) - Number(r.clean_sheet_pct_opening) : 0,
+    cleanSheetSource: r.clean_sheet_source,
     expectedGoals: r.expected_goals != null ? Number(r.expected_goals) : null,
   });
 
@@ -133,7 +147,14 @@ export async function fetchMarketOdds(
     .filter((r) => r.expectedGoals != null)
     .sort((a, b) => (b.expectedGoals as number) - (a.expectedGoals as number))
     .slice(0, 5);
-  const top5CleanSheets = [...teamRows].sort((a, b) => b.cleanSheetPct - a.cleanSheetPct).slice(0, 5);
+  // Same honesty rule as the per-fixture display - a "Top 5 Highest
+  // Projected Clean Sheets" list built partly from the win-prob-derived
+  // fallback would rank fallback numbers alongside real market ones as
+  // if they meant the same thing. Real market data only.
+  const top5CleanSheets = [...teamRows]
+    .filter((r) => r.cleanSheetSource === "real")
+    .sort((a, b) => b.cleanSheetPct - a.cleanSheetPct)
+    .slice(0, 5);
 
   return { fixtures, top5Winners, top5Goals, top5CleanSheets };
 }
