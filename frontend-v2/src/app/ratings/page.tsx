@@ -271,9 +271,10 @@ export default async function HailMaryRatingsPage({
         </div>
 
         <RatingsBrowseTable
-          key={`${activeSlug}-${viewedGameweek}`}
+          key={`${activeSlug}-${anchorGameweek}-${horizonRpcValue}`}
           gameSlug={activeSlug}
-          gameweek={viewedGameweek}
+          gameweek={anchorGameweek}
+          horizon={horizonRpcValue}
           teams={teams}
           hasClubPosition={activeSlug === "eflfantasy"}
           hasBudget={gameHasBudget(activeSlug)}

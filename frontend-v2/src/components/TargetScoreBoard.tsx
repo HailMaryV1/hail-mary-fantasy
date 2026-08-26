@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { formatRating } from "@/lib/hailMaryRating";
-import { fixtureDifficultyTier } from "@/lib/fixtureDifficultyColor";
 import Kit from "@/components/Kit";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
+import FixtureWindowPills from "@/components/FixtureWindowPills";
 
 type WindowFixture = { opponent_team_name: string | null; is_home: boolean; kickoff_at: string | null; difficulty_raw: number | null };
 
@@ -44,36 +44,13 @@ function SubStat({ label, title, value }: { label: string; title: string; value:
   );
 }
 
-function shortDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-}
-
-// "it should show the next fixtures that occur during those gameweeks
-// selected" (2026-08-26 user request) - every real fixture in the
-// window, not just the nearest one, each tagged with a colored
-// difficulty pill ("use the difficulty pills with differing colours
-// too"). A 1-gameweek window naturally has just one entry, so this
-// looks like a single tagged fixture there - no special-casing needed.
-function WindowFixtures({ fixtures }: { fixtures: WindowFixture[] | null }) {
-  if (!fixtures || fixtures.length === 0) return <span className="truncate text-[10px] text-navy-600">No fixture in this window.</span>;
-  return (
-    <div className="flex flex-wrap items-center gap-1">
-      {fixtures.map((f, i) => {
-        const tier = fixtureDifficultyTier(f.difficulty_raw);
-        return (
-          <span
-            key={i}
-            title={tier?.label}
-            className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[9px] font-semibold"
-            style={tier ? { backgroundColor: tier.bg, color: tier.fg } : undefined}
-          >
-            {f.is_home ? "vs" : "at"} {f.opponent_team_name ?? "TBC"}
-            {f.kickoff_at ? ` (${shortDate(f.kickoff_at)})` : ""}
-          </span>
-        );
-      })}
-    </div>
-  );
+function toWindowFixtures(fixtures: WindowFixture[] | null) {
+  return fixtures?.map((f) => ({
+    opponentTeamName: f.opponent_team_name,
+    isHome: f.is_home,
+    kickoffAt: f.kickoff_at,
+    difficultyRaw: f.difficulty_raw,
+  })) ?? null;
 }
 
 function TargetScoreRowItem({
@@ -127,7 +104,7 @@ function TargetScoreRowItem({
         </div>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-1.5 pl-6">
-        <WindowFixtures fixtures={row.window_fixtures} />
+        <FixtureWindowPills fixtures={toWindowFixtures(row.window_fixtures)} />
         <div className="flex shrink-0 items-center gap-2">
           <SubStat label="F" title="Form" value={row.form_rating} />
           <SubStat label="D" title="Fixture Difficulty" value={row.fixture_difficulty_rating} />
