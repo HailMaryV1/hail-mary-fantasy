@@ -2235,6 +2235,42 @@ def _implied_involvement(raw_pt1, raw_pt60, raw_pt90, minutes_played):
     return {"pt1": pt1, "pt60": pt60, "pt90": pt90}
 
 
+def clean_sheet_reward_curve(p):
+    """Real user report 2026-08-26: pricing clean_sheet_60min's blended
+    probability linearly (contribution = p * points_each) "barely
+    rewards" a genuinely strong clean-sheet fixture - a keeper/defender
+    at a real 73% clean sheet chance was earning barely more credit than
+    one at 41%, when the difference in real defensive value between
+    those two fixtures is much larger than that. Below 25%, the user
+    wanted the CURRENT linear behaviour kept exactly ("0.25 for 25%...
+    0.22 for 22%") - a marginal fixture isn't being under-priced today,
+    so nothing here should change for it. Above 25%, reward accelerates:
+    by 40% it's worth ~4pts (of a 5pt clean sheet) rather than ~2, then
+    keeps climbing (not capping early) all the way to the full 5pts
+    exactly at a 100% clean sheet chance - real user choice over the
+    alternative of capping out around 45%.
+
+    Two-segment piecewise-linear ramp (not a single curve) - chosen
+    specifically because a single quadratic/power fit through the 3
+    anchor points (0.25, 0.25), (0.40, 0.80), (1.0, 1.0) turns out to
+    peak and DECREASE before reaching p=1.0 (checked by hand - the
+    smooth curve's slope goes negative around p=0.74), which would have
+    silently violated "keep climbing, never cap". Two straight segments
+    guarantee monotonic increase throughout by construction, hit every
+    anchor point exactly, and stay simple enough to hand-verify.
+
+    Only ever applied to clean_sheet_60min's raw blended rate before
+    pricing - module_rates_by_stat's own final_rate (the number Engine
+    Validation/PlayerInfoPanel show as "real clean sheet chance") stays
+    the genuine, uncurved probability; only the POINTS this fixture
+    prices to change."""
+    if p <= 0.25:
+        return p
+    if p <= 0.40:
+        return 0.25 + (p - 0.25) * ((0.80 - 0.25) / (0.40 - 0.25))
+    return 0.80 + (p - 0.40) * ((1.0 - 0.80) / (1.0 - 0.40))
+
+
 def project_player_stats(
     position, player_id, historical_row, fixture, weights, position_avg, position_involvement,
     hub_features, recent_form_rates, lineup, status, is_transferred, is_congested,
@@ -2316,9 +2352,15 @@ def project_player_stats(
                 "raw_rates": module_rates,
                 "configured_weights": dict(module_weights_by_position),
                 "effective_weights": effective_weights,
+                # The real, uncurved blended probability - what Engine
+                # Validation/PlayerInfoPanel show as "clean sheet
+                # chance". clean_sheet_reward_curve below only changes
+                # how many POINTS this rate prices to, never the
+                # displayed rate itself.
                 "final_rate": raw_rate,
             }
-            projected[stat] = raw_rate * expected_minutes_fraction * rate_scale
+            priced_rate = clean_sheet_reward_curve(raw_rate) if stat == "clean_sheet_60min" else raw_rate
+            projected[stat] = priced_rate * expected_minutes_fraction * rate_scale
         else:
             raw_rate = (historical_row[col] + k * position_avg[position][col]) / (games90 + k)
             factor = factor_by_mode[STAT_FIXTURE_MODE[stat]]
@@ -2357,7 +2399,8 @@ def compute_module_scenario_contributions(module_rates_by_stat, projected_stats,
                 continue
             has_data = True
             rate_scale = STAT_RATE_SCALE.get(stat, 1.0)
-            scenario_stats[stat] = rate * expected_minutes_fraction * rate_scale
+            priced_rate = clean_sheet_reward_curve(rate) if stat == "clean_sheet_60min" else rate
+            scenario_stats[stat] = priced_rate * expected_minutes_fraction * rate_scale
         if not has_data:
             contributions[module] = None
             continue
@@ -2533,6 +2576,24 @@ def build_module_detail_report(module_rates_by_stat, position, scoring_rules, ex
             continue
         rate_scale = STAT_RATE_SCALE.get(stat, 1.0)
         points_each = scoring_rules.get(("all", stat), scoring_rules.get((position, stat)))
+        # clean_sheet_60min prices through clean_sheet_reward_curve
+        # applied ONCE to the blended rate (project_player_stats), not
+        # per module - curve is nonlinear, so distributing it per-module
+        # by curving each module's own raw rate independently would NOT
+        # sum back to the real curved total (confirmed live: tripped
+        # main()'s own reconciliation check, off by 0.02-0.11 per
+        # player - a real regression, not noise). Instead, scale every
+        # module's UNCURVED contribution by one common ratio (curved
+        # blended rate / uncurved blended rate) - since the uncurved
+        # per-module contributions already sum exactly to the uncurved
+        # blended total by construction (blend_module_rates' own
+        # weighted-average definition), multiplying all of them by the
+        # same ratio preserves each module's relative share while making
+        # the total land exactly on the real curved contribution.
+        blended_rate = detail.get("final_rate")
+        curve_ratio = 1.0
+        if stat == "clean_sheet_60min" and blended_rate:
+            curve_ratio = clean_sheet_reward_curve(blended_rate) / blended_rate
         modules = {}
         for module in MODULE_NAMES:
             raw_rate = detail["raw_rates"].get(module)
@@ -2541,7 +2602,7 @@ def build_module_detail_report(module_rates_by_stat, position, scoring_rules, ex
             if raw_rate is None or points_each is None:
                 weighted_point_contribution = None
             else:
-                weighted_point_contribution = round(raw_rate * effective_weight * expected_minutes_fraction * rate_scale * points_each, 4)
+                weighted_point_contribution = round(raw_rate * effective_weight * expected_minutes_fraction * rate_scale * points_each * curve_ratio, 4)
             modules[module] = {
                 "raw_rate": round(raw_rate, 4) if raw_rate is not None else None,
                 "configured_weight": round(configured_weight, 4),

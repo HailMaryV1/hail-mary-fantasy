@@ -52,6 +52,7 @@ from compute_projections import (
     RECENT_FORM_STATS,
     STAT_RATE_SCALE,
     assign_ratings,
+    clean_sheet_reward_curve,
     fetch_scoring_rules,
     load_env,
 )
@@ -141,7 +142,12 @@ def compute_stat_sum_raw(inputs, position, scoring_rules, source):
             points_each = detail.get("points_each")
             if raw_rate is None or points_each is None:
                 continue
-            total += raw_rate * expected_minutes_fraction * STAT_RATE_SCALE.get(stat, 1.0) * points_each
+            # Same clean_sheet_reward_curve the real hail_mary_score now
+            # prices clean_sheet_60min through (2026-08-26 user request) -
+            # otherwise Live Odds would silently disagree with the
+            # engine it's meant to summarize for exactly this one stat.
+            priced_rate = clean_sheet_reward_curve(raw_rate) if stat == "clean_sheet_60min" else raw_rate
+            total += priced_rate * expected_minutes_fraction * STAT_RATE_SCALE.get(stat, 1.0) * points_each
             any_real = True
     else:
         recent_form_detail = inputs.get("recent_form_detail") or {}
