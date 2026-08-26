@@ -5,8 +5,10 @@ import { getGameweekInfo } from "@/lib/gameweek";
 import { hasBudget as gameHasBudget } from "@/lib/gameConfig";
 import { listPoolTeams } from "@/lib/poolSearch";
 import { getProjectionFreshness, formatFreshness } from "@/lib/projectionFreshness";
+import { parseHorizon } from "@/lib/horizonSelection";
 import RatingsBrowseTable from "@/components/RatingsBrowseTable";
 import TargetScoreBoard, { type TargetScoreRow } from "@/components/TargetScoreBoard";
+import HorizonSelector from "@/components/HorizonSelector";
 
 export const dynamic = "force-dynamic";
 
@@ -32,24 +34,6 @@ const POSITION_COLUMNS: { code: string; label: string }[] = [
   { code: "CLUB", label: "Clubs" },
 ];
 
-// The 4 horizons a player can be judged over (2026-08-23 user request) -
-// 1 keeps using the EXISTING Hail Mary Rating as its ranking signal (see
-// get_top_target_score_players' own docstring); 2/3/5 rank by the new
-// Target Score composite instead.
-const HORIZONS = [1, 2, 3, 5];
-
-// "Live Gameweek" - a 5th, separate tab (2026-08-26 user request: "just
-// for info purposes on what mary predicted the best players where and
-// whats actually happening") - not a real horizon value in target_scores
-// (still uses horizon=1's own data), just a different ANCHOR (the live
-// gameweek itself, never browsable) plus a real actual-result overlay.
-type HorizonSelection = number | "live";
-
-function parseHorizon(param: string | undefined): HorizonSelection {
-  if (param === "live") return "live";
-  const n = Number(param);
-  return HORIZONS.includes(n) ? n : 1;
-}
 
 export default async function HailMaryRatingsPage({
   searchParams,
@@ -228,30 +212,10 @@ export default async function HailMaryRatingsPage({
         {/* Horizon selector (2026-08-23 user request) - "best for THIS
             gameweek" (1, unchanged ranking) through "best over the next
             5 gameweeks" (fixture-weighted), plus a separate "Live
-            Gameweek" info tab (2026-08-26 user request). Same plain
-            URL-param <Link> pattern as the game pills above - no client
-            state needed. */}
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-navy-500">Best for</span>
-          {HORIZONS.map((h) => (
-            <Link
-              key={h}
-              href={`/ratings?game=${activeSlug}&gameweek=${viewedGameweek}&horizon=${h}`}
-              className={`rounded-full px-3 py-1 text-xs font-medium ${
-                horizonSelection === h ? "bg-emerald-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"
-              }`}
-            >
-              {h === 1 ? "This gameweek" : `Next ${h} gameweeks`}
-            </Link>
-          ))}
-          <Link
-            href={`/ratings?game=${activeSlug}&gameweek=${viewedGameweek}&horizon=live`}
-            className={`rounded-full px-3 py-1 text-xs font-medium ${
-              isLive ? "bg-red-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"
-            }`}
-          >
-            Live Gameweek
-          </Link>
+            Gameweek" info tab (2026-08-26 user request). Shared with
+            Browse All Players' own embedded copy below (HorizonSelector). */}
+        <div className="mt-2">
+          <HorizonSelector activeSlug={activeSlug} viewedGameweek={viewedGameweek} horizonSelection={horizonSelection} />
         </div>
 
         {/* 2-wide always (not 4/5-wide on large screens) - a narrow box
@@ -275,6 +239,8 @@ export default async function HailMaryRatingsPage({
           gameSlug={activeSlug}
           gameweek={anchorGameweek}
           horizon={horizonRpcValue}
+          viewedGameweek={viewedGameweek}
+          horizonSelection={horizonSelection}
           teams={teams}
           hasClubPosition={activeSlug === "eflfantasy"}
           hasBudget={gameHasBudget(activeSlug)}

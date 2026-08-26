@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { searchTargetScorePool, type TargetScorePoolRow, type TargetScorePoolSortBy } from "@/lib/targetScoreActions";
+import { type HorizonSelection } from "@/lib/horizonSelection";
 import FixtureWindowPills from "@/components/FixtureWindowPills";
+import HorizonSelector from "@/components/HorizonSelector";
 import Kit from "@/components/Kit";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 
@@ -17,37 +19,87 @@ const SORT_OPTIONS: [TargetScorePoolSortBy, string][] = [
   ["real_pts", "Total Pts (real)"],
 ];
 
-// A small labeled number input - shared shape for every min/max range
-// filter below (rating/owned/price). Empty string clears the filter
-// (sent as null), not 0 - a real user could genuinely want "0% owned
-// and up", so an unset filter must be distinguishable from a 0 value.
-function RangeInput({
+// Real user request 2026-08-26: "make the options preset drop downs
+// like every 0.5m and under for price. 5 and above, 6 and above etc for
+// rating... Percentage owned 5% and below / 10 Percent and below then
+// 15 / 25 and 40%" - replaces the earlier free-text min/max number
+// inputs with fixed preset ladders, one direction each (rating floors,
+// price/ownership ceilings), matching exactly what was asked for rather
+// than keeping a more general but fiddlier min+max pair.
+const RATING_PRESETS = [5, 6, 7, 8, 9, 10];
+const OWNED_PRESETS = [5, 10, 15, 25, 40];
+// £3.0m-£15.0m covers every real budget game's own price range
+// (Dream Team ~£2-13m, Cloud FF/FanTeam ~£3-14m) - generated, not hand-
+// typed, so the 0.5m step the user asked for stays exact.
+const PRICE_PRESETS = Array.from({ length: 25 }, (_, i) => Math.round((3.0 + i * 0.5) * 10) / 10);
+
+type FilterState = {
+  posFilter: PosFilter;
+  teamFilter: string;
+  sortBy: TargetScorePoolSortBy;
+  minRating: number | "";
+  maxOwned: number | "";
+  maxPrice: number | "";
+};
+
+const DEFAULT_FILTERS: FilterState = { posFilter: "ALL", teamFilter: "ALL", sortBy: "rating", minRating: "", maxOwned: "", maxPrice: "" };
+
+function storageKey(gameSlug: string) {
+  return `ratingsBrowseFilters:${gameSlug}`;
+}
+
+// "when i click on a player and then go back.... all my filters have
+// gone and reset. they should hold" (2026-08-26 user request) - a
+// player click swaps this component's own JSX to PlayerInfoPanel and
+// back, which alone doesn't touch React state, but a real browser-back
+// or a horizon/gameweek change elsewhere on the page remounts this
+// component fresh. Persisting to sessionStorage (keyed by game only,
+// not gameweek/horizon - a "9+ rated, under 20% owned" preference is
+// about the KIND of player, not the time window, so it should survive
+// switching horizons) makes the filters survive any of those, not just
+// the specific click-through case reported.
+function loadFilters(gameSlug: string): FilterState {
+  if (typeof window === "undefined") return DEFAULT_FILTERS;
+  try {
+    const raw = window.sessionStorage.getItem(storageKey(gameSlug));
+    if (!raw) return DEFAULT_FILTERS;
+    return { ...DEFAULT_FILTERS, ...JSON.parse(raw) };
+  } catch {
+    return DEFAULT_FILTERS;
+  }
+}
+
+// Every preset ladder here is numeric - the DOM always hands back a
+// STRING from <select>'s onChange regardless of the option value's own
+// type, so this converts back to a real number rather than leaving a
+// "9" string masquerading as 9 (would silently break === comparisons
+// against RATING_PRESETS/etc and the numeric RPC params downstream).
+function PresetSelect({
   label,
   value,
+  options,
+  format,
   onChange,
-  min,
-  max,
-  width = "w-14",
 }: {
   label: string;
   value: number | "";
+  options: number[];
+  format: (v: number) => string;
   onChange: (v: number | "") => void;
-  min?: number;
-  max?: number;
-  width?: string;
 }) {
   return (
-    <input
-      type="number"
-      inputMode="decimal"
-      placeholder={label}
-      title={label}
-      min={min}
-      max={max}
+    <select
       value={value}
       onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
-      className={`${width} rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-white placeholder:text-navy-500 focus:outline-none focus:ring-2 focus:ring-sky-400/40`}
-    />
+      className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
+    >
+      <option value="">{label}: Any</option>
+      {options.map((o) => (
+        <option key={o} value={o}>
+          {format(o)}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -64,6 +116,8 @@ export default function RatingsBrowseTable({
   gameSlug,
   gameweek,
   horizon,
+  viewedGameweek,
+  horizonSelection,
   teams,
   hasClubPosition,
   hasBudget,
@@ -71,31 +125,40 @@ export default function RatingsBrowseTable({
   gameSlug: string;
   gameweek: number;
   horizon: number;
+  // Real gameweek switcher / raw horizon selection ("live" included) -
+  // only needed to render the embedded HorizonSelector below with the
+  // exact same URL shape the one at the top of the page uses.
+  viewedGameweek: number;
+  horizonSelection: HorizonSelection;
   teams: string[];
   hasClubPosition: boolean;
   hasBudget: boolean;
 }) {
   const [searchInput, setSearchInput] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [posFilter, setPosFilter] = useState<PosFilter>("ALL");
-  const [teamFilter, setTeamFilter] = useState<string>("ALL");
-  const [sortBy, setSortBy] = useState<TargetScorePoolSortBy>("rating");
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
+  const [filtersLoaded, setFiltersLoaded] = useState(false);
   const [page, setPage] = useState(1);
   const [rows, setRows] = useState<TargetScorePoolRow[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [infoPlayerId, setInfoPlayerId] = useState<number | null>(null);
 
-  // "I should be able to check boxes that narrows the players down to
-  // what im after... a 9 or 10 rated defender for the next 3 gameweeks
-  // that is under 20% owned" + "add the price points too - so player at
-  // under 3.5m etc" (2026-08-26 user request).
-  const [minRating, setMinRating] = useState<number | "">("");
-  const [maxRating, setMaxRating] = useState<number | "">("");
-  const [minOwned, setMinOwned] = useState<number | "">("");
-  const [maxOwned, setMaxOwned] = useState<number | "">("");
-  const [minPrice, setMinPrice] = useState<number | "">("");
-  const [maxPrice, setMaxPrice] = useState<number | "">("");
+  const { posFilter, teamFilter, sortBy, minRating, maxOwned, maxPrice } = filters;
+  const setField = <K extends keyof FilterState>(key: K, value: FilterState[K]) => setFilters((f) => ({ ...f, [key]: value }));
+
+  // Load persisted filters once per game (not on every render) - a
+  // lazy-mount effect rather than a useState initializer since
+  // sessionStorage isn't available during SSR.
+  useEffect(() => {
+    setFilters(loadFilters(gameSlug));
+    setFiltersLoaded(true);
+  }, [gameSlug]);
+
+  useEffect(() => {
+    if (!filtersLoaded || typeof window === "undefined") return;
+    window.sessionStorage.setItem(storageKey(gameSlug), JSON.stringify(filters));
+  }, [gameSlug, filters, filtersLoaded]);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(searchInput), 300);
@@ -104,9 +167,10 @@ export default function RatingsBrowseTable({
 
   useEffect(() => {
     setPage(1);
-  }, [posFilter, teamFilter, sortBy, debouncedSearch, minRating, maxRating, minOwned, maxOwned, minPrice, maxPrice, gameweek, horizon]);
+  }, [posFilter, teamFilter, sortBy, debouncedSearch, minRating, maxOwned, maxPrice, gameweek, horizon]);
 
   useEffect(() => {
+    if (!filtersLoaded) return;
     let cancelled = false;
     setLoading(true);
     searchTargetScorePool({
@@ -117,10 +181,7 @@ export default function RatingsBrowseTable({
       teamName: teamFilter === "ALL" ? null : teamFilter,
       search: debouncedSearch,
       minRating: minRating === "" ? null : minRating,
-      maxRating: maxRating === "" ? null : maxRating,
-      minOwned: minOwned === "" ? null : minOwned,
       maxOwned: maxOwned === "" ? null : maxOwned,
-      minPrice: minPrice === "" ? null : minPrice,
       maxPrice: maxPrice === "" ? null : maxPrice,
       sortBy,
       // Same convention as the top boxes above - the "ALL" position view
@@ -138,10 +199,11 @@ export default function RatingsBrowseTable({
     return () => {
       cancelled = true;
     };
-  }, [gameSlug, gameweek, horizon, posFilter, teamFilter, sortBy, debouncedSearch, minRating, maxRating, minOwned, maxOwned, minPrice, maxPrice, page, hasClubPosition]);
+  }, [filtersLoaded, gameSlug, gameweek, horizon, posFilter, teamFilter, sortBy, debouncedSearch, minRating, maxOwned, maxPrice, page, hasClubPosition]);
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
   const positions: PosFilter[] = hasClubPosition ? ["ALL", "GK", "DEF", "MID", "FWD", "CLUB"] : ["ALL", "GK", "DEF", "MID", "FWD"];
+  const filtersActive = posFilter !== "ALL" || teamFilter !== "ALL" || minRating !== "" || maxOwned !== "" || maxPrice !== "" || searchInput !== "";
 
   if (infoPlayerId != null) {
     return (
@@ -162,12 +224,20 @@ export default function RatingsBrowseTable({
       <h2 className="text-sm font-semibold text-white">Browse All Players</h2>
       <p className="mt-1 text-xs text-navy-400">Search and filter the full rated pool for this horizon.</p>
 
+      {/* "Allow me to switch gameweek option on there too rather than
+          have to scroll to the top" (2026-08-26 user request) -
+          scroll={false} is what actually satisfies "without scrolling",
+          see HorizonSelector's own docstring. */}
+      <div className="mt-3">
+        <HorizonSelector activeSlug={gameSlug} viewedGameweek={viewedGameweek} horizonSelection={horizonSelection} scroll={false} />
+      </div>
+
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1.5">
           {positions.map((pos) => (
             <button
               key={pos}
-              onClick={() => setPosFilter(pos)}
+              onClick={() => setField("posFilter", pos)}
               className={`rounded-full px-3 py-1 text-xs font-medium ${
                 posFilter === pos ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"
               }`}
@@ -178,7 +248,7 @@ export default function RatingsBrowseTable({
         </div>
         <select
           value={teamFilter}
-          onChange={(e) => setTeamFilter(e.target.value)}
+          onChange={(e) => setField("teamFilter", e.target.value)}
           className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
         >
           <option value="ALL">All teams</option>
@@ -190,7 +260,7 @@ export default function RatingsBrowseTable({
         </select>
         <select
           value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as TargetScorePoolSortBy)}
+          onChange={(e) => setField("sortBy", e.target.value as TargetScorePoolSortBy)}
           className="rounded-lg border border-navy-700 bg-navy-950 px-2 py-1.5 text-xs text-navy-200 focus:outline-none focus:ring-2 focus:ring-sky-400/40"
         >
           {SORT_OPTIONS.map(([value, label]) => (
@@ -207,26 +277,34 @@ export default function RatingsBrowseTable({
         />
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-3 border-t border-navy-800 pt-2">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-navy-500">Rating</span>
-          <RangeInput label="Min" value={minRating} onChange={setMinRating} min={1} max={10} width="w-12" />
-          <span className="text-navy-600">–</span>
-          <RangeInput label="Max" value={maxRating} onChange={setMaxRating} min={1} max={10} width="w-12" />
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-navy-500">% Owned</span>
-          <RangeInput label="Min" value={minOwned} onChange={setMinOwned} min={0} max={100} />
-          <span className="text-navy-600">–</span>
-          <RangeInput label="Max" value={maxOwned} onChange={setMaxOwned} min={0} max={100} />
-        </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-navy-800 pt-2">
+        <PresetSelect label="Rating" value={minRating} options={RATING_PRESETS} format={(n) => `${n}+ rated`} onChange={(v) => setField("minRating", v)} />
+        <PresetSelect
+          label="% Owned"
+          value={maxOwned}
+          options={OWNED_PRESETS}
+          format={(n) => `${n}% owned and below`}
+          onChange={(v) => setField("maxOwned", v)}
+        />
         {hasBudget && (
-          <div className="flex items-center gap-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-navy-500">Price £m</span>
-            <RangeInput label="Min" value={minPrice} onChange={setMinPrice} min={0} />
-            <span className="text-navy-600">–</span>
-            <RangeInput label="Max" value={maxPrice} onChange={setMaxPrice} min={0} />
-          </div>
+          <PresetSelect
+            label="Price"
+            value={maxPrice}
+            options={PRICE_PRESETS}
+            format={(n) => `£${n.toFixed(1)}m and under`}
+            onChange={(v) => setField("maxPrice", v)}
+          />
+        )}
+        {filtersActive && (
+          <button
+            onClick={() => {
+              setFilters(DEFAULT_FILTERS);
+              setSearchInput("");
+            }}
+            className="rounded-full border border-navy-700 px-3 py-1.5 text-xs font-medium text-navy-400 hover:border-navy-500 hover:text-white"
+          >
+            Reset filters
+          </button>
         )}
       </div>
 
