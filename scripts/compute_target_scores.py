@@ -379,7 +379,20 @@ def main():
                 key = (team_of[gpid], position_of[gpid])
                 if key not in diff_raw_by_team_position:
                     diff_raw_by_team_position[key] = compute_fixture_difficulty_raw(position_of[gpid], fixtures_by_team.get(team_of[gpid], []))
-            diff_rating_by_team_position = bucket_by_group(diff_raw_by_team_position, lambda k: k[1])
+            # compute_fixture_difficulty_raw returns HARDSHIP (higher =
+            # tougher fixtures) but assign_ratings ranks its input
+            # ascending-to-10 (higher input -> higher rating) - bucketing
+            # hardship directly would rate the TOUGHEST run of fixtures
+            # 10/10 and the easiest 1/10, exactly backwards (real user
+            # report 2026-08-26: Chuba Akpom's genuinely brutal fixture
+            # run was rating 10 while Haaland's genuinely easy run was
+            # rating 1). Bucket EASE (1 - hardship) instead, so higher
+            # rating always means an easier run - `raw` values are
+            # bounded ~0-1 (a probability-weighted blend), so this stays
+            # comfortably positive and never trips assign_ratings' "all
+            # values <= 0" all-1s branch the way negating would have.
+            ease_by_team_position = {k: (1.0 - v if v is not None else None) for k, v in diff_raw_by_team_position.items()}
+            diff_rating_by_team_position = bucket_by_group(ease_by_team_position, lambda k: k[1])
 
             # Fixture Quantity is team-level only (not position-aware) -
             # one raw value per team, ranked within its own competition.
