@@ -393,21 +393,32 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
           "div",
           { style: { display: "flex", alignItems: "baseline", justifyContent: "space-between" } },
           label(
-            { fontSize: s(14), color: NAVY[500], letterSpacing: s(1) },
+            { fontSize: s(15), color: NAVY[300], letterSpacing: s(1) },
             targetScore.horizon === 1 ? "TARGET SCORE · THIS GAMEWEEK" : `TARGET SCORE · NEXT ${targetScore.horizon} GAMEWEEKS`
           ),
           h(
             "div",
-            { style: { display: "flex", alignItems: "baseline", gap: s(6) } },
-            heading({ fontSize: s(34), color: SKY[400], lineHeight: 1 }, String(Math.round(targetScore.targetScore))),
-            label({ fontSize: s(15), color: NAVY[500], lineHeight: 1 }, "/10")
+            { style: { display: "flex", alignItems: "baseline", gap: s(4) } },
+            heading({ fontSize: s(40), color: SKY[400], lineHeight: 1 }, String(Math.round(targetScore.targetScore))),
+            label({ fontSize: s(18), color: NAVY[300], lineHeight: 1 }, "/10")
           )
         ),
+        // Real user report 2026-08-26: "the target score and the scores
+        // are so hard to read... make the font more bright and
+        // prominent... make the 8/10 and 10/10 so people know its out
+        // of 10 metric" - every sub-rating now shows its own "/10" and
+        // is colored via the exact same tier palette the ratings page
+        // itself uses (ratingTierColors, already defined in this file),
+        // not a flat dim navy tile - color reinforces "is this good"
+        // the same instant as the number, and a bright tier color
+        // reads far better than white-on-navy at this card's real
+        // download size.
         h(
           "div",
           { style: { display: "flex", gap: s(10) } },
-          ...SUB_RATING_LABELS.map(([lbl, val], i) =>
-            h(
+          ...SUB_RATING_LABELS.map(([lbl, val], i) => {
+            const tier = ratingTierColors(val);
+            return h(
               "div",
               {
                 key: i,
@@ -416,15 +427,20 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
                   flexDirection: "column",
                   alignItems: "center",
                   flex: 1,
-                  backgroundColor: NAVY[900],
+                  backgroundColor: tier ? tier.bg : NAVY[900],
                   borderRadius: s(10),
-                  padding: `${s(8)}px 0`,
+                  padding: `${s(10)}px 0`,
                 },
               },
-              heading({ fontSize: s(20), color: val != null ? "#ffffff" : NAVY[500] }, val != null ? String(val) : "—"),
-              label({ fontSize: s(10), color: NAVY[500], marginTop: s(2) }, lbl)
-            )
-          )
+              h(
+                "div",
+                { style: { display: "flex", alignItems: "baseline", gap: s(2) } },
+                heading({ fontSize: s(28), color: tier ? tier.fg : NAVY[500] }, val != null ? String(val) : "—"),
+                val != null ? label({ fontSize: s(13), color: tier ? tier.fg : NAVY[500], lineHeight: 1 }, "/10") : null
+              ),
+              label({ fontSize: s(11), color: NAVY[300], marginTop: s(3) }, lbl)
+            );
+          })
         ),
         targetScore.windowFixtures.length > 0
           ? h(
