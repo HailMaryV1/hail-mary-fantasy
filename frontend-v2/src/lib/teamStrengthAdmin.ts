@@ -160,3 +160,59 @@ export async function saveTeamStrengthOverride(
   }
   return { saved: true };
 }
+
+export type TeamStrengthUpdate = { teamId: number; homeRating1to5: number | null; awayRating1to5: number | null };
+
+// Real user request 2026-08-27 - editing several teams one at a time
+// each dispatched its own 3 GitHub Actions recompute runs (see
+// saveTeamStrengthOverride above), so a bulk editing session fired off
+// N*3 concurrent full-pipeline recomputes all hitting the same database
+// tables at once - the direct cause of a real DB contention pile-up
+// that happened live while this was being investigated (multiple
+// projections/target_scores writes stuck idle-in-transaction on top of
+// each other). Writes every changed team's override first, then
+// dispatches the 3 recompute workflows exactly ONCE for the whole
+// batch, regardless of how many teams changed.
+export async function saveAllTeamStrengthOverrides(updates: TeamStrengthUpdate[]): Promise<{ saved: boolean; error?: string }> {
+  const authError = await requireSignedIn();
+  if (authError) return { saved: false, error: authError.error };
+
+  for (const u of updates) {
+    const validationError = validRatingOrNull(u.homeRating1to5) ?? validRatingOrNull(u.awayRating1to5);
+    if (validationError) return { saved: false, error: `${validationError} (team ${u.teamId})` };
+  }
+
+  const now = new Date().toISOString();
+  const service = createServiceSupabaseClient();
+  const results = await Promise.all(
+    updates.map((u) =>
+      service
+        .from("team_season_strength")
+        .update({
+          manual_home_strength_override: u.homeRating1to5 !== null ? toStrength(u.homeRating1to5) : null,
+          manual_away_strength_override: u.awayRating1to5 !== null ? toStrength(u.awayRating1to5) : null,
+          manual_strength_updated_at: u.homeRating1to5 !== null || u.awayRating1to5 !== null ? now : null,
+        })
+        .eq("team_id", u.teamId)
+        .eq("season", PL_SEASON)
+        .eq("source", PL_SOURCE)
+    )
+  );
+  const writeFailed = results.filter((r) => r.error);
+  if (writeFailed.length > 0) {
+    return { saved: false, error: `${writeFailed.length} of ${updates.length} team(s) failed to save: ${writeFailed.map((r) => r.error?.message).join("; ")}` };
+  }
+
+  const token = process.env.GITHUB_ACTIONS_TOKEN;
+  if (!token) return { saved: true, error: "Saved, but GITHUB_ACTIONS_TOKEN isn't configured - recompute wasn't triggered." };
+
+  const dispatchResults = await Promise.all(AFFECTED_GAME_SLUGS.map((slug) => dispatchTeamStrengthRecompute(slug, token)));
+  const dispatchFailed = dispatchResults.filter((r) => !r.dispatched);
+  if (dispatchFailed.length > 0) {
+    return {
+      saved: true,
+      error: `Saved, but recompute failed to trigger for ${dispatchFailed.length} of ${AFFECTED_GAME_SLUGS.length} game(s): ${dispatchFailed.map((f) => f.error).join("; ")}`,
+    };
+  }
+  return { saved: true };
+}
