@@ -19,6 +19,29 @@ never starts/StartingXI) - minutesPlayed >= 60 is used as the started
 heuristic for that source only, never for fanteam/cloudff where a real
 flag exists.
 
+KNOWN LATENT BUG, found 2026-08-27, not yet fixed: overall-stats-by-gw-
+extra's fromGW/toGW params do NOT scope the response to that gameweek
+range - confirmed live across all 3 sources (sdt/tff/cloud) that
+requesting toGW=1 vs toGW=5 returns the SAME real season-to-date
+CUMULATIVE totals both times (gamesPlayed/minutesPlayed/starts/
+StartingXI included), not that gameweek's own increment. import_
+gameweek() below currently calls this once per already-played gameweek
+in a loop and writes each call's result as if it were THAT gameweek's
+own "did they start" value - harmless today only because
+already_played_gameweeks() has only ever had ONE real gameweek to loop
+over so far this season (GW1; GW2 kicks off 2026-08-28). The MOMENT a
+run processes 2+ already-played gameweeks together, every one of them
+will get overwritten with the SAME latest cumulative-derived flag,
+silently corrupting actual_started for every gameweek except whichever
+one happens to be genuinely current. Needs a real fix (comparing
+successive cumulative snapshots to derive each gameweek's own delta, or
+an upstream endpoint that actually respects the range) before GW2
+completes - flagged here rather than rushed through under time
+pressure. accumulate_dreamteam_current_season_row() below is NOT
+affected by this specific bug - it already treats every field as
+cumulative-regardless-of-range by design (single fetch, no per-
+gameweek loop).
+
 Writes into player_gameweek_predictions.actual_started (migration
 0152) - the SAME table Recent Form already reads real per-gameweek
 results from (fetch_recent_gameweek_observations, compute_projections.py),
@@ -69,10 +92,9 @@ STARTED_MINUTES_THRESHOLD = 60  # sdt-only fallback, see module docstring
 # Self-contained, not imported from compute_projections.py - same
 # established convention seed_dreamteam_historical_stats.py's own
 # docstring already follows ("self-contained point-value constants, no
-# import from compute_projections.py"). Values must match compute_
-# projections.py's own HISTORICAL_SEASON/CURRENT_SEASON exactly - see
-# accumulate_dreamteam_current_season_row()'s own docstring.
-HISTORICAL_SEASON = "2025/26"
+# import from compute_projections.py"). Must match compute_projections.
+# py's own CURRENT_SEASON exactly - see accumulate_dreamteam_current_
+# season_row()'s own docstring.
 CURRENT_SEASON = "2026/27"
 
 # game_slug -> dreamteamtonic source key + how to read that source's shape.
@@ -332,7 +354,7 @@ def already_played_gameweeks(cur, game_id):
 
 
 def accumulate_dreamteam_current_season_row(cur, game_id, gameweeks, by_position, all_players):
-    """Real per-gameweek minutes for Dream Team (2026-08-27 user request -
+    """Real season-to-date stats for Dream Team (2026-08-27 user request -
     "if we can pull everything from dream team tonic that would be
     cleaner"). Dream Team's own official API exposes no real per-match
     minutes field at all (see seed_dreamteam_historical_stats.py's own
@@ -341,97 +363,94 @@ def accumulate_dreamteam_current_season_row(cur, game_id, gameweeks, by_position
     what let a uniform, ~1-game-deep sample crush every Dream Team
     player's expected-minutes fraction toward zero (real user report,
     2026-08-27 - Erling Haaland, an undisputed nailed-on starter, rated
-    3/10). DreamTeamTonic's sdt source has real per-gameweek
-    minutesPlayed - this sums it across every already-played gameweek
-    into a real PT1/PT60/PT90 season-aggregate row, feeding the SAME
-    CURRENT_SEASON merge mechanism compute_projections.py already trusts
-    for every other game's own live per-gameweek data (see that file's
-    own CURRENT_SEASON docstring) - no new mechanism, just a real data
-    source finally feeding an existing one for Dream Team specifically.
+    3/10).
 
-    sdt's payload has no goals/assists/clean-sheets/etc at all (confirmed
-    live, see this module's own docstring - "its player rows only carry
-    gamesPlayed/minutesPlayed") - those event-stat columns are carried
-    forward unchanged from whatever's already in the HISTORICAL_SEASON
-    row (itself real, season-cumulative data from Dream Team's own
-    official API via scraper_dreamteam_stats.py/seed_dreamteam_
-    historical_stats.py) rather than zeroed out here - overwriting a real
-    signal with a fabricated absence would be a regression, not an
-    improvement. Only minutes_played/PT1/PT60/PT90 actually change - the
-    one real thing DTT knows that the official API doesn't.
+    IMPORTANT, confirmed live 2026-08-27: sdt's overall-stats-by-gw-extra
+    endpoint does NOT return per-gameweek deltas despite its fromGW/toGW
+    params - every field (gamesPlayed, minutesPlayed, totalPoints, every
+    per-stat count) is the SAME real season-cumulative total regardless
+    of what range is requested (checked directly: toGW=1 and toGW=5
+    returned byte-identical numbers for every player). An earlier version
+    of this function looped over each already-played gameweek and SUMMED
+    minutesPlayed across calls, assuming each call returned that
+    gameweek's own increment - that would have silently multiplied real
+    minutes by however many gameweeks had been played once GW2+ existed.
+    Fixed by fetching ONCE and reading the already-cumulative fields
+    directly - gamesPlayed maps straight onto pt1 (a real appearance
+    count, no derivation needed at all now), and the same real payload
+    also has genuine goals/assists/cleanSheet/saves/tackles/etc per-stat
+    TOTALS - matching (often exceeding) what scraper_dreamteam_stats.py's
+    official-API pull gets, so those are used directly here too rather
+    than carried forward from the official-API-sourced HISTORICAL_SEASON
+    row, per the user's own "pull everything from dream team tonic"
+    direction - one real source instead of two overlapping ones.
 
-    Idempotent per run: sums every already-played gameweek fresh each
-    time (not an incremental += that could double-count on a re-run),
-    then deletes and re-inserts the one season-aggregate row per player -
-    same idiom seed_dreamteam_historical_stats.py already uses."""
-    if not gameweeks:
+    pt60/pt90 have no real per-appearance breakdown available from this
+    season-aggregate endpoint (that granularity only exists per-gameweek,
+    which this endpoint doesn't actually expose despite appearing to).
+    Estimated from real avg minutes per appearance (minutesPlayed /
+    gamesPlayed) scaled against the 60/90-minute thresholds directly -
+    data-grounded per player, not a single flat assumed rate applied to
+    everyone the way seed_dreamteam_historical_stats.py's ASSUMED_COND60_
+    RATE was.
+
+    Idempotent per run: re-fetches the current cumulative snapshot fresh
+    every time (there's nothing to accumulate incrementally, since the
+    source itself is already cumulative), then deletes and re-inserts the
+    one season-aggregate row per player - same idiom seed_dreamteam_
+    historical_stats.py already uses."""
+    source = SOURCES["dreamteam"]
+    data = fetch_gameweek(source["key"], 1)  # fromGW/toGW ignored - see docstring
+    if not data or not data.get("players"):
         return 0
 
-    source = SOURCES["dreamteam"]
-    per_player = {}  # game_player_id -> {"minutes": int, "pt1": int, "pt60": int, "pt90": int}
+    per_player = {}  # game_player_id -> raw DTT player dict
     team_id_cache = {}
-    for gw in gameweeks:
-        data = fetch_gameweek(source["key"], gw)
-        if not data or not data.get("players"):
+    for p in data["players"]:
+        raw_team = p.get("squadName")
+        if raw_team not in team_id_cache:
+            team_id_cache[raw_team] = resolve_team_id(cur, source["alias_source"], source["team_overrides"], raw_team)
+        team_id = team_id_cache[raw_team]
+        live_position = POSITION_MAP.get(p.get("positionLabel") or p.get("position"))
+        display_name = p.get("displayName")
+        if not display_name or not live_position:
             continue
-        for p in data["players"]:
-            raw_team = p.get("squadName")
-            if raw_team not in team_id_cache:
-                team_id_cache[raw_team] = resolve_team_id(cur, source["alias_source"], source["team_overrides"], raw_team)
-            team_id = team_id_cache[raw_team]
-            live_position = POSITION_MAP.get(p.get("positionLabel") or p.get("position"))
-            display_name = p.get("displayName")
-            if not display_name or not live_position:
-                continue
-            player_id = match_player(by_position, all_players, display_name, live_position, team_id)
-            if player_id is None:
-                continue
-            cur.execute(
-                "select gp.id from game_players gp where gp.game_id = %s and gp.player_id = %s",
-                (game_id, player_id),
-            )
-            row = cur.fetchone()
-            if not row:
-                continue
-            game_player_id = row[0]
-            minutes = int(p.get("minutesPlayed") or 0)
-            agg = per_player.setdefault(game_player_id, {"minutes": 0, "pt1": 0, "pt60": 0, "pt90": 0})
-            agg["minutes"] += minutes
-            if minutes > 0:
-                agg["pt1"] += 1
-            if minutes >= 60:
-                agg["pt60"] += 1
-            if minutes >= 90:
-                agg["pt90"] += 1
+        player_id = match_player(by_position, all_players, display_name, live_position, team_id)
+        if player_id is None:
+            continue
+        cur.execute(
+            "select gp.id from game_players gp where gp.game_id = %s and gp.player_id = %s",
+            (game_id, player_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            continue
+        per_player[row[0]] = p
 
     if not per_player:
         return 0
 
-    cur.execute(
-        """
-        select gps.game_player_id, gps.total_points, gps.goals, gps.assists, gps.clean_sheets, gps.saves,
-               gps.goals_conceded, gps.yellow_cards, gps.red_cards, gps.raw_stats
-        from game_player_stats gps
-        join game_players gp on gp.id = gps.game_player_id
-        where gp.game_id = %s and gps.season = %s and gps.gameweek = 0
-        """,
-        (game_id, HISTORICAL_SEASON),
-    )
-    historical_by_game_player_id = {row[0]: row[1:] for row in cur.fetchall()}
+    def real_int(p, key):
+        return int(float(p.get(key) or 0))
 
     written = 0
-    for game_player_id, agg in per_player.items():
-        hist = historical_by_game_player_id.get(game_player_id)
-        if hist:
-            total_points, goals, assists, clean_sheets, saves, goals_conceded, yellow_cards, red_cards, raw_stats = hist
-        else:
-            total_points, goals, assists, clean_sheets, saves, goals_conceded, yellow_cards, red_cards, raw_stats = (
-                0, 0, 0, 0, 0, 0, 0, 0, {}
-            )
-        raw_stats = dict(raw_stats or {})
-        raw_stats["PT1"] = agg["pt1"]
-        raw_stats["PT60"] = agg["pt60"]
-        raw_stats["PT90"] = agg["pt90"]
+    for game_player_id, p in per_player.items():
+        pt1 = real_int(p, "gamesPlayed")
+        minutes_played = real_int(p, "minutesPlayed")
+        avg_min = (minutes_played / pt1) if pt1 > 0 else 0.0
+        # No real per-appearance breakdown exists at this season-
+        # aggregate granularity (see this function's own docstring) -
+        # estimated from real avg minutes per appearance, per player,
+        # rather than one flat assumed rate applied to everyone.
+        pt60 = round(pt1 * min(1.0, avg_min / 60.0)) if avg_min > 0 else 0
+        pt90 = round(pt1 * min(1.0, avg_min / 90.0)) if avg_min > 0 else 0
+
+        raw_stats = {
+            "PT1": pt1, "PT60": pt60, "PT90": pt90,
+            "games_played_derived": pt1,
+            "avg_minutes_per_appearance": round(avg_min, 1),
+            "percent_selected": float(p.get("percentSelected") or 0),
+        }
 
         cur.execute(
             "delete from game_player_stats where game_player_id = %s and season = %s and gameweek = 0",
@@ -445,8 +464,10 @@ def accumulate_dreamteam_current_season_row(cur, game_id, gameweeks, by_position
             values (%s, %s, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
-                game_player_id, CURRENT_SEASON, agg["minutes"], goals, assists, clean_sheets,
-                saves, goals_conceded, yellow_cards, red_cards, total_points, psycopg2.extras.Json(raw_stats),
+                game_player_id, CURRENT_SEASON, minutes_played,
+                real_int(p, "goals"), real_int(p, "assists"), real_int(p, "cleanSheet"),
+                real_int(p, "saves"), real_int(p, "goalsConceded"), real_int(p, "yellowCards"), real_int(p, "redCards"),
+                real_int(p, "totalPoints"), psycopg2.extras.Json(raw_stats),
             ),
         )
         written += 1
