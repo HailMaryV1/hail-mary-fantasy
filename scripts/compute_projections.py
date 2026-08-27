@@ -1545,7 +1545,22 @@ def compute_shrunk_rates(players, historical_rows):
     the same per-90 shrinkage-prior treatment as every other stat here,
     via one shared function rather than a duplicate averaging pass.
     """
-    stat_cols = list(STAT_COLUMNS.values()) + PPM_COMPONENT_COLUMNS
+    # dict.fromkeys dedupes while preserving order - STAT_COLUMNS maps
+    # both "save" and "saves_per_3" (EFL Fantasy's own alias, migration
+    # 0090) onto the same "saves" column, so the plain list below had
+    # "saves" twice. Real bug found 2026-08-27 investigating a user
+    # report of GK ratings over-crediting saves against tough fixtures:
+    # without dedup, the loop just below added every player's saves
+    # total into position_totals[pos]["saves"] TWICE (once per aliased
+    # key), roughly doubling position_avg["GK"]["saves"] - the
+    # shrinkage-prior baseline every keeper's own historical_shrunk_rate
+    # blends toward. Harmless for a keeper with a full season of real
+    # minutes (their own signal dominates), but for a keeper with
+    # near-zero real minutes on this club (a new signing/loan return -
+    # exactly Henderson/Bizot/Donnarumma's situation this gameweek) the
+    # k=10-game shrinkage prior IS almost the whole rate, so this alone
+    # was enough to roughly double their projected saves.
+    stat_cols = list(dict.fromkeys(list(STAT_COLUMNS.values()) + PPM_COMPONENT_COLUMNS))
     position_totals = {pos: {col: 0.0 for col in stat_cols + ["games90"]} for pos in POSITIONS}
     for _, position, player_id in players:
         row = historical_rows.get(player_id)
