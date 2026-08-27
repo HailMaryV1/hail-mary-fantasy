@@ -368,6 +368,12 @@ def run_wrapup():
     see its own docstring."""
     results = []
     results.append(run_step("Capture gameweek actuals", ["scripts/capture_gameweek_actuals.py"]))
+    # Real per-gameweek starts data (2026-08-27 user request - replaces
+    # the old static rotation-risk screenshot, see compute_projections.py's
+    # fetch_recent_start_observations) - runs right after actuals capture
+    # since it UPDATEs the same player_gameweek_predictions rows that step
+    # just wrote/confirmed exist, and before the next step reads them.
+    results.append(run_step("Capture real starts (Dream Team Tonic)", ["scripts/import_dreamteamtonic_starts.py"]))
     results.append(run_step("Attach gameweek results to frozen predictions", ["scripts/attach_gameweek_results.py"]))
     results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
     results.append(run_step("Capture squad state at deadline (Mary Performance Lab)", ["scripts/capture_squad_gameweek_state.py"]))
