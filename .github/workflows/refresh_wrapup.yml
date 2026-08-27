@@ -36,18 +36,17 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        # pywebpush needed since send_accuracy_digest.py was added
-        # 2026-08-21 (real push notifications, same as detect_odds_
-        # swings.py/poll_golf_live_scores.py in the other workflows that
-        # already install it) - missed here at the time, so every wrapup
-        # run since has failed on this step with ModuleNotFoundError.
-        # playwright added 2026-08-27 for scrape_dreamteamtonic_fixture_
-        # ticker.py - that page is a client-rendered SPA (confirmed live -
-        # the real fixture-ticker table doesn't exist until React builds
-        # it), so a plain HTTP fetch can't see it, unlike this project's
-        # other scrapers.
+        # pywebpush removed 2026-08-27 - only ever needed by send_
+        # accuracy_digest.py (real push notifications), deleted along
+        # with Ask Mary/Performance Lab in the site-wide rating
+        # consolidation - no remaining wrapup step sends push
+        # notifications. playwright added 2026-08-27 for scrape_
+        # dreamteamtonic_fixture_ticker.py - that page is a client-
+        # rendered SPA (confirmed live - the real fixture-ticker table
+        # doesn't exist until React builds it), so a plain HTTP fetch
+        # can't see it, unlike this project's other scrapers.
         run: |
-          pip install psycopg2-binary pywebpush playwright
+          pip install psycopg2-binary playwright
           playwright install --with-deps chromium
 
       - name: Run cross-game wrap-up

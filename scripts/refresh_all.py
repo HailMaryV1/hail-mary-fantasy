@@ -217,7 +217,6 @@ def run_fanteam():
     results = []
     results.append(run_step("FanTeam players (no login needed)", ["scraper_fanteam.py", "--players-only"]))
     results.append(run_step("Import FanTeam players", ["import_fanteam_live.py", "--skip-fixtures"]))
-    results.append(run_step("Accrue FanTeam free transfers", ["scripts/accrue_free_transfers.py"]))
     results.extend(recompute_section("fanteam", "FanTeam"))
     return results
 
@@ -274,7 +273,22 @@ def run_dreamteam():
     reads the scraper's raw JSON file straight off disk, same-job/same-
     checkout - see capture_gameweek_actuals.py's own docstring for why
     its separate Dream Team actuals capture can't reuse that file and
-    fetches live instead."""
+    fetches live instead.
+
+    2026-08-27: Dream Team's own official API has no real per-match
+    minutes field at all (see seed_dreamteam_historical_stats.py's own
+    docstring), which is what let a uniform, ~1-game-deep proxy crush
+    every Dream Team player's expected-minutes fraction toward zero (real
+    user report - Erling Haaland rated 3/10). This job's own historical
+    seed above still covers the real event-stats (goals/assists/etc) the
+    official API DOES have; real per-gameweek minutes now come from
+    DreamTeamTonic instead (accumulate_dreamteam_current_season_row in
+    scripts/import_dreamteamtonic_starts.py, wrapup section, dreamteam-
+    only) - see that function's own docstring for the full story. Not
+    duplicated here since that script needs the SAME real fixture
+    calendar this job's own assign_dreamteam_cup_gameweeks.py step just
+    finished updating, so it stays in wrapup (which always runs after
+    every game section) rather than being pulled forward into this job."""
     results = []
     results.append(run_step("Dream Team players (no login needed)", ["scraper_dreamteam.py"]))
     results.append(run_step("Import Dream Team players", ["import_dreamteam.py"]))
@@ -346,26 +360,37 @@ def run_wrapup():
     (capture_gameweek_actuals.py captures FanTeam's, Cloud FF's, AND EFL
     Fantasy's real actuals in one pass, from three different data sources -
     see its own docstring) or because they operate generically over whichever
-    games/gameweeks/predictions already exist in the database with no
-    game_slug filter at all (attach_gameweek_results.py, capture_
-    gameweek_predictions.py, capture_squad_gameweek_state.py, evaluate_
-    predictions.py). Scheduled to run after every game section (see
-    .github/workflows/refresh_wrapup.yml's cron offset) specifically so
-    it always sees each game's freshest recompute, not because any of
-    these scripts assume a particular game finished first.
+    games/gameweeks already exist in the database with no game_slug filter
+    at all (attach_gameweek_results.py, capture_gameweek_predictions.py).
+    Scheduled to run after every game section (see .github/workflows/
+    refresh_wrapup.yml's cron offset) specifically so it always sees each
+    game's freshest recompute, not because any of these scripts assume a
+    particular game finished first.
+
+    2026-08-27 site-wide rating consolidation: capture_squad_gameweek_
+    state.py, evaluate_predictions.py, and send_accuracy_digest.py were
+    removed here (and deleted from the repo) - they only ever fed Ask
+    Mary/Performance Lab, both now deleted from every game's frontend, and
+    nothing writes new rows to the `predictions`/`squad_gameweek_locks`
+    tables they depended on anymore (verified via a full grep sweep before
+    removing - see git history for the exact audit). capture_gameweek_
+    predictions.py stays: despite its "Hail Mary Form" framing being from
+    before that frontend badge existed, it's still a real, load-bearing
+    prerequisite - it's the step that INSERTs each gameweek's player_
+    gameweek_predictions rows in the first place, which attach_gameweek_
+    results.py (actual_minutes/actual_goals/actual_assists - Recent
+    Form's own real data source, see fetch_recent_gameweek_observations)
+    and import_dreamteamtonic_starts.py (actual_started - the Opportunity
+    Model's real starts signal) both only ever UPDATE, never insert.
+    Removing this step would silently break both of those going forward,
+    not just the retired display.
 
     prune_old_projections.py runs last, deliberately after everything
-    above that still reads from `projections` this cycle (the Hail Mary
-    Form freeze and Performance Lab snapshot both read it) - see that
+    above that still reads from `projections` this cycle - see that
     script's own docstring for why every real consumer already only
     ever wants the latest row per (game_player_id, gameweek) anyway, so
     running this every cycle keeps the table from ever re-accumulating
-    the ~90k-row/168MB bloat a one-off cleanup found on 2026-08-17.
-
-    send_accuracy_digest.py runs immediately after evaluate_predictions.py
-    specifically because it depends on that step's freshest evaluation
-    rows to decide which squad+gameweeks just became fully graded -
-    see its own docstring."""
+    the ~90k-row/168MB bloat a one-off cleanup found on 2026-08-17."""
     results = []
     results.append(run_step("Capture gameweek actuals", ["scripts/capture_gameweek_actuals.py"]))
     # Real per-gameweek starts data (2026-08-27 user request - replaces
@@ -382,10 +407,7 @@ def run_wrapup():
     # changes far slower than real minutes/starts do.
     results.append(run_step("Capture projected fixtures (Dream Team Tonic ticker)", ["scripts/scrape_dreamteamtonic_fixture_ticker.py"]))
     results.append(run_step("Attach gameweek results to frozen predictions", ["scripts/attach_gameweek_results.py"]))
-    results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
-    results.append(run_step("Capture squad state at deadline (Mary Performance Lab)", ["scripts/capture_squad_gameweek_state.py"]))
-    results.append(run_step("Evaluate Ask Mary predictions", ["scripts/evaluate_predictions.py"]))
-    results.append(run_step("Send accuracy digest", ["scripts/send_accuracy_digest.py"]))
+    results.append(run_step("Freeze gameweek predictions (starts/minutes tracking prerequisite)", ["scripts/capture_gameweek_predictions.py"]))
     results.append(run_step("Prune superseded projection rows", ["scripts/prune_old_projections.py"]))
     return results
 

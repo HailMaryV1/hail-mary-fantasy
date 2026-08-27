@@ -1,11 +1,20 @@
 """
 capture_gameweek_predictions.py
 ---------------------------------
-Hail Mary Form System, Part 1 - freezes each player's expected-side
-prediction into player_gameweek_predictions (migration 0044) the moment
-(and every time, right up until) that gameweek's deadline passes, so it
-survives every later compute_projections.py recompute untouched. See that
-migration's docstring for the full locked_at mechanism this script
+Originally "Hail Mary Form System, Part 1" - that frontend badge/display
+was deleted in the 2026-08-27 site-wide rating consolidation, but this
+script itself stays: it's the step that INSERTs each gameweek's player_
+gameweek_predictions row in the first place (migration 0044), which two
+other still-live scripts only ever UPDATE, never insert - attach_
+gameweek_results.py (actual_minutes/actual_goals/actual_assists - Recent
+Form's own real data source, see compute_projections.py's fetch_recent_
+gameweek_observations) and import_dreamteamtonic_starts.py (actual_
+started - the Opportunity Model's real starts signal). Removing this
+step would silently break both of those, not just the retired display.
+Freezes each player's expected-side prediction the moment (and every
+time, right up until) that gameweek's deadline passes, so it survives
+every later compute_projections.py recompute untouched. See migration
+0044's docstring for the full locked_at mechanism this script
 implements - short version: an unlocked row keeps refreshing with the
 latest model output on every run; the first run after the deadline passes
 both writes the final refresh AND sets locked_at, after which every later
@@ -13,8 +22,8 @@ run's UPDATE for that row silently no-ops.
 
 Scans every (game_id, gameweek) with a published calendar
 (game_fixture_gameweeks), not just FanTeam - same game-agnostic shape as
-capture_gameweek_actuals.py/evaluate_predictions.py, so this only needs
-to run once per pipeline invocation, not once per game slug.
+capture_gameweek_actuals.py, so this only needs to run once per pipeline
+invocation, not once per game slug.
 
 expected_floor/expected_ceiling are a v1 heuristic - there's no historical
 prediction-error data yet to calibrate a real interval against (that's
