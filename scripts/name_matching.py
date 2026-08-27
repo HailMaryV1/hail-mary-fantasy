@@ -51,6 +51,23 @@ def compact(name: str) -> str:
     return re.sub(r"[^a-z]", "", transliterate(name).lower())
 
 
+def first_letter_matches(a: str, b: str) -> bool:
+    """Whether a and b start with the same letter ONCE transliterated -
+    every importer's own ambiguity-narrowing/rejection logic used to
+    compare raw name[0].lower() directly, which silently fails the
+    moment either side's first letter carries a diacritic with no plain-
+    ASCII lowercase equivalent (confirmed live: real, unambiguous single
+    candidates - Djordje Petrovic, Oscar Zambrano, Armin Pecsi - were
+    rejected as "no match" against a live feed's own "Đ. Petrović"/"Ó.
+    Zambrano"/"Á. Pécsi" simply because "đ" != "d", "ó" != "o", "á" !=
+    "a" as raw code points, even though compact() already treats them
+    as the same letter everywhere else in this module). Empty/blank
+    input never matches anything, rather than two blanks comparing
+    equal."""
+    ca, cb = compact(a[:1]), compact(b[:1])
+    return bool(ca) and ca == cb
+
+
 def _raw_surname(full_name: str) -> str:
     """The surname portion of full_name, uncompacted - shared by
     surname_key() and surname_variants() so they can never drift apart

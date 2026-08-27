@@ -58,7 +58,7 @@ import psycopg2
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
-from name_matching import compact, surname_key, surname_variants  # noqa: E402
+from name_matching import compact, first_letter_matches, surname_key, surname_variants  # noqa: E402
 
 API_BASE = "https://dtt-data-api-259295136071.europe-west2.run.app"
 SEASON = "202627"  # dreamteamtonic's own compact season code for 2026/27
@@ -221,8 +221,7 @@ def match_player(by_position, all_players, live_full_name, live_position, live_t
             candidates = exact
 
     if len(candidates) > 1:
-        live_initial = live_full_name[0].lower()
-        narrowed = [c for c in candidates if c[1][0].lower() == live_initial]
+        narrowed = [c for c in candidates if first_letter_matches(c[1], live_full_name)]
         if len(narrowed) == 1:
             candidates = narrowed
 
@@ -230,7 +229,7 @@ def match_player(by_position, all_players, live_full_name, live_position, live_t
         candidate_first_name = candidates[0][1].split(" ", 1)[0].lower()
         live_first_name = live_full_name.split(" ", 1)[0].lower()
         is_nickname_of_candidate = live_first_name and live_first_name in candidate_first_name
-        if candidates[0][1][0].lower() != live_full_name[0].lower() and not is_nickname_of_candidate:
+        if not first_letter_matches(candidates[0][1], live_full_name) and not is_nickname_of_candidate:
             candidates = []
 
     if len(candidates) > 1 and live_team_id is not None:
