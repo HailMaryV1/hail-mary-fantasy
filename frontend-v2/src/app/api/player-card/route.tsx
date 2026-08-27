@@ -148,7 +148,9 @@ export async function GET(request: NextRequest) {
         live_odds_rating: number | null;
         start_gameweek: number;
         end_gameweek: number;
-        inputs: { window_fixtures?: { opponent_team_name: string | null; is_home: boolean; difficulty_raw: number | null }[] };
+        inputs: {
+          window_fixtures?: { opponent_team_name: string | null; is_home: boolean; difficulty_raw: number | null; kickoff_at: string | null }[];
+        };
       }>();
     if (tsRow) {
       targetScoreCard = {
@@ -164,6 +166,7 @@ export async function GET(request: NextRequest) {
           opponentTeamName: f.opponent_team_name,
           isHome: f.is_home,
           difficultyRaw: f.difficulty_raw,
+          kickoffAt: f.kickoff_at,
         })),
       };
     }

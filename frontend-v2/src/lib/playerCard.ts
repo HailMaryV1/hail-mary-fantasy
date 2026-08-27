@@ -119,8 +119,35 @@ function ratingTierColors(rating: number | null): { label: string; bg: string; f
   return RATING_TIER_COLORS.find((t) => rating >= t.min) ?? null;
 }
 
+// Real user request 2026-08-26: "show kick off times to GMT" - explicit
+// timeZone rather than relying on whatever timezone the render happens
+// to execute in (this route runs Node, not Edge, specifically so it can
+// read fonts/images off local disk - see api/player-card/route.tsx's
+// own docstring - but that's an unrelated reason and gives no guarantee
+// about the process's default TZ). "Etc/GMT" is always UTC+0, never
+// DST-shifted - deliberately not "Europe/London" (which becomes BST,
+// UTC+1, for most of the football season), since GMT specifically is
+// what was asked for.
+const KICKOFF_TIMEZONE = "Etc/GMT";
+
 export function formatKickoff(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return new Date(iso).toLocaleString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: KICKOFF_TIMEZONE,
+  });
+}
+
+// Compact "Sat 11:30" form for the secondary fixture chips - the full
+// formatKickoff (weekday + day + month + time) doesn't fit in a small
+// pill; a bare date is ambiguous without the day-of-week, and a bare
+// time is ambiguous across a multi-week window, so weekday+time is the
+// shortest unambiguous real pair.
+function formatShortKickoff(iso: string): string {
+  return new Date(iso).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit", timeZone: KICKOFF_TIMEZONE });
 }
 
 export type PlayerCardFixture = {
@@ -151,7 +178,7 @@ export type PlayerCardTargetScore = {
   fixtureDifficultyRating: number | null;
   fixtureQuantityRating: number | null;
   liveOddsRating: number | null;
-  windowFixtures: { opponentTeamName: string | null; isHome: boolean; difficultyRaw: number | null }[];
+  windowFixtures: { opponentTeamName: string | null; isHome: boolean; difficultyRaw: number | null; kickoffAt: string | null }[];
 };
 
 export type PlayerCardInput = {
@@ -258,6 +285,13 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
   const colors = getTeamColors(teamName);
   const confidence = CONFIDENCE_COLORS[confidenceLabel] ?? CONFIDENCE_COLORS.Low;
   const opponentColors = primaryFixture?.opponentTeamName ? getTeamColors(primaryFixture.opponentTeamName) : null;
+  // Every OTHER fixture in the window, earliest first, excluding the
+  // nearest one (already shown large as primaryFixture above) - sorted
+  // independently since window_fixtures' own storage order isn't
+  // chronological (confirmed live).
+  const secondaryFixtures = targetScore
+    ? [...targetScore.windowFixtures].sort((a, b) => (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")).slice(1, 4)
+    : [];
 
   const heading = (style: Record<string, unknown>, text: string) =>
     h("span", { style: { fontFamily: "Oswald", fontWeight: 700, ...style } }, text);
@@ -375,10 +409,12 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
 
   // Target Score breakdown - lands in the SAME 4th slot the trend chart
   // uses (see PlayerCardTargetScore's docstring for why it replaces
-  // rather than adds to it). Compact by necessity (146 design-units
-  // tall): header + composite, a row of the 4 sub-ratings (blank, never
-  // "0", wherever that signal genuinely doesn't exist), then up to 3 of
-  // the window's real fixtures.
+  // rather than adds to it). Header + composite, then a row of the 4
+  // sub-ratings (blank, never "0", wherever that signal genuinely
+  // doesn't exist). The window's real fixtures moved up into the
+  // fixture panel itself (2026-08-26 user request - "the fixtures are
+  // just dropped at the bottom - they should be next to the top fixture
+  // in the box under the name"), not repeated down here too.
   const SUB_RATING_LABELS: [string, number | null][] = targetScore
     ? [
         ["Form", targetScore.formRating],
@@ -442,32 +478,6 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
             );
           })
         ),
-        targetScore.windowFixtures.length > 0
-          ? h(
-              "div",
-              { style: { display: "flex", flexWrap: "wrap", gap: s(6) } },
-              ...targetScore.windowFixtures.slice(0, 3).map((f, i) => {
-                const tier = fixtureDifficultyTier(f.difficultyRaw);
-                return h(
-                  "span",
-                  {
-                    key: i,
-                    style: {
-                      display: "flex",
-                      fontFamily: "Oswald",
-                      fontWeight: 500,
-                      fontSize: s(13),
-                      borderRadius: s(6),
-                      padding: `${s(3)}px ${s(8)}px`,
-                      backgroundColor: tier ? tier.bg : NAVY[900],
-                      color: tier ? tier.fg : NAVY[500],
-                    },
-                  },
-                  `${f.isHome ? "vs" : "at"} ${f.opponentTeamName ?? "TBC"}`
-                );
-              })
-            )
-          : null,
       ])
     : null;
 
@@ -584,39 +594,84 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
       )
     ),
 
-    // fixture - lands inside card-bg.png's first pre-drawn panel slot
+    // fixture - lands inside card-bg.png's first pre-drawn panel slot.
+    // Real user request 2026-08-26: "the fixtures are just dropped at
+    // the bottom - they should be next to the top fixture in the box
+    // under the name - Next fixture large like it is then followed by
+    // the next 2 or 3 smaller - they should also show kick off times to
+    // GMT and also show Home or away". The panel's own vertical space
+    // was never actually tight (the original row layout only used ~48
+    // of its 115 design-units, centered with generous padding above/
+    // below) - column layout with the existing large primary fixture on
+    // top and a compact secondary chip row underneath fits comfortably
+    // without needing new background art.
     primaryFixture
-      ? slot(FIXTURE_PANEL_TOP, FIXTURE_PANEL_H, { alignItems: "center", gap: s(20), padding: `0 ${s(24)}px` }, [
-          opponentColors
-            ? h(
-                "div",
-                {
-                  style: {
-                    display: "flex",
-                    width: s(48),
-                    height: s(48),
-                    borderRadius: 999,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    backgroundColor: opponentColors.primary,
-                    color: opponentColors.secondary,
-                  },
-                },
-                heading({ fontSize: s(17), color: opponentColors.secondary }, opponentColors.abbr)
-              )
-            : null,
+      ? slot(FIXTURE_PANEL_TOP, FIXTURE_PANEL_H, { flexDirection: "column", justifyContent: "center", gap: s(10), padding: `0 ${s(24)}px` }, [
           h(
             "div",
-            { style: { display: "flex", flexDirection: "column" } },
-            heading(
-              { fontSize: s(25), color: "#ffffff" },
-              `${primaryFixture.isHome ? "vs " : "at "}${primaryFixture.opponentTeamName ?? "Unknown opponent"}`
-            ),
-            label(
-              { fontSize: s(18), color: NAVY[500], marginTop: s(2) },
-              `${formatKickoff(primaryFixture.kickoffAt)} · ${competitionLabel(primaryFixture.competition)}`
+            { style: { display: "flex", alignItems: "center", gap: s(20) } },
+            opponentColors
+              ? h(
+                  "div",
+                  {
+                    style: {
+                      display: "flex",
+                      width: s(48),
+                      height: s(48),
+                      borderRadius: 999,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: opponentColors.primary,
+                      color: opponentColors.secondary,
+                    },
+                  },
+                  heading({ fontSize: s(17), color: opponentColors.secondary }, opponentColors.abbr)
+                )
+              : null,
+            h(
+              "div",
+              { style: { display: "flex", flexDirection: "column" } },
+              heading(
+                { fontSize: s(25), color: "#ffffff" },
+                `${primaryFixture.isHome ? "vs " : "at "}${primaryFixture.opponentTeamName ?? "Unknown opponent"}`
+              ),
+              label(
+                { fontSize: s(18), color: NAVY[500], marginTop: s(2) },
+                `${formatKickoff(primaryFixture.kickoffAt)} · ${competitionLabel(primaryFixture.competition)}`
+              )
             )
           ),
+          // Every OTHER real fixture in the selected horizon's window,
+          // earliest first, excluding the one already shown large above
+          // (sorted independently of window_fixtures' own storage order,
+          // which isn't chronological - confirmed live, compute_target_
+          // scores.py's fetch_window_fixture_rows has no ORDER BY).
+          secondaryFixtures.length > 0
+            ? h(
+                "div",
+                { style: { display: "flex", flexWrap: "wrap", gap: s(6) } },
+                ...secondaryFixtures.map((f, i) => {
+                  const tier = fixtureDifficultyTier(f.difficultyRaw);
+                  return h(
+                    "span",
+                    {
+                      key: i,
+                      style: {
+                        display: "flex",
+                        fontFamily: "Oswald",
+                        fontWeight: 500,
+                        fontSize: s(12),
+                        borderRadius: s(6),
+                        padding: `${s(4)}px ${s(8)}px`,
+                        backgroundColor: tier ? tier.bg : NAVY[900],
+                        color: tier ? tier.fg : NAVY[500],
+                      },
+                    },
+                    `${f.isHome ? "(H)" : "(A)"} ${f.opponentTeamName ?? "TBC"}${f.kickoffAt ? ` · ${formatShortKickoff(f.kickoffAt)}` : ""}`
+                  );
+                })
+              )
+            : null,
         ])
       : null,
 
