@@ -149,7 +149,16 @@ export async function GET(request: NextRequest) {
         start_gameweek: number;
         end_gameweek: number;
         inputs: {
-          window_fixtures?: { opponent_team_name: string | null; is_home: boolean; difficulty_raw: number | null; kickoff_at: string | null }[];
+          window_fixtures?: {
+            opponent_team_name: string | null;
+            is_home: boolean | null;
+            difficulty_raw: number | null;
+            kickoff_at: string | null;
+            gameweek: number | null;
+            is_projected?: boolean;
+            competition?: string | null;
+            confidence?: number | null;
+          }[];
         };
       }>();
     if (tsRow) {
@@ -167,6 +176,10 @@ export async function GET(request: NextRequest) {
           isHome: f.is_home,
           difficultyRaw: f.difficulty_raw,
           kickoffAt: f.kickoff_at,
+          gameweek: f.gameweek,
+          isProjected: f.is_projected ?? false,
+          competition: f.competition ?? null,
+          confidence: f.confidence ?? null,
         })),
       };
     }

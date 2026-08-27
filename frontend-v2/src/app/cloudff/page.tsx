@@ -368,12 +368,14 @@ export default async function CloudFFPage({ searchParams }: { searchParams: Prom
 
   // No bench and no squad-level captain (Cloud FF's captain is picked per
   // real match-day, not once for the whole squad - see matchDayCaptains.ts)
-  // - flat sum, no captain sentence.
-  const totalProjectedPoints = boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
+  // - flat average, no captain sentence. Average Hail Mary Rating, not
+  // summed points (2026-08-27 user request).
+  const ratedBoardSquad = boardSquad.filter((p) => p.rating != null);
+  const averageRating = ratedBoardSquad.length > 0 ? ratedBoardSquad.reduce((sum, p) => sum + (p.rating ?? 0), 0) / ratedBoardSquad.length : null;
   const squadSummary = isPlanningView
     ? buildSquadSummary({
         players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score, rating: p.rating })),
-        totalProjectedPoints,
+        averageRating,
         teamValue,
         budgetRemaining: bank,
         captain: null,

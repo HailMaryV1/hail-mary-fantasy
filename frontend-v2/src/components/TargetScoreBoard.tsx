@@ -8,10 +8,13 @@ import FixtureWindowPills from "@/components/FixtureWindowPills";
 
 type WindowFixture = {
   opponent_team_name: string | null;
-  is_home: boolean;
+  is_home: boolean | null;
   kickoff_at: string | null;
   difficulty_raw: number | null;
   gameweek: number | null;
+  is_projected?: boolean;
+  competition?: string | null;
+  confidence?: number | null;
 };
 
 export type TargetScoreRow = {
@@ -59,11 +62,16 @@ function toWindowFixtures(fixtures: WindowFixture[] | null) {
         kickoffAt: f.kickoff_at,
         difficultyRaw: f.difficulty_raw,
         gameweek: f.gameweek,
+        isProjected: f.is_projected ?? false,
+        competition: f.competition ?? null,
+        confidence: f.confidence ?? null,
       }))
       // Real fixture order (2026-08-27 fix) - window_fixtures' own
       // storage order isn't chronological, same fix applied everywhere
       // else this JSON is read (targetScoreActions.ts, playerCard.ts).
-      .sort((a, b) => (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")) ?? null
+      // Sorted by gameweek first, not just kickoff - a projected TBA/IF
+      // entry has no real kickoff to sort by.
+      .sort((a, b) => (a.gameweek ?? 0) - (b.gameweek ?? 0) || (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")) ?? null
   );
 }
 

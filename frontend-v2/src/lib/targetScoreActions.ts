@@ -4,10 +4,21 @@ import { createAuthServerClient } from "./supabaseServerClient";
 
 export type TargetScoreWindowFixture = {
   opponentTeamName: string | null;
-  isHome: boolean;
+  isHome: boolean | null;
   kickoffAt: string | null;
   difficultyRaw: number | null;
   gameweek: number | null;
+  // A projected cup/Europe fixture (2026-08-27 user report - Dream Team
+  // Tonic's own fixture ticker shows a real double gameweek's second
+  // leg before we know the opponent - see compute_target_scores.py's
+  // fetch_window_projected_fixtures) - opponent/kickoff/difficulty are
+  // deliberately null for these, never fabricated. competition names
+  // which one (via engineExplainability.ts's competitionLabel);
+  // confidence is 1.0 (TBA - date confirmed) or 0.5 (IF - contingent on
+  // cup progression).
+  isProjected: boolean;
+  competition: string | null;
+  confidence: number | null;
 };
 
 export type TargetScoreWindow = {
@@ -53,10 +64,13 @@ export async function getPlayerTargetScoreWindow(
       inputs: {
         window_fixtures?: {
           opponent_team_name: string | null;
-          is_home: boolean;
+          is_home: boolean | null;
           kickoff_at: string | null;
           difficulty_raw: number | null;
           gameweek: number | null;
+          is_projected?: boolean;
+          competition?: string | null;
+          confidence?: number | null;
         }[];
       };
     }>();
@@ -69,7 +83,10 @@ export async function getPlayerTargetScoreWindow(
     // in order") - window_fixtures' own storage order isn't chronological
     // (confirmed live, fetch_window_fixture_rows has no ORDER BY), same
     // fix already applied to the downloadable card's own secondary
-    // fixture list (playerCard.ts).
+    // fixture list (playerCard.ts). Sorted by gameweek first, not just
+    // kickoff - a projected TBA/IF entry has no real kickoff to sort by,
+    // so a kickoff-only sort would dump every one of them at the very
+    // top regardless of which week they're actually in.
     fixtures: (data.inputs?.window_fixtures ?? [])
       .map((f) => ({
         opponentTeamName: f.opponent_team_name,
@@ -77,8 +94,11 @@ export async function getPlayerTargetScoreWindow(
         kickoffAt: f.kickoff_at,
         difficultyRaw: f.difficulty_raw,
         gameweek: f.gameweek,
+        isProjected: f.is_projected ?? false,
+        competition: f.competition ?? null,
+        confidence: f.confidence ?? null,
       }))
-      .sort((a, b) => (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")),
+      .sort((a, b) => (a.gameweek ?? 0) - (b.gameweek ?? 0) || (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")),
   };
 }
 
@@ -173,7 +193,16 @@ export async function searchTargetScorePool(params: {
     live_odds_rating: number | null;
     real_total_points: number | string | null;
     window_fixtures:
-      | { opponent_team_name: string | null; is_home: boolean; kickoff_at: string | null; difficulty_raw: number | null; gameweek: number | null }[]
+      | {
+          opponent_team_name: string | null;
+          is_home: boolean | null;
+          kickoff_at: string | null;
+          difficulty_raw: number | null;
+          gameweek: number | null;
+          is_projected?: boolean;
+          competition?: string | null;
+          confidence?: number | null;
+        }[]
       | null;
     end_gameweek: number | null;
     total_count: number | string;
@@ -205,8 +234,11 @@ export async function searchTargetScorePool(params: {
         kickoffAt: f.kickoff_at,
         difficultyRaw: f.difficulty_raw,
         gameweek: f.gameweek,
+        isProjected: f.is_projected ?? false,
+        competition: f.competition ?? null,
+        confidence: f.confidence ?? null,
       }))
-      .sort((a, b) => (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")),
+      .sort((a, b) => (a.gameweek ?? 0) - (b.gameweek ?? 0) || (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")),
     endGameweek: r.end_gameweek,
   }));
   const totalCount = rpcRows.length > 0 ? Number(rpcRows[0].total_count) : 0;

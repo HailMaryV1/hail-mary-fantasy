@@ -119,12 +119,17 @@ const BOOSTER_SHORT: Record<Booster, string> = { goal_bonus: "GB", twelfth_man: 
 
 // attack_score is 0-1, higher = a better attacking fixture (easier) for
 // that team - real data already computed for the Fixtures page, reused
-// here as a simple 5-tier difficulty color.
+// here as a simple 5-tier difficulty color. Thresholds recalibrated
+// 2026-08-27 to the real quintile breakpoints of attack_score across
+// actual upcoming fixtures (see lib/fixtureDifficultyColor.ts's own
+// docstring for the full evidence - same recalibration, kept in sync
+// here since this board's own tiles duplicate that logic rather than
+// importing it).
 function difficultyColor(d: number): string {
-  if (d >= 0.6) return "bg-emerald-600";
-  if (d >= 0.45) return "bg-emerald-800";
-  if (d >= 0.35) return "bg-navy-700";
-  if (d >= 0.25) return "bg-amber-800";
+  if (d >= 0.89) return "bg-emerald-600";
+  if (d >= 0.68) return "bg-emerald-800";
+  if (d >= 0.56) return "bg-navy-700";
+  if (d >= 0.35) return "bg-amber-800";
   return "bg-red-800";
 }
 
@@ -529,9 +534,17 @@ export default function DreamTeamBoard({
   // updating" even though nothing about the pooling is wrong).
   const displayBank = poolBudget;
   // No bench - every squad member always starts and always counts, so
-  // this is a flat sum (same "no formation search needed" reasoning as
-  // askMaryEngine.ts's optimalXITotal).
-  const optimisticTotalPoints = optimisticSquad.reduce((sum, p) => sum + (p.score ?? 0), 0);
+  // this is a flat average over whoever has a real rating (same "no
+  // formation search needed" reasoning as askMaryEngine.ts's
+  // optimalXITotal). Average Hail Mary Rating, not summed points
+  // (2026-08-27 user request - "shouldnt be [projected points] now...
+  // we are going off ratings" - every player-level number moved to the
+  // 1-10 scale a while back; this stat tile was the one place still
+  // quoting the old backend-only points scale). null (never a
+  // fabricated 0) when nobody in the squad has a real rating yet.
+  const ratedOptimisticSquad = optimisticSquad.filter((p) => p.rating != null);
+  const optimisticAverageRating =
+    ratedOptimisticSquad.length > 0 ? ratedOptimisticSquad.reduce((sum, p) => sum + (p.rating ?? 0), 0) / ratedOptimisticSquad.length : null;
 
   // Which sold slot clicking `p` would fill - any currently-open slot,
   // not just one matching p's own position (2026-08-20 user report: "if
@@ -626,7 +639,7 @@ export default function DreamTeamBoard({
         )}
 
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
-          <StatBox label="Projected Points" value={optimisticTotalPoints.toFixed(1)} />
+          <StatBox label="Avg Rating" value={optimisticAverageRating != null ? `${optimisticAverageRating.toFixed(1)}/10` : "—"} />
           <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
           <StatBox label="Bank" value={`£${displayBank.toFixed(1)}m`} />
           <StatBox label="Team Value" value={`£${optimisticTeamValue.toFixed(1)}m`} />

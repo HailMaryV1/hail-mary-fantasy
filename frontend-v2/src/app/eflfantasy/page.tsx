@@ -526,6 +526,12 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
 
   const totalProjectedPoints =
     boardSquad.reduce((sum, p) => sum + (p.score ?? 0), 0) + boardClubs.reduce((sum, c) => sum + (c.score ?? 0), 0);
+  // Average Hail Mary Rating across the squad, for Mary's Squad Summary
+  // narrative only (2026-08-27 user request) - totalProjectedPoints
+  // above stays real summed points, it's also reused below for the
+  // real season-to-date actual-points total and must not change meaning.
+  const ratedBoardSquad = boardSquad.filter((p) => p.rating != null);
+  const averageRating = ratedBoardSquad.length > 0 ? ratedBoardSquad.reduce((sum, p) => sum + (p.rating ?? 0), 0) / ratedBoardSquad.length : null;
 
   // Season-to-date real total (2026-08-19 user request: "a large current
   // points total somewhere on the page") - sums every completed
@@ -547,7 +553,7 @@ export default async function EFLFantasyPage({ searchParams }: { searchParams: P
   const squadSummary = isPlanningView
     ? buildSquadSummary({
         players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: 0, score: p.score, rating: p.rating })),
-        totalProjectedPoints,
+        averageRating,
         teamValue: 0,
         budgetRemaining: 0,
         hasBudget: false,

@@ -13,16 +13,21 @@ export type SquadSummaryPlayer = {
   price: number;
   score: number | null;
   // The 1-10 Hail Mary Rating (migration 0135) - individual-player
-  // mentions below name this, never raw points. The squad-total sentence
-  // stays in real points (confirmed with the user - "how many points
-  // will this XI score" is a different question from "how good is each
-  // player," and ratings can't be summed).
+  // mentions below name this, never raw points.
   rating: number | null;
 };
 
 export type SquadSummaryInput = {
   players: SquadSummaryPlayer[];
-  totalProjectedPoints: number;
+  // Average Hail Mary Rating across the 11 starters (2026-08-27 user
+  // request - "shouldnt be [projected points] now... we are going off
+  // ratings"), replacing a raw summed-points figure that no longer
+  // matched the rest of the app (every player-level number moved to the
+  // 1-10 rating a while back; this squad-level stat was the one place
+  // still quoting the old backend-only points scale). Null when no
+  // starter has a real rating yet (e.g. a brand-new gameweek with no
+  // real signal for anyone) - never a fabricated 0.
+  averageRating: number | null;
   teamValue: number;
   budgetRemaining: number;
   // false for a game with no price/budget system at all (EFL Fantasy -
@@ -43,15 +48,16 @@ export type SquadSummaryInput = {
 };
 
 export function buildSquadSummary(input: SquadSummaryInput): string[] {
-  const { players, totalProjectedPoints, teamValue, budgetRemaining, captain, topStrength, topWeakness, nextStepTransferCount, nextStepGameweek } = input;
+  const { players, averageRating, teamValue, budgetRemaining, captain, topStrength, topWeakness, nextStepTransferCount, nextStepGameweek } = input;
   const hasBudget = input.hasBudget ?? true;
 
   const sentences: string[] = [];
 
+  const ratingText = averageRating != null ? `rates ${averageRating.toFixed(1)}/10 on average` : "has no rated starters yet";
   sentences.push(
     hasBudget
-      ? `This squad is projected for ${totalProjectedPoints.toFixed(1)} points this gameweek, built on a squad value of £${teamValue.toFixed(1)}m with £${budgetRemaining.toFixed(1)}m still in the bank.`
-      : `This squad is projected for ${totalProjectedPoints.toFixed(1)} points this gameweek.`
+      ? `This squad ${ratingText} this gameweek, built on a squad value of £${teamValue.toFixed(1)}m with £${budgetRemaining.toFixed(1)}m still in the bank.`
+      : `This squad ${ratingText} this gameweek.`
   );
 
   const topScorers = players

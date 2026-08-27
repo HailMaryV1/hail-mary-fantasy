@@ -104,12 +104,15 @@ function sortValue(p: PoolPlayer, sortBy: SortBy): number {
 }
 
 // attack_score is 0-1, higher = a better attacking fixture (easier) for
-// that team - same tiering used on the Dream Team board.
+// that team - same tiering used on the Dream Team board. Thresholds
+// recalibrated 2026-08-27 to the real quintile breakpoints of
+// attack_score across actual upcoming fixtures (see lib/
+// fixtureDifficultyColor.ts's own docstring for the full evidence).
 function difficultyColor(d: number): string {
-  if (d >= 0.6) return "bg-emerald-600";
-  if (d >= 0.45) return "bg-emerald-800";
-  if (d >= 0.35) return "bg-navy-700";
-  if (d >= 0.25) return "bg-amber-800";
+  if (d >= 0.89) return "bg-emerald-600";
+  if (d >= 0.68) return "bg-emerald-800";
+  if (d >= 0.56) return "bg-navy-700";
+  if (d >= 0.35) return "bg-amber-800";
   return "bg-red-800";
 }
 
@@ -813,9 +816,14 @@ export default function FanTeamBoard({
 
   const sortColumnLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "Rating";
 
-  // Captains score double - a simple sum, not the more elaborate
-  // auto-sub-probability-weighted total used elsewhere.
-  const projectedPoints = optimisticSquad.filter((p) => p.isStarting).reduce((sum, p) => sum + (p.score ?? 0) * (p.isCaptain ? 2 : 1), 0);
+  // Average Hail Mary Rating across the starting XI, not summed points
+  // (2026-08-27 user request - "shouldnt be [projected points] now...
+  // we are going off ratings"). No captain doubling here - a rating
+  // isn't a points total, doubling one starter's rating into the
+  // average would just be double-counting, not reflecting anything
+  // real about squad quality.
+  const ratedStartingXI = optimisticSquad.filter((p) => p.isStarting && p.rating != null);
+  const averageRating = ratedStartingXI.length > 0 ? ratedStartingXI.reduce((sum, p) => sum + (p.rating ?? 0), 0) / ratedStartingXI.length : null;
   // The real remaining spendable pot - poolBudget itself, not the flat
   // total pot, so the Bank stat box visibly counts down as picks land.
   const displayBank = poolBudget;
@@ -839,7 +847,7 @@ export default function FanTeamBoard({
           <StatBox label="Transfers" value={seasonStarted ? String(transfers) : "Unlimited"} />
           <StatBox label="Bank" value={`£${displayBank.toFixed(1)}m`} />
           <StatBox label="Team Value" value={`£${optimisticTeamValue.toFixed(1)}m`} />
-          <StatBox label="Projected Points" value={projectedPoints.toFixed(1)} />
+          <StatBox label="Avg Rating" value={averageRating != null ? `${averageRating.toFixed(1)}/10` : "—"} />
           <div className="rounded-xl border border-navy-700 bg-navy-900 p-3">
             <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Wildcard</p>
             <p className="mt-0.5 text-sm font-semibold text-white">

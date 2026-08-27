@@ -161,6 +161,25 @@ export default function PlayerInfoPanel({
                 </p>
               )}
               {targetScoreWindow.fixtures.map((f, i) => {
+                // A projected cup/Europe fixture (2026-08-27 user report
+                // - Dream Team Tonic's own ticker shows a real double
+                // gameweek before we know the opponent) - honest about
+                // what's unknown, dashed border instead of a fabricated
+                // difficulty tier.
+                if (f.isProjected) {
+                  const label = f.confidence != null && f.confidence < 1 ? "Possible fixture" : "Fixture confirmed, opponent TBA";
+                  return (
+                    <div key={i} className="flex items-center gap-2 rounded-lg border border-dashed border-navy-700 bg-navy-950 px-3 py-2 text-xs">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-navy-300">{competitionLabel(f.competition)}</p>
+                        <p className="text-navy-500">
+                          {f.gameweek != null ? `GW${f.gameweek} · ` : null}
+                          {label}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
                 const tier = fixtureDifficultyTier(f.difficultyRaw);
                 return (
                   <div key={i} className="flex items-center gap-2 rounded-lg border border-navy-800 bg-navy-950 px-3 py-2 text-xs">

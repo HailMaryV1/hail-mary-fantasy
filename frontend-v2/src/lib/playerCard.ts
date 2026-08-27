@@ -185,7 +185,16 @@ export type PlayerCardTargetScore = {
   fixtureDifficultyRating: number | null;
   fixtureQuantityRating: number | null;
   liveOddsRating: number | null;
-  windowFixtures: { opponentTeamName: string | null; isHome: boolean; difficultyRaw: number | null; kickoffAt: string | null }[];
+  windowFixtures: {
+    opponentTeamName: string | null;
+    isHome: boolean | null;
+    difficultyRaw: number | null;
+    kickoffAt: string | null;
+    gameweek: number | null;
+    isProjected: boolean;
+    competition: string | null;
+    confidence: number | null;
+  }[];
 };
 
 export type PlayerCardInput = {
@@ -295,9 +304,14 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
   // Every OTHER fixture in the window, earliest first, excluding the
   // nearest one (already shown large as primaryFixture above) - sorted
   // independently since window_fixtures' own storage order isn't
-  // chronological (confirmed live).
+  // chronological (confirmed live). Sorted by gameweek first, not just
+  // kickoff - a projected TBA/IF entry (2026-08-27) has no real kickoff
+  // to sort by, so a kickoff-only sort would put it ahead of every real
+  // fixture regardless of which week it's actually in.
   const secondaryFixtures = targetScore
-    ? [...targetScore.windowFixtures].sort((a, b) => (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")).slice(1, 4)
+    ? [...targetScore.windowFixtures]
+        .sort((a, b) => (a.gameweek ?? 0) - (b.gameweek ?? 0) || (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? ""))
+        .slice(1, 4)
     : [];
 
   const heading = (style: Record<string, unknown>, text: string) =>
@@ -658,6 +672,32 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
                 "div",
                 { style: { display: "flex", flexWrap: "wrap", gap: s(6) } },
                 ...secondaryFixtures.map((f, i) => {
+                  // A projected cup/Europe fixture (2026-08-27 user
+                  // report - Dream Team Tonic's own ticker shows a real
+                  // double gameweek before we know the opponent) -
+                  // dashed border instead of a fabricated difficulty
+                  // color, names the competition + TBA/Possible instead
+                  // of an opponent nobody can confirm yet.
+                  if (f.isProjected) {
+                    const projLabel = f.confidence != null && f.confidence < 1 ? "Possible" : "TBA";
+                    return h(
+                      "span",
+                      {
+                        key: i,
+                        style: {
+                          display: "flex",
+                          fontFamily: "Oswald",
+                          fontWeight: 500,
+                          fontSize: s(12),
+                          borderRadius: s(6),
+                          padding: `${s(4)}px ${s(8)}px`,
+                          border: `${s(1)}px dashed ${NAVY[700]}`,
+                          color: NAVY[500],
+                        },
+                      },
+                      `${projLabel} · ${competitionLabel(f.competition)}`
+                    );
+                  }
                   const tier = fixtureDifficultyTier(f.difficultyRaw);
                   return h(
                     "span",

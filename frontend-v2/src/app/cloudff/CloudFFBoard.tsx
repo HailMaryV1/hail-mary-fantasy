@@ -101,12 +101,17 @@ function sortValue(p: PoolPlayer, sortBy: SortBy): number {
 
 // attack_score is 0-1, higher = a better attacking fixture (easier) for
 // that team - real data already computed for the Fixtures page, reused
-// here as a simple 5-tier difficulty color.
+// here as a simple 5-tier difficulty color. Thresholds recalibrated
+// 2026-08-27 to the real quintile breakpoints of attack_score across
+// actual upcoming fixtures (see lib/fixtureDifficultyColor.ts's own
+// docstring for the full evidence - same recalibration, kept in sync
+// here since this board's own tiles duplicate that logic rather than
+// importing it).
 function difficultyColor(d: number): string {
-  if (d >= 0.6) return "bg-emerald-600";
-  if (d >= 0.45) return "bg-emerald-800";
-  if (d >= 0.35) return "bg-navy-700";
-  if (d >= 0.25) return "bg-amber-800";
+  if (d >= 0.89) return "bg-emerald-600";
+  if (d >= 0.68) return "bg-emerald-800";
+  if (d >= 0.56) return "bg-navy-700";
+  if (d >= 0.35) return "bg-amber-800";
   return "bg-red-800";
 }
 

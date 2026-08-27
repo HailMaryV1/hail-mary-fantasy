@@ -356,17 +356,16 @@ export default async function FanTeamSquadPage({
     teams = teamNames;
   }
 
-  // Starting XI only (captain doubled), matching FanTeamBoard.tsx's own
-  // client-side projectedPoints formula exactly - a bench player's score
-  // isn't part of what this squad is actually projected to return.
-  const totalProjectedPoints = boardSquad
-    .filter((p) => p.isStarting)
-    .reduce((sum, p) => sum + (p.score ?? 0) * (p.isCaptain ? 2 : 1), 0);
+  // Starting XI only, average Hail Mary Rating (not summed points -
+  // 2026-08-27 user request), matching FanTeamBoard.tsx's own client-
+  // side averageRating formula exactly.
+  const ratedStartingXI = boardSquad.filter((p) => p.isStarting && p.rating != null);
+  const averageRating = ratedStartingXI.length > 0 ? ratedStartingXI.reduce((sum, p) => sum + (p.rating ?? 0), 0) / ratedStartingXI.length : null;
   const currentCaptain = boardSquad.find((p) => p.isCaptain);
   const squadSummary = isPlanningView
     ? buildSquadSummary({
         players: boardSquad.map((p) => ({ fullName: p.full_name, position: p.position, price: p.price, score: p.score, rating: p.rating })),
-        totalProjectedPoints,
+        averageRating,
         teamValue,
         budgetRemaining: bank,
         captain: currentCaptain ? { fullName: currentCaptain.full_name, score: currentCaptain.score ?? 0, rating: currentCaptain.rating } : null,

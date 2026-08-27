@@ -263,20 +263,28 @@ def fetch_window_fixture_counts(cur, game_id, start_gameweek, horizon):
     return {(competition, team_id): count for team_id, competition, count in cur.fetchall()}
 
 
-def fetch_projected_fixture_credits(cur, game_id, start_gameweek, horizon):
-    """{team_id: credit_sum} - real per-team projected cup/Europe
-    fixture credits (dreamteamtonic_projected_fixtures, migration 0154,
-    scripts/scrape_dreamteamtonic_fixture_ticker.py's own docstring for
-    the full TBA/IF story) for the window, ONLY for a (team_id,
-    gameweek, competition) that doesn't already have a REAL fixture in
-    game_fixture_gameweeks - once the real fixture is confirmed and
-    lands there, this stops contributing on its own, no manual cleanup
-    needed. TBA = 1.0 (date real/confirmed, opponent just not yet
-    drawn), IF = 0.5 (contingent on cup progression, genuinely
-    uncertain)."""
+def fetch_window_projected_fixtures(cur, game_id, start_gameweek, horizon):
+    """{team_id: [{"gameweek": gw, "competition": comp, "confidence": c}, ...]}
+    - real per-team projected cup/Europe fixture entries
+    (dreamteamtonic_projected_fixtures, migration 0154, scripts/
+    scrape_dreamteamtonic_fixture_ticker.py's own docstring for the full
+    TBA/IF story) for the window, ONLY for a (team_id, gameweek,
+    competition) that doesn't already have a REAL fixture in game_
+    fixture_gameweeks - once the real fixture is confirmed and lands
+    there, this stops contributing on its own (both to the Fixture
+    Quantity number below AND to window_fixtures' own displayed pill -
+    2026-08-27 user report: "gameweek 3 is showing a double for plenty
+    of teams [on the real ticker]... why are they not visible in the
+    rankings, the player pool, the player cards" - this was previously
+    folded into the RATING only, with nothing displayable, since there's
+    no real opponent to show; now surfaced as an honest TBA/IF
+    placeholder fixture entry too, opponent deliberately left null
+    rather than fabricated). TBA = 1.0 (date real/confirmed, opponent
+    just not yet drawn), IF = 0.5 (contingent on cup progression,
+    genuinely uncertain)."""
     cur.execute(
         """
-        select dpf.team_id, sum(dpf.confidence) as credit
+        select dpf.team_id, dpf.gameweek, dpf.competition, dpf.confidence
         from dreamteamtonic_projected_fixtures dpf
         where dpf.game_id = %s and dpf.gameweek >= %s and dpf.gameweek < %s
           and not exists (
@@ -287,11 +295,23 @@ def fetch_projected_fixture_credits(cur, game_id, start_gameweek, horizon):
               and f.competition = dpf.competition
               and (f.home_team_id = dpf.team_id or f.away_team_id = dpf.team_id)
           )
-        group by dpf.team_id
+        order by dpf.team_id, dpf.gameweek
         """,
         (game_id, start_gameweek, start_gameweek + horizon),
     )
-    return {team_id: float(credit) for team_id, credit in cur.fetchall()}
+    out = {}
+    for team_id, gameweek, competition, confidence in cur.fetchall():
+        out.setdefault(team_id, []).append({"gameweek": gameweek, "competition": competition, "confidence": float(confidence)})
+    return out
+
+
+def fetch_projected_fixture_credits(cur, game_id, start_gameweek, horizon):
+    """{team_id: credit_sum} - fetch_window_projected_fixtures' own
+    entries summed by confidence, for Fixture Quantity's raw count."""
+    credits = {}
+    for team_id, entries in fetch_window_projected_fixtures(cur, game_id, start_gameweek, horizon).items():
+        credits[team_id] = sum(e["confidence"] for e in entries)
+    return credits
 
 
 def single_fixture_difficulty_raw(position, fixture):
@@ -497,13 +517,17 @@ def main():
             # request - "the fixture tickers show all the double
             # gameweeks coming up... it would massively help our
             # fixture QUANTITY even when the game is not populated
-            # themselves") - see fetch_projected_fixture_credits' own
-            # docstring. Dream Team only (fetch_projected_fixture_
-            # credits itself is game-scoped via game_id, so this is a
+            # themselves") - see fetch_window_projected_fixtures' own
+            # docstring. Dream Team only (fetch_window_projected_
+            # fixtures itself is game-scoped via game_id, so this is a
             # genuine no-op for fanteam/cloudff/eflfantasy - they simply
-            # have no rows in dreamteamtonic_projected_fixtures).
-            for team_id, credit in fetch_projected_fixture_credits(cur, game_id, gameweek, horizon).items():
-                qty_raw_by_team[team_id] = qty_raw_by_team.get(team_id, 0) + credit
+            # have no rows in dreamteamtonic_projected_fixtures). Fetched
+            # once here and reused below for window_fixtures' own
+            # displayed TBA/IF placeholder pill, so the number and the
+            # thing a user can actually see always agree.
+            projected_fixtures_by_team = fetch_window_projected_fixtures(cur, game_id, gameweek, horizon)
+            for team_id, entries in projected_fixtures_by_team.items():
+                qty_raw_by_team[team_id] = qty_raw_by_team.get(team_id, 0) + sum(e["confidence"] for e in entries)
                 competition_of_team.setdefault(team_id, "soccer_epl")
             qty_rating_by_team = bucket_by_group(qty_raw_by_team, competition_of_team)
 
@@ -531,6 +555,29 @@ def main():
                 window_fixtures_for_position = [
                     {**fx, "difficulty_raw": round(v, 4) if (v := single_fixture_difficulty_raw(position, fx)) is not None else None}
                     for fx in fixtures_by_team.get(team_id, [])
+                ] + [
+                    # A projected cup/Europe TBA/IF placeholder (see
+                    # fetch_window_projected_fixtures) - deliberately no
+                    # opponent_team_name/kickoff_at/difficulty_raw (all
+                    # None): honest about what we don't know yet, never
+                    # fabricated. is_projected/confidence let the
+                    # frontend render this distinctly from a real
+                    # fixture (2026-08-27 user report: these need to be
+                    # visible, not just folded into the rating number).
+                    {
+                        "fixture_id": None,
+                        "kickoff_at": None,
+                        "is_home": None,
+                        "opponent_team_name": None,
+                        "opponent_attack_score": None,
+                        "opponent_clean_sheet_score": None,
+                        "gameweek": pf["gameweek"],
+                        "competition": pf["competition"],
+                        "difficulty_raw": None,
+                        "is_projected": True,
+                        "confidence": pf["confidence"],
+                    }
+                    for pf in projected_fixtures_by_team.get(team_id, [])
                 ]
                 inputs = {
                     "form_raw": round(form_raw[gpid], 4) if form_raw[gpid] is not None else None,

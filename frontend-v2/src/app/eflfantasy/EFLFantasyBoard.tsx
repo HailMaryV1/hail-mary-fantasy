@@ -140,12 +140,19 @@ const FIXTURE_TOGGLE_ENABLED = false;
 // that team - same tiering used on the other games' boards. Now backed
 // by the 3-tier fixture-difficulty system (real bookmaker odds, falling
 // back to EFL's own real FDR, see this project's fixture-difficulty
-// memory) rather than the old averagePoints proxy.
+// memory) rather than the old averagePoints proxy. Thresholds
+// recalibrated 2026-08-27 to the real quintile breakpoints of
+// attack_score measured against actual upcoming Premier League fixtures
+// (see lib/fixtureDifficultyColor.ts's own docstring for the full
+// evidence) - not separately re-measured against Championship/League
+// One/League Two's own real odds, but the same 0-1 win-probability-like
+// scale, so this is a clear improvement over the old arbitrary cutoffs
+// either way.
 function difficultyColor(d: number): string {
-  if (d >= 0.6) return "bg-emerald-600";
-  if (d >= 0.45) return "bg-emerald-800";
-  if (d >= 0.35) return "bg-navy-700";
-  if (d >= 0.25) return "bg-amber-800";
+  if (d >= 0.89) return "bg-emerald-600";
+  if (d >= 0.68) return "bg-emerald-800";
+  if (d >= 0.56) return "bg-navy-700";
+  if (d >= 0.35) return "bg-amber-800";
   return "bg-red-800";
 }
 
