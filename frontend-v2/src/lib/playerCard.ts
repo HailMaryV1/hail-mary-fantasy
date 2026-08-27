@@ -282,6 +282,11 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
   } = input;
 
   const isDefensivePosition = position === "GK" || position === "DEF";
+  // See the headline panel's own comment below - Target Score replaces
+  // the legacy `rating` (hail_mary_rating) as the card's hero number
+  // whenever it's available, which in practice is every real download
+  // (both callers of this card always pass a horizon).
+  const headlineRating = targetScore ? Math.round(targetScore.targetScore) : rating;
   const pct = (n: number) => `${Math.round(n * 100)}%`;
   // Always exactly 3 entries (padded with null) - the image bakes in 3
   // fixed tile slots, so a 2-tile case (GK/DEF with only Clean Sheet, no
@@ -722,18 +727,38 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
         ])
       : null,
 
-    // Hail Mary Rating - second, taller pre-drawn panel slot. finalScore
-    // (raw projected points) still drives this number's computation but
-    // is never itself rendered - see hailMaryRating.ts's own docstring.
+    // Headline rating - second, taller pre-drawn panel slot. Real user
+    // report 2026-08-27: this always showed the legacy single-gameweek
+    // hail_mary_rating here, a genuinely different (percentile-scale)
+    // number from the Target Score breakdown panel below it on the SAME
+    // card - both correct for what they actually were, but reading as
+    // flatly contradictory side by side (e.g. "Hail Mary Rating 6/10"
+    // above "Target Score 9/10" for the same player/gameweek). Mirrors
+    // the exact fix already shipped for PlayerInfoPanel's own on-page
+    // headline (see that component's own comment) - when a Target Score
+    // is available (horizon is always passed by both real callers of
+    // this card, see route.tsx), it drives BOTH the label and the
+    // number here; the legacy `rating` prop only remains as a fallback
+    // for the (no longer real, in practice) horizon-less case.
     slot(POINTS_PANEL_TOP, POINTS_PANEL_H, { alignItems: "center", justifyContent: "space-between", padding: `0 ${s(30)}px` }, [
       h(
         "div",
         { style: { display: "flex", flexDirection: "column" } },
-        label({ fontSize: s(19), color: NAVY[500], letterSpacing: s(2) }, "Hail Mary Rating"),
+        label(
+          { fontSize: s(19), color: NAVY[500], letterSpacing: s(2) },
+          targetScore
+            ? targetScore.horizon === 1
+              ? "TARGET SCORE · THIS GAMEWEEK"
+              : `TARGET SCORE · NEXT ${targetScore.horizon} GAMEWEEKS`
+            : "Hail Mary Rating"
+        ),
         h(
           "div",
           { style: { display: "flex", alignItems: "baseline", gap: s(8) } },
-          heading({ fontSize: s(92), color: SKY[400], lineHeight: 1 }, rating != null ? String(rating) : "—"),
+          heading(
+            { fontSize: s(92), color: SKY[400], lineHeight: 1 },
+            headlineRating != null ? String(headlineRating) : "—"
+          ),
           label({ fontSize: s(28), color: NAVY[500], lineHeight: 1 }, "/10")
         )
       ),
@@ -752,7 +777,7 @@ export function buildPlayerCardElement(input: PlayerCardInput) {
           `${confidenceLabel} confidence`
         ),
         (() => {
-          const tier = ratingTierColors(rating);
+          const tier = ratingTierColors(headlineRating);
           return tier
             ? label(
                 {
