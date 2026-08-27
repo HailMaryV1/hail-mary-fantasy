@@ -323,12 +323,27 @@ def capture_dreamteam_actuals(conn):
         # Same real-data-grounded "match finished" proxy as Cloud FF
         # above - every one of the gameweek's real fixtures kicked off
         # at least 3 hours ago.
+        #
+        # competition = 'soccer_epl' only - real bug found live 2026-08-27
+        # (user report: "Total Pts" never showing for Dream Team despite
+        # real GW1 having finished days ago). assign_dreamteam_cup_
+        # gameweeks.py buckets Carabao Cup/FA Cup/European fixtures into
+        # the SAME gameweek number as the real league round they fall
+        # within (deliberately, for Fixture Quantity's own credit - see
+        # that script's docstring), so an unfiltered max(kickoff_at) over
+        # the whole bucket waited on a cup tie kicking off TODAY before
+        # ever considering GW1 "complete", even though the real league
+        # portion (what matchdayPoints below is actually scored from)
+        # finished days ago. Dream Team's own gameweek deadline/scoring
+        # window is about the league round specifically - a cup fixture
+        # sharing the bucket for fixture-quantity purposes was never
+        # meant to gate this completeness check too.
         cur.execute(
             """
             select distinct gfg.gameweek
             from game_fixture_gameweeks gfg
             join fixtures f on f.id = gfg.fixture_id
-            where gfg.game_id = %s
+            where gfg.game_id = %s and f.competition = 'soccer_epl'
             group by gfg.gameweek
             having max(f.kickoff_at) < now() - interval '3 hours'
             order by gfg.gameweek
