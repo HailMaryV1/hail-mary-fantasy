@@ -228,16 +228,19 @@ STAT_FIXTURE_MODE = {
     "interception": "pressure",
     "saves_per_3": "pressure",  # same bucket as FanTeam's "save"
 }
-# goals_conceded_per_2's point value in the matrix is "per 2 conceded" -
-# our projected rate is per single goal, so halve it before pricing.
+# goals_conceded_per_2 is NOT a linear "per N" rule despite the name (the
+# real rule is "first goal free, then -1/goal") - priced via
+# goals_conceded_penalty_curve()'s Poisson closed-form instead, see its
+# docstring and project_player_stats' else-branch. Left out of this dict
+# on purpose: that curve's output is already in the exact units
+# points_each=-1.00 expects, nothing to pre-divide.
 # tackle/save don't need this: Dream Team's own "1 point per 2" rule for
 # those is entered directly as the per-unit-equivalent point value (0.5)
 # in migration 0053, matching FanTeam's own existing 'save' convention.
 STAT_RATE_SCALE = {
-    "goals_conceded_per_2": 0.5,
-    # EFL Fantasy's "every N" rules (migration 0090) - same pre-divide
-    # trick as goals_conceded_per_2 above: the matrix's point value is
-    # "per N occurrences", the projected rate is per single occurrence.
+    # EFL Fantasy's "every N" rules (migration 0090) - the matrix's point
+    # value is "per N occurrences", the projected rate is per single
+    # occurrence, so pre-divide before pricing.
     "tackles_per_2": 0.5,
     "blocks_per_2": 0.5,
     "clearances_per_4": 0.25,
@@ -2281,6 +2284,37 @@ def clean_sheet_reward_curve(p):
     return 0.80 + (p - 0.40) * ((1.0 - 0.80) / (1.0 - 0.40))
 
 
+def goals_conceded_penalty_curve(expected_goals_conceded):
+    """Real user report 2026-08-27: "-1 point for every goal after the
+    first" (Dream Team's own scoring matrix - concede 1 = 0, concede 2 =
+    -1, concede 3 = -2, ...) was being approximated as a flat -1-per-2-
+    conceded linear scale (STAT_RATE_SCALE["goals_conceded_per_2"] = 0.5)
+    - already flagged as an approximation in game_scoring_rules' own
+    notes column, but never actually fixed. That linear stand-in
+    systematically UNDER-prices a genuinely tough fixture (concede 3 on
+    average -> true expected penalty ~2.05pts, the /2 approximation only
+    ~1.5) while OVER-pricing an easy one (concede 0.3 on average -> true
+    ~0.04, the /2 approximation ~0.15) - exactly backwards from what a
+    real "first goal free" rule should do, and exactly the gap the user
+    was worried the ratings weren't accounting for.
+
+    For goals conceded X ~ Poisson(expected_goals_conceded), the real
+    rule's expected point cost is E[max(0, X-1)]. Since X is a
+    non-negative integer, E[min(X,1)] = P(X>=1) = 1 - e^-lambda, so
+    E[max(0,X-1)] = E[X] - E[min(X,1)] = lambda - (1 - e^-lambda) - a
+    closed form, no simulation needed. Same Poisson "at least one" shape
+    already used elsewhere in this engine (api/player-card/route.tsx's
+    own toProbability for goal/assist chance).
+
+    Returns the expected NUMBER OF PENALTY-WORTH GOALS directly (already
+    equivalent to what the old rate*0.5 was meant to approximate) - the
+    caller multiplies this by the real -1-per-goal point value with no
+    further scaling, so STAT_RATE_SCALE's 0.5 entry for this stat is
+    bypassed here, not stacked on top."""
+    lam = max(0.0, expected_goals_conceded)
+    return max(0.0, lam - (1.0 - math.exp(-lam)))
+
+
 def project_player_stats(
     position, player_id, historical_row, fixture, weights, position_avg, position_involvement,
     hub_features, recent_form_rates, lineup, status, is_transferred, is_congested,
@@ -2374,7 +2408,18 @@ def project_player_stats(
         else:
             raw_rate = (historical_row[col] + k * position_avg[position][col]) / (games90 + k)
             factor = factor_by_mode[STAT_FIXTURE_MODE[stat]]
-            projected[stat] = raw_rate * factor * expected_minutes_fraction * rate_scale
+            if stat == "goals_conceded_per_2":
+                # Real "first goal free" rule (see goals_conceded_
+                # penalty_curve's own docstring) - lam is the genuine
+                # expected goals conceded this fixture, not yet scaled;
+                # the curve itself produces the correctly-priced
+                # penalty-event count, so rate_scale's linear /2 is
+                # deliberately NOT applied here (it would double-adjust
+                # an already-correct number).
+                lam = raw_rate * factor * expected_minutes_fraction
+                projected[stat] = goals_conceded_penalty_curve(lam)
+            else:
+                projected[stat] = raw_rate * factor * expected_minutes_fraction * rate_scale
     return projected, expected_minutes_fraction, module_rates_by_stat, opportunity_detail
 
 
@@ -2695,10 +2740,12 @@ def build_explanation(priced, top_n=3):
         key=lambda pair: abs(pair[1]["contribution"]),
         reverse=True,
     )
-    # item['projected'] is in SCORING units (already x STAT_RATE_SCALE, e.g.
-    # goals_conceded_per_2's real per-match rate halved before pricing - see
-    # STAT_RATE_SCALE) - divide back out so the sentence states the real
+    # item['projected'] is in SCORING units for the "per N" stats (already
+    # x STAT_RATE_SCALE) - divide back out so the sentence states the real
     # per-match count a reader would recognise, not the scoring-matrix unit.
+    # goals_conceded_per_2 isn't in STAT_RATE_SCALE (see its own comment
+    # there) so this is a no-op for it - its 'projected' value is already
+    # the real expected-goals-conceded-beyond-the-first count.
     parts = [
         f"{item['projected'] / STAT_RATE_SCALE.get(stat, 1.0):.2f} {STAT_DISPLAY_NAMES.get(stat, stat)}"
         for stat, item in ranked[:top_n] if abs(item["contribution"]) >= 0.05
