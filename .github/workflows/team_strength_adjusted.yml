@@ -1,0 +1,37 @@
+name: Team strength adjusted
+
+# Runs scripts/recompute_team_strength_for_game.py on demand - dispatched
+# by frontend-v2's saveTeamStrengthOverride server action (the admin
+# team-strength page's Save button). Same workflow_dispatch pattern as
+# odds_refresh_requested.yml, deliberately a separate workflow/script -
+# see recompute_team_strength_for_game.py's own docstring for why this
+# doesn't just reuse the odds-refresh job.
+on:
+  workflow_dispatch:
+    inputs:
+      game_slug:
+        description: "Game slug to recompute fixture-strength fallback and projections for"
+        required: true
+
+concurrency:
+  group: team-strength-recompute-${{ github.event.inputs.game_slug }}
+  cancel-in-progress: false
+
+jobs:
+  recompute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install psycopg2-binary
+
+      - name: Recompute team strength fallback and projections
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/recompute_team_strength_for_game.py "${{ github.event.inputs.game_slug }}"
