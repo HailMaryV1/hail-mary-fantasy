@@ -76,6 +76,31 @@ export default async function LandingPage() {
             </span>
           </span>
         </Link>
+        {/* 2026-08-27 user request - direct homepage access to real
+            market odds, rather than only reachable from inside a game's
+            own board. /market-odds is a chooser (real odds only ever
+            exist per-game - see that page's own docstring). */}
+        <Link
+          href="/market-odds"
+          className="group relative aspect-square overflow-hidden rounded-2xl border border-navy-800 bg-navy-900 shadow-lg shadow-black/40 transition-all hover:-translate-y-1 hover:border-sky-500 hover:shadow-xl hover:shadow-sky-950/50"
+        >
+          <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-2 text-center">
+            <span className="text-sm font-medium text-navy-200">Market Odds</span>
+            <span className="text-[11px] leading-tight text-navy-400">Real bookmaker prices</span>
+          </span>
+        </Link>
+        {/* 2026-08-27 user request - homepage access to the Premier
+            League fixture-difficulty override page (admin/team-strength/
+            page.tsx, "team difficulty viewer and adjustment section"). */}
+        <Link
+          href="/admin/team-strength"
+          className="group relative aspect-square overflow-hidden rounded-2xl border border-navy-800 bg-navy-900 shadow-lg shadow-black/40 transition-all hover:-translate-y-1 hover:border-sky-500 hover:shadow-xl hover:shadow-sky-950/50"
+        >
+          <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-2 text-center">
+            <span className="text-sm font-medium text-navy-200">Team Strength</span>
+            <span className="text-[11px] leading-tight text-navy-400">Fixture difficulty override</span>
+          </span>
+        </Link>
       </nav>
     </div>
   );
