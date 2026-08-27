@@ -1738,7 +1738,11 @@ def compute_involvement_rates(players, historical_rows, season_games, season_gam
             # default rather than a div/0.
             "avg_sub_minutes": (totals[pos]["sub_minutes_sum"] / totals[pos]["sub_pt1_sum"]) if totals[pos]["sub_pt1_sum"] else 20.0,
         }
-    return _apply_thin_position_floor(out, {pos: totals[pos]["players"] for pos in POSITIONS})
+    return _apply_thin_position_floor(
+        out,
+        {pos: totals[pos]["players"] for pos in POSITIONS},
+        {pos: totals[pos]["pt1"] for pos in POSITIONS},
+    )
 
 
 # Real production bug caught live 2026-08-19: this whole function's "position
@@ -1773,9 +1777,31 @@ NEUTRAL_POSITION_PRIOR = {
 }
 
 
-def _apply_thin_position_floor(position_rates, players_n_by_position):
+def _apply_thin_position_floor(position_rates, players_n_by_position, pt1_total_by_position=None):
+    """A second, real failure mode of the SAME "shared prior itself is
+    unreliable" problem this guard was originally built for (2026-08-19,
+    see MIN_TRUSTED_POOL's own comment above): real user report 2026-
+    08-27 - Erling Haaland (an undisputed nailed-on starter) rating 3/10
+    with a 23% expected-minutes fraction. Root cause traced to Dream
+    Team's PT1/PT60/PT90 being hardcoded to 0 for EVERY player (see
+    seed_dreamteam_historical_stats.py's own docstring - Dream Team's API
+    exposes no real per-match minutes export at all) - the position's
+    PLAYER COUNT is large (hundreds), so the original players_n <
+    MIN_TRUSTED_POOL check never fired, but pt1_total (the shared
+    denominator for cond60/cond90/start_given_appeared) is itself ~0,
+    silently collapsing those three rates to 0.0 regardless of how many
+    players are in the pool. Cloud FF's own PT1 is real but thin (~1 per
+    player) - NOT this failure mode, that's normal per-player shrinkage
+    behaving correctly against a trustworthy prior, left alone. FanTeam's
+    PT1 is real and substantial - never triggers either check.
+    pt1_total_by_position is optional (defaults to None -> skip this
+    check) so any other caller of this function without real PT1 totals
+    handy keeps its old player-count-only behaviour."""
+    pt1_total_by_position = pt1_total_by_position or {}
     for pos, rates in position_rates.items():
-        rates["_thin"] = players_n_by_position.get(pos, 0) < MIN_TRUSTED_POOL
+        thin_pool = players_n_by_position.get(pos, 0) < MIN_TRUSTED_POOL
+        thin_pt1 = pt1_total_by_position.get(pos, MIN_TRUSTED_POOL) < MIN_TRUSTED_POOL
+        rates["_thin"] = thin_pool or thin_pt1
         if rates["_thin"]:
             rates.update(NEUTRAL_POSITION_PRIOR)
             rates["_thin"] = True  # NEUTRAL_POSITION_PRIOR itself has no _thin key
@@ -3190,6 +3216,65 @@ def main():
                 for r in raw_players
                 if r["game_player_id"] in current_season_by_game_player_id
             }
+
+        # Dream Team's own seeded "historical" row (seed_dreamteam_
+        # historical_stats.py) isn't a real complete prior season at all -
+        # Dream Team's API has no genuine last-season archive, so that
+        # script derives games_played (stored as games_played_derived in
+        # raw_stats) from a season-cumulative endpoint that, this early in
+        # 2026/27, mostly reflects THIS season's first game or two, not a
+        # real 38-game baseline. Real user report 2026-08-27: Erling
+        # Haaland (an undisputed nailed-on starter) rated 3/10 with a 23%
+        # expected-minutes fraction - traced exactly here: appearance_rate
+        # = raw_pt1 / season_games treated a ~1-game-so-far sample as if
+        # it were 1-out-of-38 real observed games, crushing every Dream
+        # Team player's appearance rate toward ~2.6% uniformly, regardless
+        # of how nailed-on they actually are. Same games_elapsed_by_
+        # player_id mechanism as the CURRENT_SEASON merge above (both feed
+        # compute_involvement_rates' position averages AND each player's
+        # own compute_opportunity() call below), just sourced from Dream
+        # Team's own real derived figure instead of a live in-season row
+        # count - skips anyone already covered by a real CURRENT_SEASON
+        # row above.
+        if use_v2 and game_slug == "dreamteam":
+            for r in raw_players:
+                if r["player_id"] in games_elapsed_by_player_id:
+                    continue
+                raw_blob = r["raw_stats_all"]
+                if isinstance(raw_blob, str):
+                    raw_blob = json.loads(raw_blob)
+                games_played_derived = (raw_blob or {}).get("games_played_derived")
+                if games_played_derived:
+                    games_elapsed_by_player_id[r["player_id"]] = max(1, int(games_played_derived))
+
+        # Cloud FF's own seeded row (seed_cloudff_historical_stats.py)
+        # has the same underlying problem as Dream Team's above, via a
+        # different mechanism: its PT1 IS real (TotalStartingXI+TotalSubs,
+        # not derived/implied), but real-and-thin - confirmed live
+        # 2026-08-27, position-wide PT1 averaging ~1.16 per player, not a
+        # genuine 38-game season. raw_pt1 itself is exactly the "how many
+        # real games does this row represent" figure Dream Team's
+        # games_played_derived approximates, so it's used directly here,
+        # no derivation needed.
+        #
+        # CAVEAT, revisit later in the season: this assumes every Cloud FF
+        # player's own PT1 roughly equals how many real gameweeks have
+        # elapsed so far - true today (the whole pool is uniformly ~1 game
+        # deep), but once real games elapsed grows past what a genuine
+        # rotation-risk player's own PT1 reflects (e.g. 5 real gameweeks
+        # elapsed, a benched player only features in 2), this would wrongly
+        # treat their own thin PT1 as the FULL denominator too, inflating
+        # their appearance_rate instead of correctly showing them as a
+        # real rotation risk. Needs count_elapsed_gameweeks()-style real
+        # season-length tracking (like the CURRENT_SEASON merge above
+        # already has) once Cloud FF's own pipeline exposes that, not this
+        # PT1-as-its-own-denominator proxy.
+        if use_v2 and game_slug == "cloudff":
+            for r in raw_players:
+                if r["player_id"] in games_elapsed_by_player_id:
+                    continue
+                if r["pt1"] and r["pt1"] > 0:
+                    games_elapsed_by_player_id[r["player_id"]] = max(1, round(r["pt1"]))
 
         players = [(r["game_player_id"], r["position"], r["player_id"]) for r in raw_players]
         full_name_by_game_player_id = {r["game_player_id"]: r["full_name"] for r in raw_players}
