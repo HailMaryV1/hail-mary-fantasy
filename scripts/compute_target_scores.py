@@ -263,6 +263,37 @@ def fetch_window_fixture_counts(cur, game_id, start_gameweek, horizon):
     return {(competition, team_id): count for team_id, competition, count in cur.fetchall()}
 
 
+def fetch_projected_fixture_credits(cur, game_id, start_gameweek, horizon):
+    """{team_id: credit_sum} - real per-team projected cup/Europe
+    fixture credits (dreamteamtonic_projected_fixtures, migration 0154,
+    scripts/scrape_dreamteamtonic_fixture_ticker.py's own docstring for
+    the full TBA/IF story) for the window, ONLY for a (team_id,
+    gameweek, competition) that doesn't already have a REAL fixture in
+    game_fixture_gameweeks - once the real fixture is confirmed and
+    lands there, this stops contributing on its own, no manual cleanup
+    needed. TBA = 1.0 (date real/confirmed, opponent just not yet
+    drawn), IF = 0.5 (contingent on cup progression, genuinely
+    uncertain)."""
+    cur.execute(
+        """
+        select dpf.team_id, sum(dpf.confidence) as credit
+        from dreamteamtonic_projected_fixtures dpf
+        where dpf.game_id = %s and dpf.gameweek >= %s and dpf.gameweek < %s
+          and not exists (
+            select 1
+            from game_fixture_gameweeks gfg
+            join fixtures f on f.id = gfg.fixture_id
+            where gfg.game_id = dpf.game_id and gfg.gameweek = dpf.gameweek
+              and f.competition = dpf.competition
+              and (f.home_team_id = dpf.team_id or f.away_team_id = dpf.team_id)
+          )
+        group by dpf.team_id
+        """,
+        (game_id, start_gameweek, start_gameweek + horizon),
+    )
+    return {team_id: float(credit) for team_id, credit in cur.fetchall()}
+
+
 def single_fixture_difficulty_raw(position, fixture):
     """Position-weighted opponent hardship (0-1, higher = harder) for ONE
     fixture - reuses DEFAULT_WEIGHTS' own attack/clean_sheet position
@@ -443,11 +474,37 @@ def main():
 
             # Fixture Quantity is team-level only (not position-aware) -
             # one raw value per team, ranked within its own competition.
+            # Summed across every competition a team has fixtures in
+            # this window (a real bug fixed live 2026-08-27: this used
+            # to OVERWRITE per competition, silently discarding a
+            # team's cup/Europe fixtures the moment they also had a
+            # real Premier League one this window - the overwhelmingly
+            # common case, and exactly what would have swallowed the
+            # projected credits added just below). 'soccer_epl' is
+            # always the group/ranking label when present - every
+            # dreamteam/fanteam/cloudff team has one, and ranking a
+            # team's TOTAL fixture count against other PL teams' is the
+            # only fair comparison; falls back to whatever single
+            # competition exists otherwise (EFL Fantasy's own call site
+            # has no cup dimension, so this is a no-op there).
             qty_raw_by_team = {}
             competition_of_team = {}
             for (competition, team_id), count in fixture_counts.items():
-                qty_raw_by_team[team_id] = count
-                competition_of_team[team_id] = competition
+                qty_raw_by_team[team_id] = qty_raw_by_team.get(team_id, 0) + count
+                if team_id not in competition_of_team or competition == "soccer_epl":
+                    competition_of_team[team_id] = competition
+            # Real projected cup/Europe fixtures (2026-08-27 user
+            # request - "the fixture tickers show all the double
+            # gameweeks coming up... it would massively help our
+            # fixture QUANTITY even when the game is not populated
+            # themselves") - see fetch_projected_fixture_credits' own
+            # docstring. Dream Team only (fetch_projected_fixture_
+            # credits itself is game-scoped via game_id, so this is a
+            # genuine no-op for fanteam/cloudff/eflfantasy - they simply
+            # have no rows in dreamteamtonic_projected_fixtures).
+            for team_id, credit in fetch_projected_fixture_credits(cur, game_id, gameweek, horizon).items():
+                qty_raw_by_team[team_id] = qty_raw_by_team.get(team_id, 0) + credit
+                competition_of_team.setdefault(team_id, "soccer_epl")
             qty_rating_by_team = bucket_by_group(qty_raw_by_team, competition_of_team)
 
             rows = []

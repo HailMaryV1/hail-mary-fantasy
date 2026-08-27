@@ -41,7 +41,14 @@ jobs:
         # swings.py/poll_golf_live_scores.py in the other workflows that
         # already install it) - missed here at the time, so every wrapup
         # run since has failed on this step with ModuleNotFoundError.
-        run: pip install psycopg2-binary pywebpush
+        # playwright added 2026-08-27 for scrape_dreamteamtonic_fixture_
+        # ticker.py - that page is a client-rendered SPA (confirmed live -
+        # the real fixture-ticker table doesn't exist until React builds
+        # it), so a plain HTTP fetch can't see it, unlike this project's
+        # other scrapers.
+        run: |
+          pip install psycopg2-binary pywebpush playwright
+          playwright install --with-deps chromium
 
       - name: Run cross-game wrap-up
         env:

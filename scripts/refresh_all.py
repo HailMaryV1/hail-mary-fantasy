@@ -374,6 +374,13 @@ def run_wrapup():
     # since it UPDATEs the same player_gameweek_predictions rows that step
     # just wrote/confirmed exist, and before the next step reads them.
     results.append(run_step("Capture real starts (Dream Team Tonic)", ["scripts/import_dreamteamtonic_starts.py"]))
+    # Real projected cup/Europe fixtures for Dream Team's own Fixture
+    # Quantity rating (2026-08-27 user request - see that script's own
+    # docstring for the full TBA/IF story). Self-gates on its own last
+    # capture (~12h staleness), so running it every wrapup cycle is a
+    # no-op on the second daily run - team competition participation
+    # changes far slower than real minutes/starts do.
+    results.append(run_step("Capture projected fixtures (Dream Team Tonic ticker)", ["scripts/scrape_dreamteamtonic_fixture_ticker.py"]))
     results.append(run_step("Attach gameweek results to frozen predictions", ["scripts/attach_gameweek_results.py"]))
     results.append(run_step("Freeze gameweek predictions (Hail Mary Form)", ["scripts/capture_gameweek_predictions.py"]))
     results.append(run_step("Capture squad state at deadline (Mary Performance Lab)", ["scripts/capture_squad_gameweek_state.py"]))
