@@ -17,6 +17,7 @@ const SORT_OPTIONS: [TargetScorePoolSortBy, string][] = [
   ["owned", "% Owned"],
   ["price", "Price"],
   ["real_pts", "Total Pts (real)"],
+  ["minutes", "Minutes (real)"],
 ];
 
 // Real user request 2026-08-26: "make the options preset drop downs
@@ -32,6 +33,14 @@ const OWNED_PRESETS = [5, 10, 15, 25, 40];
 // (Dream Team ~£2-13m, Cloud FF/FanTeam ~£3-14m) - generated, not hand-
 // typed, so the 0.5m step the user asked for stays exact.
 const PRICE_PRESETS = Array.from({ length: 25 }, (_, i) => Math.round((3.0 + i * 0.5) * 10) / 10);
+// Real season-to-date minutes floors (2026-08-27 user request, after
+// seeing DreamTeamTonic's own "Mins" column - "filter by average minutes
+// played... be resourceful, be thoughtful"). A floor, not a ceiling like
+// price/ownership above - "show me players who are ACTUALLY playing",
+// same real_minutes_played column now available for all 4 games (see
+// migration 0156's own docstring for why this is a real total rather
+// than a true average).
+const MINUTES_PRESETS = [30, 60, 90, 180, 360];
 
 type FilterState = {
   posFilter: PosFilter;
@@ -40,9 +49,18 @@ type FilterState = {
   minRating: number | "";
   maxOwned: number | "";
   maxPrice: number | "";
+  minMinutes: number | "";
 };
 
-const DEFAULT_FILTERS: FilterState = { posFilter: "ALL", teamFilter: "ALL", sortBy: "rating", minRating: "", maxOwned: "", maxPrice: "" };
+const DEFAULT_FILTERS: FilterState = {
+  posFilter: "ALL",
+  teamFilter: "ALL",
+  sortBy: "rating",
+  minRating: "",
+  maxOwned: "",
+  maxPrice: "",
+  minMinutes: "",
+};
 
 function storageKey(gameSlug: string) {
   return `ratingsBrowseFilters:${gameSlug}`;
@@ -144,7 +162,7 @@ export default function RatingsBrowseTable({
   const [loading, setLoading] = useState(true);
   const [infoPlayerId, setInfoPlayerId] = useState<number | null>(null);
 
-  const { posFilter, teamFilter, sortBy, minRating, maxOwned, maxPrice } = filters;
+  const { posFilter, teamFilter, sortBy, minRating, maxOwned, maxPrice, minMinutes } = filters;
   const setField = <K extends keyof FilterState>(key: K, value: FilterState[K]) => setFilters((f) => ({ ...f, [key]: value }));
 
   // Load persisted filters once per game (not on every render) - a
@@ -167,7 +185,7 @@ export default function RatingsBrowseTable({
 
   useEffect(() => {
     setPage(1);
-  }, [posFilter, teamFilter, sortBy, debouncedSearch, minRating, maxOwned, maxPrice, gameweek, horizon]);
+  }, [posFilter, teamFilter, sortBy, debouncedSearch, minRating, maxOwned, maxPrice, minMinutes, gameweek, horizon]);
 
   useEffect(() => {
     if (!filtersLoaded) return;
@@ -183,6 +201,7 @@ export default function RatingsBrowseTable({
       minRating: minRating === "" ? null : minRating,
       maxOwned: maxOwned === "" ? null : maxOwned,
       maxPrice: maxPrice === "" ? null : maxPrice,
+      minMinutes: minMinutes === "" ? null : minMinutes,
       sortBy,
       // Same convention as the top boxes above - the "ALL" position view
       // defaults to the 4 player positions, CLUB is its own explicit
@@ -199,11 +218,12 @@ export default function RatingsBrowseTable({
     return () => {
       cancelled = true;
     };
-  }, [filtersLoaded, gameSlug, gameweek, horizon, posFilter, teamFilter, sortBy, debouncedSearch, minRating, maxOwned, maxPrice, page, hasClubPosition]);
+  }, [filtersLoaded, gameSlug, gameweek, horizon, posFilter, teamFilter, sortBy, debouncedSearch, minRating, maxOwned, maxPrice, minMinutes, page, hasClubPosition]);
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
   const positions: PosFilter[] = hasClubPosition ? ["ALL", "GK", "DEF", "MID", "FWD", "CLUB"] : ["ALL", "GK", "DEF", "MID", "FWD"];
-  const filtersActive = posFilter !== "ALL" || teamFilter !== "ALL" || minRating !== "" || maxOwned !== "" || maxPrice !== "" || searchInput !== "";
+  const filtersActive =
+    posFilter !== "ALL" || teamFilter !== "ALL" || minRating !== "" || maxOwned !== "" || maxPrice !== "" || minMinutes !== "" || searchInput !== "";
 
   if (infoPlayerId != null) {
     return (
@@ -295,6 +315,13 @@ export default function RatingsBrowseTable({
             onChange={(v) => setField("maxPrice", v)}
           />
         )}
+        <PresetSelect
+          label="Minutes"
+          value={minMinutes}
+          options={MINUTES_PRESETS}
+          format={(n) => `${n}+ real mins`}
+          onChange={(v) => setField("minMinutes", v)}
+        />
         {filtersActive && (
           <button
             onClick={() => {
@@ -317,6 +344,7 @@ export default function RatingsBrowseTable({
               <th className="pb-2 pr-2 font-medium">Rating</th>
               <th className="pb-2 pr-2 font-medium">Fixture(s)</th>
               <th className="pb-2 pr-2 font-medium">Total Pts</th>
+              <th className="pb-2 pr-2 font-medium">Mins</th>
               {hasBudget && <th className="pb-2 pr-2 font-medium">Price</th>}
               <th className="pb-2 pr-2 font-medium">% Owned</th>
             </tr>
@@ -348,6 +376,7 @@ export default function RatingsBrowseTable({
                     <FixtureWindowPills fixtures={r.windowFixtures} />
                   </td>
                   <td className="py-2 pr-2 text-navy-200">{r.realTotalPoints ?? "—"}</td>
+                  <td className="py-2 pr-2 text-navy-200">{r.realMinutesPlayed ?? "—"}</td>
                   {hasBudget && <td className="py-2 pr-2 text-navy-200">£{r.price.toFixed(1)}m</td>}
                   <td className="py-2 pr-2 text-navy-200">{r.ownershipPct != null ? `${r.ownershipPct.toFixed(1)}%` : "—"}</td>
                 </tr>
@@ -355,7 +384,7 @@ export default function RatingsBrowseTable({
             })}
             {!loading && rows.length === 0 && (
               <tr>
-                <td colSpan={hasBudget ? 7 : 6} className="py-6 text-center text-navy-500">
+                <td colSpan={hasBudget ? 8 : 7} className="py-6 text-center text-navy-500">
                   No players match these filters.
                 </td>
               </tr>

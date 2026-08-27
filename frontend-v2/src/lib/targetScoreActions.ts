@@ -137,11 +137,18 @@ export type TargetScorePoolRow = {
   fixtureQuantityRating: number | null;
   liveOddsRating: number | null;
   realTotalPoints: number | null;
+  /** Real season-to-date minutes played (2026-08-27 user request, after
+   * seeing DreamTeamTonic's own "Mins" column - "we should be using
+   * every bit of data possible... filter by average minutes played").
+   * Real for all 4 games (see migration 0156's own docstring for why
+   * this is a total, not a true per-game average - no consistent real
+   * games-played denominator exists across all 4 games' pool data yet). */
+  realMinutesPlayed: number | null;
   windowFixtures: TargetScoreWindowFixture[];
   endGameweek: number | null;
 };
 
-export type TargetScorePoolSortBy = "rating" | "owned" | "price" | "real_pts";
+export type TargetScorePoolSortBy = "rating" | "owned" | "price" | "real_pts" | "minutes";
 
 /**
  * Paginated, filterable browse over the RATED pool for a horizon - the
@@ -168,6 +175,7 @@ export async function searchTargetScorePool(params: {
   maxOwned?: number | null;
   minPrice?: number | null;
   maxPrice?: number | null;
+  minMinutes?: number | null;
   sortBy?: TargetScorePoolSortBy;
   excludeClub?: boolean;
   page: number;
@@ -192,6 +200,7 @@ export async function searchTargetScorePool(params: {
     p_max_owned: params.maxOwned ?? null,
     p_min_price: params.minPrice ?? null,
     p_max_price: params.maxPrice ?? null,
+    p_min_minutes: params.minMinutes ?? null,
     p_sort_by: params.sortBy ?? "rating",
     p_exclude_club: params.excludeClub ?? false,
     p_limit: params.pageSize,
@@ -213,6 +222,7 @@ export async function searchTargetScorePool(params: {
     fixture_quantity_rating: number | null;
     live_odds_rating: number | null;
     real_total_points: number | string | null;
+    real_minutes_played: number | string | null;
     window_fixtures:
       | {
           opponent_team_name: string | null;
@@ -243,6 +253,7 @@ export async function searchTargetScorePool(params: {
     fixtureQuantityRating: r.fixture_quantity_rating,
     liveOddsRating: r.live_odds_rating,
     realTotalPoints: r.real_total_points != null ? Number(r.real_total_points) : null,
+    realMinutesPlayed: r.real_minutes_played != null ? Number(r.real_minutes_played) : null,
     // Real fixture order - window_fixtures' own storage order isn't
     // chronological (see getPlayerTargetScoreWindow above; same real
     // bug hit Browse All Players' own fixture pills, confirmed live:
