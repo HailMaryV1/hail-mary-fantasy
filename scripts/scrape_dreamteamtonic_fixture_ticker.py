@@ -158,18 +158,33 @@ def scrape_ticker():
                 if not spans:
                     continue
                 main_text = (spans[0].inner_text() or "").strip()
-                if main_text not in ("TBA", "IF"):
+                if not main_text:
                     continue
                 tag_text = (spans[1].inner_text() or "").strip() if len(spans) > 1 else None
                 competition = COMP_TAG_MAP.get(tag_text)
                 if competition is None:
                     continue
+                # A real opponent code (e.g. "mil"), not just TBA/IF, is
+                # ALSO real signal worth capturing here: the real opponent
+                # being drawn doesn't mean our own fixtures table has the
+                # fixture row yet (2026-08-27 user report - Newcastle's
+                # confirmed GW3 League Cup tie v Millwall showing on this
+                # ticker as "mil LC", not "TBA", days before our fixtures
+                # table picked it up). Safe to widen past TBA/IF: fetch_
+                # window_projected_fixtures (compute_target_scores.py)
+                # only ever counts a row here when there's NO matching
+                # real fixture in game_fixture_gameweeks yet, so once the
+                # real importer catches up this stops contributing on its
+                # own - no double-counting risk. Only "IF" stays half-
+                # confidence (genuinely contingent on cup progression);
+                # TBA and a confirmed opponent code are both a real,
+                # date-fixed fixture from here.
                 rows.append(
                     {
                         "team_name": team_name,
                         "gameweek": gw_columns[i],
                         "competition": competition,
-                        "confidence": 1.0 if main_text == "TBA" else 0.5,
+                        "confidence": 0.5 if main_text == "IF" else 1.0,
                     }
                 )
         browser.close()
