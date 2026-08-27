@@ -128,15 +128,35 @@ def active_golf_tournaments(conn):
     return [row[0] for row in cur.fetchall()]
 
 
+# Games whose real scoring is Premier-League-only (see capture_gameweek_
+# actuals.py's own capture_dreamteam_actuals fix, same root cause here) -
+# assign_dreamteam_cup_gameweeks.py buckets Carabao Cup/FA Cup/European
+# fixtures into the SAME gameweek number as the real league round they
+# fall within, so an unfiltered "any fixture in this bucket kicks off in
+# the future" check can keep a gameweek looking "upcoming" purely because
+# of a cup tie, well after the real league round it belongs to has
+# already finished (real user report 2026-08-27: Dream Team GW1 still
+# being treated as needing a recompute the same night its own trailing
+# League Cup tie kicked off, days after GW1's real Premier League
+# fixtures were done). FanTeam/Cloud FF have no cup-bucketing step at
+# all - every one of their own fixtures already IS 'soccer_epl', so this
+# filter is a total no-op for them, not just "safe". EFL Fantasy is
+# deliberately excluded - its own real competitions (Championship/League
+# One/League Two) are never 'soccer_epl' at all, so filtering to it
+# there would return nothing.
+PL_ONLY_SCORED_GAMES = {"dreamteam", "fanteam", "cloudff"}
+
+
 def upcoming_gameweeks(conn, game_slug):
     cur = conn.cursor()
+    competition_filter = "and f.competition = 'soccer_epl'" if game_slug in PL_ONLY_SCORED_GAMES else ""
     cur.execute(
-        """
+        f"""
         select distinct gfg.gameweek
         from game_fixture_gameweeks gfg
         join fixtures f on f.id = gfg.fixture_id
         join fantasy_games fg on fg.id = gfg.game_id
-        where fg.slug = %s and f.kickoff_at >= now()
+        where fg.slug = %s and f.kickoff_at >= now() {competition_filter}
         order by gfg.gameweek
         limit %s
         """,
