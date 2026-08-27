@@ -77,37 +77,39 @@ def main():
         # sides of the fixture. Falls back to `strength` per-team whenever
         # its context-specific column is null (every other game, which
         # only ever sets `strength`), so this is zero-drift for them.
-        # manual_strength_override (migration 0151, 2026-08-26 user
-        # request - "build our own adjustable fixture difficulty
-        # scale... for when form alters throughout the season") wins
-        # over BOTH the automated `strength` baseline AND the per-venue
-        # home_strength/away_strength columns whenever set. Verified live
-        # 2026-08-27 that every team (all 92 season rows, PL included)
-        # already has non-null home_strength/away_strength - EFL Fantasy's
-        # own seed_team_strength() writes real ones, but set_manual_pl_
-        # fixture_strength.py (the script this override supersedes) wrote
-        # a flat pair for every PL team too - so a naive "fall back to
-        # strength only when the venue columns are null" check never
-        # fires and the override would silently do nothing. Same "only
-        # fills the gap real data leaves" rule the rest of this engine
-        # follows either way - real bookmaker odds still beat all of this
-        # further up team_fixture_difficulty's own COALESCE chain
-        # (migration 0017), this script only ever feeds that chain's LAST
-        # fallback.
+        # manual_home_strength_override/manual_away_strength_override
+        # (migration 0153, 2026-08-27 user request - "their tool has
+        # separate Home and Away strength sliders per team... lets copy
+        # something similar") win over BOTH the automated `strength`
+        # baseline AND the per-venue home_strength/away_strength columns
+        # whenever set, independently per side - a team can genuinely be
+        # overridden at home but left on the automated baseline away, or
+        # vice versa. Verified live 2026-08-27 that every team (all 92
+        # season rows, PL included) already has non-null home_strength/
+        # away_strength - EFL Fantasy's own seed_team_strength() writes
+        # real ones, but set_manual_pl_fixture_strength.py (the script
+        # this override supersedes) wrote a flat pair for every PL team
+        # too - so a naive "fall back to strength only when the venue
+        # columns are null" check never fires and the override would
+        # silently do nothing. Same "only fills the gap real data
+        # leaves" rule the rest of this engine follows either way - real
+        # bookmaker odds still beat all of this further up team_fixture_
+        # difficulty's own COALESCE chain (migration 0017), this script
+        # only ever feeds that chain's LAST fallback.
         cur.execute(
-            "select team_id, strength, home_strength, away_strength, manual_strength_override from team_season_strength where season = %s",
+            "select team_id, strength, home_strength, away_strength, "
+            "manual_home_strength_override, manual_away_strength_override "
+            "from team_season_strength where season = %s",
             (SEASON,),
         )
         home_strength_by_team = {}
         away_strength_by_team = {}
-        for team_id, strength, home_strength, away_strength, manual_override in cur.fetchall():
-            if manual_override is not None:
-                home_strength_by_team[team_id] = float(manual_override)
-                away_strength_by_team[team_id] = float(manual_override)
-                continue
+        for team_id, strength, home_strength, away_strength, manual_home_override, manual_away_override in cur.fetchall():
             strength = float(strength)
-            home_strength_by_team[team_id] = float(home_strength) if home_strength is not None else strength
-            away_strength_by_team[team_id] = float(away_strength) if away_strength is not None else strength
+            fallback_home = float(home_strength) if home_strength is not None else strength
+            fallback_away = float(away_strength) if away_strength is not None else strength
+            home_strength_by_team[team_id] = float(manual_home_override) if manual_home_override is not None else fallback_home
+            away_strength_by_team[team_id] = float(manual_away_override) if manual_away_override is not None else fallback_away
         if not home_strength_by_team:
             raise SystemExit("No team_season_strength rows found - run compute_team_strength.py first.")
 

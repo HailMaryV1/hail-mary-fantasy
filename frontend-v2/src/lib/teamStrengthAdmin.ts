@@ -17,12 +17,15 @@ import { createServiceSupabaseClient } from "./supabaseServiceClient";
  * user already transcribed once, by hand, in
  * scripts/set_manual_pl_fixture_strength.py - same convention Fantasy
  * Premier League itself uses, not a raw -1..1 number nobody has
- * intuition for. Saving writes manual_strength_override (migration
- * 0151) - which now wins over that script's own home_strength/
- * away_strength columns too, see compute_fixture_strength_
- * probabilities.py's 2026-08-27 fix - then dispatches the new
- * team_strength_adjusted.yml workflow for exactly the 3 real games a
- * Premier League team's strength affects (never eflfantasy, which has
+ * intuition for. Separate Home/Away overrides (migration 0153,
+ * 2026-08-27 user request - "[Dream Team Tonic]'s tool has separate
+ * Home and Away strength sliders per team... lets copy something
+ * similar") - a team can genuinely be stronger at home than away.
+ * Saving writes manual_home_strength_override/manual_away_strength_
+ * override, which win over home_strength/away_strength too, see
+ * compute_fixture_strength_probabilities.py's own fix - then dispatches
+ * the team_strength_adjusted.yml workflow for exactly the 3 real games
+ * a Premier League team's strength affects (never eflfantasy, which has
  * its own real source and would just waste a recompute).
  */
 
@@ -41,8 +44,10 @@ export type TeamStrengthRow = {
   // something real, not a number out of nowhere.
   baselineHomeRating: number;
   baselineAwayRating: number;
-  // null when no override is set (baseline is in effect).
-  overrideRating: number | null;
+  // null when no override is set for that side (baseline is in effect)
+  // - independent per side, a team can be overridden at home only.
+  overrideHomeRating: number | null;
+  overrideAwayRating: number | null;
 };
 
 function toRating(strength: number): number {
@@ -65,10 +70,19 @@ export async function listPremierLeagueTeamStrength(): Promise<TeamStrengthRow[]
   const supabase = await createAuthServerClient();
   const { data } = await supabase
     .from("team_season_strength")
-    .select("team_id, home_strength, away_strength, manual_strength_override, teams!inner(name)")
+    .select("team_id, home_strength, away_strength, manual_home_strength_override, manual_away_strength_override, teams!inner(name)")
     .eq("season", PL_SEASON)
     .eq("source", PL_SOURCE)
-    .returns<{ team_id: number; home_strength: number; away_strength: number; manual_strength_override: number | null; teams: { name: string } }[]>();
+    .returns<
+      {
+        team_id: number;
+        home_strength: number;
+        away_strength: number;
+        manual_home_strength_override: number | null;
+        manual_away_strength_override: number | null;
+        teams: { name: string };
+      }[]
+    >();
 
   return (data ?? [])
     .map((row) => ({
@@ -76,7 +90,8 @@ export async function listPremierLeagueTeamStrength(): Promise<TeamStrengthRow[]
       teamName: row.teams.name,
       baselineHomeRating: toRating(Number(row.home_strength)),
       baselineAwayRating: toRating(Number(row.away_strength)),
-      overrideRating: row.manual_strength_override != null ? toRating(Number(row.manual_strength_override)) : null,
+      overrideHomeRating: row.manual_home_strength_override != null ? toRating(Number(row.manual_home_strength_override)) : null,
+      overrideAwayRating: row.manual_away_strength_override != null ? toRating(Number(row.manual_away_strength_override)) : null,
     }))
     .sort((a, b) => a.teamName.localeCompare(b.teamName));
 }
@@ -103,20 +118,32 @@ async function dispatchTeamStrengthRecompute(gameSlug: string, token: string): P
   }
 }
 
-export async function saveTeamStrengthOverride(teamId: number, rating1to5: number | null): Promise<{ saved: boolean; error?: string }> {
+function validRatingOrNull(rating1to5: number | null): string | null {
+  if (rating1to5 !== null && (!Number.isFinite(rating1to5) || rating1to5 < 1 || rating1to5 > 5)) {
+    return "Rating must be between 1 and 5.";
+  }
+  return null;
+}
+
+export async function saveTeamStrengthOverride(
+  teamId: number,
+  homeRating1to5: number | null,
+  awayRating1to5: number | null
+): Promise<{ saved: boolean; error?: string }> {
   const authError = await requireSignedIn();
   if (authError) return { saved: false, error: authError.error };
 
-  if (rating1to5 !== null && (!Number.isFinite(rating1to5) || rating1to5 < 1 || rating1to5 > 5)) {
-    return { saved: false, error: "Rating must be between 1 and 5." };
-  }
+  const validationError = validRatingOrNull(homeRating1to5) ?? validRatingOrNull(awayRating1to5);
+  if (validationError) return { saved: false, error: validationError };
 
+  const now = new Date().toISOString();
   const service = createServiceSupabaseClient();
   const { error: writeError } = await service
     .from("team_season_strength")
     .update({
-      manual_strength_override: rating1to5 !== null ? toStrength(rating1to5) : null,
-      manual_strength_updated_at: rating1to5 !== null ? new Date().toISOString() : null,
+      manual_home_strength_override: homeRating1to5 !== null ? toStrength(homeRating1to5) : null,
+      manual_away_strength_override: awayRating1to5 !== null ? toStrength(awayRating1to5) : null,
+      manual_strength_updated_at: homeRating1to5 !== null || awayRating1to5 !== null ? now : null,
     })
     .eq("team_id", teamId)
     .eq("season", PL_SEASON)
