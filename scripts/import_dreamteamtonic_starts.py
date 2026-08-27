@@ -37,10 +37,9 @@ one happens to be genuinely current. Needs a real fix (comparing
 successive cumulative snapshots to derive each gameweek's own delta, or
 an upstream endpoint that actually respects the range) before GW2
 completes - flagged here rather than rushed through under time
-pressure. accumulate_dreamteam_current_season_row() below is NOT
-affected by this specific bug - it already treats every field as
-cumulative-regardless-of-range by design (single fetch, no per-
-gameweek loop).
+pressure. accumulate_current_season_row() below is NOT affected by this
+specific bug - it already treats every field as cumulative-regardless-
+of-range by design (single fetch, no per-gameweek loop).
 
 Writes into player_gameweek_predictions.actual_started (migration
 0152) - the SAME table Recent Form already reads real per-gameweek
@@ -109,12 +108,33 @@ SOURCES = {
             "Spurs": "Tottenham Hotspur", "Villa": "Aston Villa",
         },
         "started": lambda p: int(p.get("minutesPlayed") or 0) >= STARTED_MINUTES_THRESHOLD,
+        # Real season-cumulative event-stat field names for this source -
+        # see accumulate_current_season_row()'s own docstring. Only
+        # sources actually wired into that function need this key -
+        # cloud (Cloud FF) already has its own real current-season data
+        # from a different live scrape, not added here.
+        "event_stats": lambda p: {
+            "goals": p.get("goals"), "assists": p.get("assists"), "clean_sheets": p.get("cleanSheet"),
+            "saves": p.get("saves"), "goals_conceded": p.get("goalsConceded"),
+            "yellow_cards": p.get("yellowCards"), "red_cards": p.get("redCards"),
+        },
     },
     "fanteam": {
         "key": "tff",
         "alias_source": "dreamteamtonic_tff",
         "team_overrides": {"Brighton & Hove Albion": "Brighton"},
         "started": lambda p: int(p.get("starts") or 0) >= 1,
+        # tff splits clean sheets into fullCleanSheets (played the whole
+        # match, 0 conceded) and partCleanSheets (on the pitch for part
+        # of a clean sheet, e.g. a late sub) - fullCleanSheets only, the
+        # conservative real-clean-sheet reading real fantasy scoring
+        # rules typically require (60+ minutes AND no goals conceded
+        # while on), not the ambiguous partial case.
+        "event_stats": lambda p: {
+            "goals": p.get("goals"), "assists": p.get("assists"), "clean_sheets": p.get("fullCleanSheets"),
+            "saves": p.get("saves"), "goals_conceded": p.get("goalsConceded"),
+            "yellow_cards": p.get("yellowCards"), "red_cards": p.get("redCards"),
+        },
     },
     "cloudff": {
         "key": "cloud",
@@ -123,6 +143,12 @@ SOURCES = {
         "started": lambda p: str(p.get("StartingXI") or "0") == "1",
     },
 }
+
+# Which games' real current-season minutes/event-stats get accumulated
+# from this module's own DreamTeamTonic data (see accumulate_current_
+# season_row()) - Cloud FF excluded, it already has real current-season
+# data from its own live scrape (scraper_cloudff.py), no gap to fill.
+CURRENT_SEASON_SOURCES = ("dreamteam", "fanteam")
 
 POSITION_MAP = {"GK": "GK", "DEF": "DEF", "MID": "MID", "FWD": "FWD", "STR": "FWD"}
 
@@ -309,7 +335,8 @@ def import_gameweek(cur, game_id, game_slug, source, gameweek, by_position, all_
         matched += 1
 
         cur.execute(
-            "select gp.id from game_players gp where gp.game_id = %s and gp.player_id = %s",
+            "select gp.id from game_players gp where gp.game_id = %s and gp.player_id = %s "
+            "order by gp.is_active desc limit 1",
             (game_id, player_id),
         )
         row = cur.fetchone()
@@ -353,37 +380,43 @@ def already_played_gameweeks(cur, game_id):
     return [row[0] for row in cur.fetchall()]
 
 
-def accumulate_dreamteam_current_season_row(cur, game_id, gameweeks, by_position, all_players):
-    """Real season-to-date stats for Dream Team (2026-08-27 user request -
-    "if we can pull everything from dream team tonic that would be
-    cleaner"). Dream Team's own official API exposes no real per-match
-    minutes field at all (see seed_dreamteam_historical_stats.py's own
-    docstring) - the ONLY reason that script had to derive a "games
-    played" proxy from a season-cumulative points ratio instead, which is
-    what let a uniform, ~1-game-deep sample crush every Dream Team
-    player's expected-minutes fraction toward zero (real user report,
-    2026-08-27 - Erling Haaland, an undisputed nailed-on starter, rated
-    3/10).
+def real_int(p, key):
+    return int(float(p.get(key) or 0))
 
-    IMPORTANT, confirmed live 2026-08-27: sdt's overall-stats-by-gw-extra
-    endpoint does NOT return per-gameweek deltas despite its fromGW/toGW
-    params - every field (gamesPlayed, minutesPlayed, totalPoints, every
-    per-stat count) is the SAME real season-cumulative total regardless
-    of what range is requested (checked directly: toGW=1 and toGW=5
-    returned byte-identical numbers for every player). An earlier version
-    of this function looped over each already-played gameweek and SUMMED
-    minutesPlayed across calls, assuming each call returned that
-    gameweek's own increment - that would have silently multiplied real
-    minutes by however many gameweeks had been played once GW2+ existed.
-    Fixed by fetching ONCE and reading the already-cumulative fields
-    directly - gamesPlayed maps straight onto pt1 (a real appearance
-    count, no derivation needed at all now), and the same real payload
-    also has genuine goals/assists/cleanSheet/saves/tackles/etc per-stat
-    TOTALS - matching (often exceeding) what scraper_dreamteam_stats.py's
-    official-API pull gets, so those are used directly here too rather
-    than carried forward from the official-API-sourced HISTORICAL_SEASON
-    row, per the user's own "pull everything from dream team tonic"
-    direction - one real source instead of two overlapping ones.
+
+def accumulate_current_season_row(cur, game_id, game_slug, by_position, all_players):
+    """Real season-to-date stats from DreamTeamTonic (2026-08-27 user
+    request - "if we can pull everything from dream team tonic that
+    would be cleaner"). Originally Dream Team-only (its own official API
+    exposes no real per-match minutes field at all - see seed_dreamteam_
+    historical_stats.py's own docstring - the reason that script had to
+    derive a "games played" proxy from a season-cumulative points ratio
+    instead, crushing every Dream Team player's expected-minutes fraction
+    toward zero: real user report, Erling Haaland rated 3/10). Extended
+    to FanTeam the same day - real, separate bug found while verifying
+    the Dream Team fix: FanTeam's own "Mins" column showed 0 for every
+    player including 8+ point scorers, because fanteam_player_status.
+    minutes is scoped to whichever gameweek is CURRENTLY EDITABLE
+    (upcoming, unplayed) at scrape time, not a real season-to-date total
+    - structurally always 0 pre-match, not a scrape failure. See
+    CURRENT_SEASON_SOURCES for which games this actually runs for -
+    Cloud FF excluded, it already has real current-season data from its
+    own live scrape.
+
+    IMPORTANT, confirmed live 2026-08-27: overall-stats-by-gw-extra does
+    NOT return per-gameweek deltas despite its fromGW/toGW params - every
+    field (gamesPlayed, minutesPlayed, totalPoints, every per-stat count)
+    is the SAME real season-cumulative total regardless of what range is
+    requested (checked directly across sdt/tff/cloud: toGW=1 and toGW=5
+    returned byte-identical numbers for every player). Fetch ONCE and
+    read the already-cumulative fields directly - gamesPlayed maps
+    straight onto pt1 (a real appearance count, no derivation needed at
+    all), and the same real payload has genuine goals/assists/clean-
+    sheets/saves/etc per-stat TOTALS too (see each source's own
+    event_stats mapper in SOURCES) - used directly here rather than
+    carried forward from whatever each game's own official-API historical
+    pipeline has, per the user's "pull everything from dream team tonic"
+    direction.
 
     pt60/pt90 have no real per-appearance breakdown available from this
     season-aggregate endpoint (that granularity only exists per-gameweek,
@@ -391,15 +424,14 @@ def accumulate_dreamteam_current_season_row(cur, game_id, gameweeks, by_position
     Estimated from real avg minutes per appearance (minutesPlayed /
     gamesPlayed) scaled against the 60/90-minute thresholds directly -
     data-grounded per player, not a single flat assumed rate applied to
-    everyone the way seed_dreamteam_historical_stats.py's ASSUMED_COND60_
-    RATE was.
+    everyone.
 
     Idempotent per run: re-fetches the current cumulative snapshot fresh
     every time (there's nothing to accumulate incrementally, since the
     source itself is already cumulative), then deletes and re-inserts the
     one season-aggregate row per player - same idiom seed_dreamteam_
     historical_stats.py already uses."""
-    source = SOURCES["dreamteam"]
+    source = SOURCES[game_slug]
     data = fetch_gameweek(source["key"], 1)  # fromGW/toGW ignored - see docstring
     if not data or not data.get("players"):
         return 0
@@ -415,11 +447,17 @@ def accumulate_dreamteam_current_season_row(cur, game_id, gameweeks, by_position
         display_name = p.get("displayName")
         if not display_name or not live_position:
             continue
+        # CURRENT_SEASON_SOURCES is dreamteam/fanteam only (see this
+        # function's own docstring) - both use the same surname_variants
+        # matcher import_gameweek() below already uses for them; Cloud
+        # FF's own bare-surname format needs match_player_cloud instead,
+        # not reachable here since it's excluded from this accumulation.
         player_id = match_player(by_position, all_players, display_name, live_position, team_id)
         if player_id is None:
             continue
         cur.execute(
-            "select gp.id from game_players gp where gp.game_id = %s and gp.player_id = %s",
+            "select gp.id from game_players gp where gp.game_id = %s and gp.player_id = %s "
+            "order by gp.is_active desc limit 1",
             (game_id, player_id),
         )
         row = cur.fetchone()
@@ -429,9 +467,6 @@ def accumulate_dreamteam_current_season_row(cur, game_id, gameweeks, by_position
 
     if not per_player:
         return 0
-
-    def real_int(p, key):
-        return int(float(p.get(key) or 0))
 
     written = 0
     for game_player_id, p in per_player.items():
@@ -452,6 +487,8 @@ def accumulate_dreamteam_current_season_row(cur, game_id, gameweeks, by_position
             "percent_selected": float(p.get("percentSelected") or 0),
         }
 
+        event_stats = source["event_stats"](p)
+
         cur.execute(
             "delete from game_player_stats where game_player_id = %s and season = %s and gameweek = 0",
             (game_player_id, CURRENT_SEASON),
@@ -465,8 +502,9 @@ def accumulate_dreamteam_current_season_row(cur, game_id, gameweeks, by_position
             """,
             (
                 game_player_id, CURRENT_SEASON, minutes_played,
-                real_int(p, "goals"), real_int(p, "assists"), real_int(p, "cleanSheet"),
-                real_int(p, "saves"), real_int(p, "goalsConceded"), real_int(p, "yellowCards"), real_int(p, "redCards"),
+                real_int(event_stats, "goals"), real_int(event_stats, "assists"), real_int(event_stats, "clean_sheets"),
+                real_int(event_stats, "saves"), real_int(event_stats, "goals_conceded"),
+                real_int(event_stats, "yellow_cards"), real_int(event_stats, "red_cards"),
                 real_int(p, "totalPoints"), psycopg2.extras.Json(raw_stats),
             ),
         )
@@ -495,15 +533,16 @@ def run_for_game(cur, conn, game_slug, gameweeks):
     print(f"{game_slug}: {total_matched} matched, {total_unmatched} unmatched, {total_written} rows updated across {len(gameweeks)} gameweek(s).")
 
     # Real per-gameweek minutes -> a real CURRENT_SEASON shrinkage-prior
-    # row (2026-08-27 - see accumulate_dreamteam_current_season_row's own
-    # docstring). Dream Team only - fanteam/cloudff/eflfantasy already
-    # get real current-season game_player_stats rows from their own
-    # dedicated live importers, this fills the one real gap Dream Team's
-    # official API structurally can't.
-    if game_slug == "dreamteam":
-        rows_written = accumulate_dreamteam_current_season_row(cur, game_id, already_played_gameweeks(cur, game_id), by_position, all_players)
+    # row (2026-08-27 - see accumulate_current_season_row's own
+    # docstring). dreamteam/fanteam only (CURRENT_SEASON_SOURCES) - Cloud
+    # FF already gets real current-season game_player_stats rows from its
+    # own dedicated live scrape, this fills the real gap Dream Team's
+    # official API structurally can't, and the real gap FanTeam's own
+    # editable-gameweek-scoped status snapshot can't either.
+    if game_slug in CURRENT_SEASON_SOURCES:
+        rows_written = accumulate_current_season_row(cur, game_id, game_slug, by_position, all_players)
         conn.commit()
-        print(f"dreamteam: {rows_written} real current-season minutes rows written.")
+        print(f"{game_slug}: {rows_written} real current-season minutes rows written.")
 
 
 def main():
