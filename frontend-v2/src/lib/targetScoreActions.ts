@@ -24,6 +24,17 @@ export type TargetScoreWindowFixture = {
 export type TargetScoreWindow = {
   startGameweek: number;
   endGameweek: number;
+  // The SAME composite/sub-ratings the rankings list and the
+  // downloadable card show (2026-08-27 user report: PlayerInfoPanel's
+  // own headline "Hail Mary Rating" was actually the single-gameweek
+  // rating, not this window's Target Score - the two are genuinely
+  // different numbers, but nothing here let the panel show the one
+  // that matches whatever list the player was opened from).
+  targetScore: number;
+  formRating: number | null;
+  fixtureDifficultyRating: number | null;
+  fixtureQuantityRating: number | null;
+  liveOddsRating: number | null;
   fixtures: TargetScoreWindowFixture[];
 };
 
@@ -54,13 +65,18 @@ export async function getPlayerTargetScoreWindow(
 
   const { data } = await supabase
     .from("target_scores")
-    .select("start_gameweek, end_gameweek, inputs")
+    .select("start_gameweek, end_gameweek, target_score, form_rating, fixture_difficulty_rating, fixture_quantity_rating, live_odds_rating, inputs")
     .eq("game_player_id", gamePlayerId)
     .eq("horizon", horizon)
     .eq("start_gameweek", gameweek)
     .maybeSingle<{
       start_gameweek: number;
       end_gameweek: number;
+      target_score: number;
+      form_rating: number | null;
+      fixture_difficulty_rating: number | null;
+      fixture_quantity_rating: number | null;
+      live_odds_rating: number | null;
       inputs: {
         window_fixtures?: {
           opponent_team_name: string | null;
@@ -79,6 +95,11 @@ export async function getPlayerTargetScoreWindow(
   return {
     startGameweek: data.start_gameweek,
     endGameweek: data.end_gameweek,
+    targetScore: Number(data.target_score),
+    formRating: data.form_rating,
+    fixtureDifficultyRating: data.fixture_difficulty_rating,
+    fixtureQuantityRating: data.fixture_quantity_rating,
+    liveOddsRating: data.live_odds_rating,
     // Real fixture order (2026-08-27 user report - "the fixtures are not
     // in order") - window_fixtures' own storage order isn't chronological
     // (confirmed live, fetch_window_fixture_rows has no ORDER BY), same

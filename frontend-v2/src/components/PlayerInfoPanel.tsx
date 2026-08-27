@@ -242,14 +242,47 @@ export default function PlayerInfoPanel({
             )
           )}
 
-          <div className="flex items-center justify-between rounded-lg bg-navy-950 px-3 py-2">
-            <div>
-              <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">Hail Mary Rating</p>
-              <HailMaryRatingBadge rating={data.rating} size="lg" />
+          <div className="flex flex-col gap-2 rounded-lg bg-navy-950 px-3 py-2">
+            <div className="flex items-center justify-between">
+              <div>
+                {/* When a horizon is selected, the headline number here
+                    is the SAME Target Score the list this player was
+                    opened from shows - real user report 2026-08-27:
+                    this used to always show the single-gameweek rating
+                    instead, a genuinely different number that happened
+                    to share the same "Hail Mary Rating" label, reading
+                    as wrong/inconsistent even though both were correct
+                    for what they actually were. */}
+                <p className="text-[10px] font-medium uppercase tracking-wide text-navy-500">
+                  {targetScoreWindow
+                    ? targetScoreWindow.startGameweek === targetScoreWindow.endGameweek
+                      ? "Target Score · This Gameweek"
+                      : `Target Score · GW${targetScoreWindow.startGameweek}–GW${targetScoreWindow.endGameweek}`
+                    : "Hail Mary Rating"}
+                </p>
+                <HailMaryRatingBadge rating={targetScoreWindow ? Math.round(targetScoreWindow.targetScore) : data.rating} size="lg" />
+              </div>
+              <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${confidenceTone(data.dataConfidence.label)}`}>
+                {data.dataConfidence.label} confidence
+              </span>
             </div>
-            <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${confidenceTone(data.dataConfidence.label)}`}>
-              {data.dataConfidence.label} confidence
-            </span>
+            {targetScoreWindow && (
+              <div className="flex gap-3 border-t border-navy-800 pt-2 text-[10px]">
+                {(
+                  [
+                    ["Form", targetScoreWindow.formRating],
+                    ["Fix Diff", targetScoreWindow.fixtureDifficultyRating],
+                    ["Fixtures", targetScoreWindow.fixtureQuantityRating],
+                    ["Live Odds", targetScoreWindow.liveOddsRating],
+                  ] as [string, number | null][]
+                ).map(([label, value]) => (
+                  <span key={label} className="flex items-center gap-1">
+                    <span className="text-navy-500">{label}</span>
+                    <span className={value == null ? "text-navy-700" : "font-semibold text-navy-200"}>{value ?? "—"}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           {realStats &&
