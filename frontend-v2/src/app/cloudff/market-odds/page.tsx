@@ -60,7 +60,7 @@ export default async function CloudFFMarketOddsPage({
   if (!user) redirect("/login");
 
   const { data: game } = await supabase.from("fantasy_games").select("id").eq("slug", "cloudff").maybeSingle();
-  if (!game) redirect("/cloudff");
+  if (!game) redirect("/ratings?game=cloudff");
 
   const gwInfo = await getGameweekInfo(supabase, game.id);
   const planningGameweek = gwInfo.planningGameweek ?? 1;

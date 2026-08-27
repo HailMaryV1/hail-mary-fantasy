@@ -24,14 +24,13 @@ const RATED_GAMES: { slug: string; label: string }[] = [
 
 // Market Odds entry point for the ratings hub (2026-08-27 site-wide
 // consolidation - "a nice interface with all the downloadable markets,
-// cards, best 5 in each position"). null for a game whose market-odds
-// page isn't reachable game-wide yet - FanTeam's is still squad-scoped
-// (`/fanteam/[id]/market-odds`) until its own squad-board removal phase
-// converts it to a flat route the same way Dream Team/Cloud FF/EFL
-// Fantasy's already are.
-const MARKET_ODDS_PATH: Record<string, string | null> = {
+// cards, best 5 in each position"). All 4 games now have a flat,
+// game-wide market-odds route - FanTeam's own squad-scoped version
+// (`/fanteam/[id]/market-odds`) was converted to `/fanteam/market-odds`
+// as part of removing its squad board/sync flow.
+const MARKET_ODDS_PATH: Record<string, string> = {
   dreamteam: "/dreamteam/market-odds",
-  fanteam: null,
+  fanteam: "/fanteam/market-odds",
   cloudff: "/cloudff/market-odds",
   eflfantasy: "/eflfantasy/market-odds",
 };

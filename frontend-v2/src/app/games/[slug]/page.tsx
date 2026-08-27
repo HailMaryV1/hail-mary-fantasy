@@ -35,9 +35,9 @@ export default async function GameEntryPage({ params }: { params: Promise<{ slug
   // (now deleted) squad board. Each remaining game switches over the same
   // way as its own squad board is removed.
   if (slug === "dreamteam") redirect("/ratings?game=dreamteam");
-  if (slug === "fanteam") redirect("/fanteam");
-  if (slug === "cloudff") redirect("/cloudff");
-  if (slug === "eflfantasy") redirect("/eflfantasy");
+  if (slug === "fanteam") redirect("/ratings?game=fanteam");
+  if (slug === "cloudff") redirect("/ratings?game=cloudff");
+  if (slug === "eflfantasy") redirect("/ratings?game=eflfantasy");
 
   const { data: squads } = await supabase
     .from("squads")

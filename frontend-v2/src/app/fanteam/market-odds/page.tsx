@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
+import { redirect } from "next/navigation";
 import { createAuthServerClient } from "@/lib/supabaseServerClient";
 import { getGameweekInfo } from "@/lib/gameweek";
 import { fetchMarketOdds, type MarketOddsTeamRow } from "@/lib/marketOdds";
@@ -7,12 +6,6 @@ import GameweekSwitcher from "@/components/GameweekSwitcher";
 import Kit from "@/components/Kit";
 
 export const dynamic = "force-dynamic";
-
-type SquadRow = {
-  id: number;
-  user_id: string;
-  fantasy_games: { id: number; slug: string } | { id: number; slug: string }[];
-};
 
 function DeltaTag({ value, suffix = "%" }: { value: number; suffix?: string }) {
   if (Math.abs(value) < 0.05) return null;
@@ -54,32 +47,27 @@ function Top5Card({ title, rows, metric }: { title: string; rows: MarketOddsTeam
   );
 }
 
+// Game-wide, not squad-scoped (2026-08-27 site-wide rating consolidation -
+// FanTeam's squad board/sync flow is gone, so this can no longer route
+// through a squads.id to resolve game context). Real market odds
+// (fetchMarketOdds) were always game-slug-scoped, not squad-scoped -
+// the old squads lookup only ever existed to find game.id and gate
+// access, both trivially resolved directly here instead, same pattern
+// Dream Team/Cloud FF/EFL Fantasy's own market-odds pages already use.
 export default async function FanTeamMarketOddsPage({
-  params,
   searchParams,
 }: {
-  params: Promise<{ id: string }>;
   searchParams: Promise<{ gameweek?: string }>;
 }) {
-  const { id } = await params;
-  const squadId = Number(id);
   const { gameweek: gameweekParam } = await searchParams;
-
   const supabase = await createAuthServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: squad } = await supabase
-    .from("squads")
-    .select("id, user_id, fantasy_games(id, slug)")
-    .eq("id", squadId)
-    .single<SquadRow>();
-  if (!squad || squad.user_id !== user.id) notFound();
-
-  const game = Array.isArray(squad.fantasy_games) ? squad.fantasy_games[0] : squad.fantasy_games;
-  if (!game || game.slug !== "fanteam") notFound();
+  const { data: game } = await supabase.from("fantasy_games").select("id").eq("slug", "fanteam").maybeSingle();
+  if (!game) redirect("/ratings?game=fanteam");
 
   const gwInfo = await getGameweekInfo(supabase, game.id);
   const planningGameweek = gwInfo.planningGameweek ?? 1;
@@ -93,10 +81,7 @@ export default async function FanTeamMarketOddsPage({
   return (
     <div className="min-h-screen bg-navy-950 px-4 py-6 sm:px-6">
       <div className="mx-auto max-w-6xl">
-        <Link href={`/fanteam/${squadId}`} className="text-sm font-medium text-navy-400 hover:text-sky-400">
-          ← Back to squad
-        </Link>
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h1 className="text-lg font-semibold text-white">Market Odds</h1>
             <p className="mt-1 max-w-xl text-xs text-navy-400">
@@ -114,7 +99,7 @@ export default async function FanTeamMarketOddsPage({
               ⬇ Card
             </a>
             <GameweekSwitcher
-              basePath={`/fanteam/${squadId}/market-odds`}
+              basePath="/fanteam/market-odds"
               currentGameweek={viewedGameweek}
               minGameweek={gwInfo.minGameweek}
               maxGameweek={gwInfo.maxGameweek}

@@ -68,7 +68,7 @@ export default async function EflMarketOddsPage({
   if (!user) redirect("/login");
 
   const { data: game } = await supabase.from("fantasy_games").select("id").eq("slug", "eflfantasy").maybeSingle();
-  if (!game) redirect("/eflfantasy");
+  if (!game) redirect("/ratings?game=eflfantasy");
 
   const gwInfo = await getGameweekInfo(supabase, game.id);
   const planningGameweek = gwInfo.planningGameweek ?? 1;
