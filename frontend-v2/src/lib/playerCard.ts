@@ -141,13 +141,20 @@ export function formatKickoff(iso: string): string {
   });
 }
 
-// Compact "Sat 11:30" form for the secondary fixture chips - the full
-// formatKickoff (weekday + day + month + time) doesn't fit in a small
-// pill; a bare date is ambiguous without the day-of-week, and a bare
-// time is ambiguous across a multi-week window, so weekday+time is the
-// shortest unambiguous real pair.
+// Compact "Sat 6 Sep, 11:30" form for the secondary fixture chips - the
+// full formatKickoff also carries the year-less weekday+day+month+time,
+// this just drops nothing (2026-08-27 user report: a bare weekday+time
+// is ambiguous across a multi-week window - e.g. "Sun 15:30" alone can't
+// tell two different Sundays a fortnight apart apart).
 function formatShortKickoff(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit", timeZone: KICKOFF_TIMEZONE });
+  return new Date(iso).toLocaleString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: KICKOFF_TIMEZONE,
+  });
 }
 
 export type PlayerCardFixture = {

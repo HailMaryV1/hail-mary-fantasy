@@ -150,6 +150,42 @@ def upsert_fixture(cur, external_id, competition, season, home_team_id, away_tea
     cur.execute("select id, kickoff_at from fixtures where external_id = %s", (external_id,))
     existing = cur.fetchone()
 
+    # Real bug found live 2026-08-27 (user report: "Charlton Athletic"
+    # and "Luton" each showing up twice, 1-2 days apart, on the same
+    # player's fixture window): The Odds API sometimes REISSUES a cup
+    # fixture under a brand new external_id once its real kickoff slot
+    # is confirmed (the old id keeps a generic placeholder time like
+    # 15:00, still in `fixtures` but no longer actively priced) - the
+    # `on conflict (external_id)` upsert above can't catch that, since
+    # by definition it's a value it's never seen before, so it just
+    # inserted a second row for the same real match every time. Same two
+    # teams + same competition + same season only legitimately happens
+    # once in a normal season (no side replays itself in the same cup),
+    # so if a fixture already exists for this real matchup under a
+    # DIFFERENT external_id, that's the reissue case - adopt the new
+    # external_id onto the existing row instead of creating a new one.
+    if existing is None:
+        cur.execute(
+            "select id, kickoff_at from fixtures where competition = %s and season = %s and home_team_id = %s and away_team_id = %s",
+            (competition, season, home_team_id, away_team_id),
+        )
+        reissued = cur.fetchone()
+        if reissued is not None:
+            existing = reissued
+            cur.execute(
+                "update fixtures set external_id = %s, kickoff_at = %s where id = %s",
+                (external_id, kickoff_at, reissued[0]),
+            )
+            fixture_id = reissued[0]
+            log_event(
+                cur,
+                "fixture_rescheduled",
+                f"{home_name} vs {away_name} reissued under a new external_id, kickoff now {kickoff_at.strftime('%d %b %Y %H:%M')} UTC",
+                fixture_id=fixture_id,
+                details={"old_kickoff_at": reissued[1].isoformat() if reissued[1] else None, "new_kickoff_at": kickoff_at.isoformat()},
+            )
+            return fixture_id
+
     cur.execute(
         """
         insert into fixtures (external_id, competition, season, home_team_id, away_team_id, kickoff_at)

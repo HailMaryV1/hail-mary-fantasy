@@ -177,7 +177,11 @@ export default function PlayerInfoPanel({
                         {f.isHome ? "vs " : "at "}
                         {f.opponentTeamName ?? "Unknown opponent"}
                       </p>
-                      {f.kickoffAt && <p className="text-navy-500">{formatKickoff(f.kickoffAt)}</p>}
+                      <p className="text-navy-500">
+                        {f.gameweek != null ? `GW${f.gameweek}` : null}
+                        {f.gameweek != null && f.kickoffAt ? " · " : null}
+                        {f.kickoffAt ? formatKickoff(f.kickoffAt) : null}
+                      </p>
                     </div>
                     {tier && (
                       <span

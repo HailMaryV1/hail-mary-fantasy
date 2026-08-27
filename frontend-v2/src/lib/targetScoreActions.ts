@@ -7,6 +7,7 @@ export type TargetScoreWindowFixture = {
   isHome: boolean;
   kickoffAt: string | null;
   difficultyRaw: number | null;
+  gameweek: number | null;
 };
 
 export type TargetScoreWindow = {
@@ -50,7 +51,13 @@ export async function getPlayerTargetScoreWindow(
       start_gameweek: number;
       end_gameweek: number;
       inputs: {
-        window_fixtures?: { opponent_team_name: string | null; is_home: boolean; kickoff_at: string | null; difficulty_raw: number | null }[];
+        window_fixtures?: {
+          opponent_team_name: string | null;
+          is_home: boolean;
+          kickoff_at: string | null;
+          difficulty_raw: number | null;
+          gameweek: number | null;
+        }[];
       };
     }>();
   if (!data) return null;
@@ -58,12 +65,20 @@ export async function getPlayerTargetScoreWindow(
   return {
     startGameweek: data.start_gameweek,
     endGameweek: data.end_gameweek,
-    fixtures: (data.inputs?.window_fixtures ?? []).map((f) => ({
-      opponentTeamName: f.opponent_team_name,
-      isHome: f.is_home,
-      kickoffAt: f.kickoff_at,
-      difficultyRaw: f.difficulty_raw,
-    })),
+    // Real fixture order (2026-08-27 user report - "the fixtures are not
+    // in order") - window_fixtures' own storage order isn't chronological
+    // (confirmed live, fetch_window_fixture_rows has no ORDER BY), same
+    // fix already applied to the downloadable card's own secondary
+    // fixture list (playerCard.ts).
+    fixtures: (data.inputs?.window_fixtures ?? [])
+      .map((f) => ({
+        opponentTeamName: f.opponent_team_name,
+        isHome: f.is_home,
+        kickoffAt: f.kickoff_at,
+        difficultyRaw: f.difficulty_raw,
+        gameweek: f.gameweek,
+      }))
+      .sort((a, b) => (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")),
   };
 }
 
@@ -157,7 +172,9 @@ export async function searchTargetScorePool(params: {
     fixture_quantity_rating: number | null;
     live_odds_rating: number | null;
     real_total_points: number | string | null;
-    window_fixtures: { opponent_team_name: string | null; is_home: boolean; kickoff_at: string | null; difficulty_raw: number | null }[] | null;
+    window_fixtures:
+      | { opponent_team_name: string | null; is_home: boolean; kickoff_at: string | null; difficulty_raw: number | null; gameweek: number | null }[]
+      | null;
     end_gameweek: number | null;
     total_count: number | string;
   };
@@ -176,12 +193,20 @@ export async function searchTargetScorePool(params: {
     fixtureQuantityRating: r.fixture_quantity_rating,
     liveOddsRating: r.live_odds_rating,
     realTotalPoints: r.real_total_points != null ? Number(r.real_total_points) : null,
-    windowFixtures: (r.window_fixtures ?? []).map((f) => ({
-      opponentTeamName: f.opponent_team_name,
-      isHome: f.is_home,
-      kickoffAt: f.kickoff_at,
-      difficultyRaw: f.difficulty_raw,
-    })),
+    // Real fixture order - window_fixtures' own storage order isn't
+    // chronological (see getPlayerTargetScoreWindow above; same real
+    // bug hit Browse All Players' own fixture pills, confirmed live:
+    // "Charlton Athletic" showing twice out of order for a duplicated
+    // fixture, now fixed at the source in dedupe_fixture_reissues.py).
+    windowFixtures: (r.window_fixtures ?? [])
+      .map((f) => ({
+        opponentTeamName: f.opponent_team_name,
+        isHome: f.is_home,
+        kickoffAt: f.kickoff_at,
+        difficultyRaw: f.difficulty_raw,
+        gameweek: f.gameweek,
+      }))
+      .sort((a, b) => (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")),
     endGameweek: r.end_gameweek,
   }));
   const totalCount = rpcRows.length > 0 ? Number(rpcRows[0].total_count) : 0;

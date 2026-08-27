@@ -118,6 +118,16 @@ def resolve_team_id(cur, short_code: str) -> int:
 
 
 def import_fixtures(cur, game_id, fixtures_data, team_id_by_short):
+    # 2026-08-27 fix: matched to require kickoff_at to match EXACTLY,
+    # which broke whenever a match's kickoff moved after this table's
+    # own Odds-API-sourced row was created - the exact-match lookup then
+    # found nothing and inserted a second row for the same real match
+    # (confirmed live: same bug as import_fanteam_live.py's own
+    # import_fixtures, see that file's docstring for the full incident -
+    # 25 Premier League fixtures duplicated this way). (home, away,
+    # competition, season) is the real natural key for a normal league
+    # fixture; kickoff_at is just a fact about that row, refreshed in
+    # place below rather than used to find it.
     written, created, matched = 0, 0, 0
     for f in fixtures_data:
         home_id = team_id_by_short[f["team_h_short"]]
@@ -125,12 +135,14 @@ def import_fixtures(cur, game_id, fixtures_data, team_id_by_short):
         kickoff = datetime.fromisoformat(f["kickoff_time"].replace("Z", "+00:00"))
 
         cur.execute(
-            "select id from fixtures where home_team_id = %s and away_team_id = %s and kickoff_at = %s",
-            (home_id, away_id, kickoff),
+            "select id, kickoff_at from fixtures where home_team_id = %s and away_team_id = %s and competition = 'soccer_epl' and season = %s",
+            (home_id, away_id, SEASON),
         )
         row = cur.fetchone()
         if row:
             fixture_id = row[0]
+            if row[1] != kickoff:
+                cur.execute("update fixtures set kickoff_at = %s where id = %s", (kickoff, fixture_id))
             matched += 1
         else:
             cur.execute(

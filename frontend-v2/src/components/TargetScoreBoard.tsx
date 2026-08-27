@@ -6,7 +6,13 @@ import Kit from "@/components/Kit";
 import PlayerInfoPanel from "@/components/PlayerInfoPanel";
 import FixtureWindowPills from "@/components/FixtureWindowPills";
 
-type WindowFixture = { opponent_team_name: string | null; is_home: boolean; kickoff_at: string | null; difficulty_raw: number | null };
+type WindowFixture = {
+  opponent_team_name: string | null;
+  is_home: boolean;
+  kickoff_at: string | null;
+  difficulty_raw: number | null;
+  gameweek: number | null;
+};
 
 export type TargetScoreRow = {
   position: string;
@@ -45,12 +51,20 @@ function SubStat({ label, title, value }: { label: string; title: string; value:
 }
 
 function toWindowFixtures(fixtures: WindowFixture[] | null) {
-  return fixtures?.map((f) => ({
-    opponentTeamName: f.opponent_team_name,
-    isHome: f.is_home,
-    kickoffAt: f.kickoff_at,
-    difficultyRaw: f.difficulty_raw,
-  })) ?? null;
+  return (
+    fixtures
+      ?.map((f) => ({
+        opponentTeamName: f.opponent_team_name,
+        isHome: f.is_home,
+        kickoffAt: f.kickoff_at,
+        difficultyRaw: f.difficulty_raw,
+        gameweek: f.gameweek,
+      }))
+      // Real fixture order (2026-08-27 fix) - window_fixtures' own
+      // storage order isn't chronological, same fix applied everywhere
+      // else this JSON is read (targetScoreActions.ts, playerCard.ts).
+      .sort((a, b) => (a.kickoffAt ?? "").localeCompare(b.kickoffAt ?? "")) ?? null
+  );
 }
 
 function TargetScoreRowItem({

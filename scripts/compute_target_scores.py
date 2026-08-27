@@ -35,7 +35,10 @@ thing:
 Composite `target_score` blends whichever of the 4 are present, weighted
 per horizon (odds/form dominate short horizons, fixture components
 dominate long ones - see HORIZON_WEIGHTS), renormalized over available
-signals only - never fabricates a number to fill a gap.
+signals only - never fabricates a number to fill a gap, then discounted
+by the player's own expected minutes fraction (see opportunity_
+multiplier below) - none of the 4 sub-ratings alone measure whether
+THIS player is actually going to play.
 
 RUN (mirrors compute_projections.py's own CLI):
     python3 scripts/compute_target_scores.py <game_slug> --gameweek <N>
@@ -58,6 +61,34 @@ from compute_projections import (
 )
 
 HORIZONS = (1, 2, 3, 5)
+
+# Real user report 2026-08-27: a confirmed Premier League backup
+# goalkeeper (Illan Meslier, Arsenal - behind David Raya) was rating
+# 9/10 on a 3-gameweek Target Score, ranking in the same top-5 list as
+# genuine starters - "how the hell is a backup keeper in the top 5...
+# players not likely to play should be nowhere near". Root cause:
+# none of the 4 sub-ratings above measure the PLAYER's own chance of
+# playing - Fixture Difficulty/Quantity are team-level, Live Odds/Form
+# can come back None entirely for a fringe player (confirmed live:
+# Meslier's own form_rating was None), so a backup at a club with easy
+# fixtures could out-rank a starter at a club with hard ones. This
+# discounts the final blended composite by the SAME expected_minutes_
+# fraction the main Hail Mary Rating already uses (compute_projections.
+# py's own Opportunity Model) - not a 5th visible sub-rating, so the 4
+# existing 1-10 numbers keep meaning exactly what they already mean.
+# 0.6 is the "no discount past this point" threshold - a real first-
+# choice starter or a legitimate rotation-risk regular (expected to
+# play at least ~54 minutes) should never be punished for occasionally
+# being subbed early; the curve only bites below that, and bites hard
+# by design as expected minutes approaches 0 (confirmed live: Meslier's
+# real 0.074 fraction cuts a 9.06 composite down to ~1.1).
+OPPORTUNITY_DISCOUNT_FLOOR_FRACTION = 0.6
+
+
+def opportunity_multiplier(expected_minutes_fraction):
+    if expected_minutes_fraction is None:
+        return 1.0
+    return min(1.0, expected_minutes_fraction / OPPORTUNITY_DISCOUNT_FLOOR_FRACTION)
 
 # Confirmed with the user 2026-08-23: odds/form decay with horizon (real
 # market signal about right now says progressively less about week 5);
@@ -180,7 +211,8 @@ def fetch_window_fixture_rows(cur, game_id, start_gameweek, horizon):
             (f.home_team_id = tfd_own.team_id) as is_home,
             t_opp.name as opponent_team_name,
             tfd_opp.attack_score as opponent_attack_score,
-            tfd_opp.clean_sheet_score as opponent_clean_sheet_score
+            tfd_opp.clean_sheet_score as opponent_clean_sheet_score,
+            gfg.gameweek
         from game_fixture_gameweeks gfg
         join fixtures f on f.id = gfg.fixture_id
         join team_fixture_difficulty tfd_own on tfd_own.fixture_id = f.id and tfd_own.game_id = gfg.game_id
@@ -192,7 +224,7 @@ def fetch_window_fixture_rows(cur, game_id, start_gameweek, horizon):
         (game_id, start_gameweek, start_gameweek + horizon),
     )
     by_team = {}
-    for team_id, fixture_id, kickoff_at, is_home, opponent_team_name, opp_attack, opp_clean_sheet in cur.fetchall():
+    for team_id, fixture_id, kickoff_at, is_home, opponent_team_name, opp_attack, opp_clean_sheet, gameweek in cur.fetchall():
         by_team.setdefault(team_id, []).append(
             {
                 "fixture_id": fixture_id,
@@ -201,6 +233,7 @@ def fetch_window_fixture_rows(cur, game_id, start_gameweek, horizon):
                 "opponent_team_name": opponent_team_name,
                 "opponent_attack_score": float(opp_attack) if opp_attack is not None else None,
                 "opponent_clean_sheet_score": float(opp_clean_sheet) if opp_clean_sheet is not None else None,
+                "gameweek": gameweek,
             }
         )
     return by_team
@@ -427,7 +460,9 @@ def main():
                     "fixture_difficulty": diff_rating_by_team_position.get(diff_key),
                     "fixture_quantity": qty_rating_by_team.get(team_id),
                 }
-                composite = compute_composite(sub_ratings, weights)
+                emf = p["inputs"].get("expected_minutes_fraction") if isinstance(p["inputs"], dict) else None
+                opp_multiplier = opportunity_multiplier(emf)
+                composite = round(compute_composite(sub_ratings, weights) * opp_multiplier, 2)
                 # Real user request 2026-08-26: "use the difficulty pills
                 # with differing colours too" on the per-fixture window
                 # list, both on the ratings page and the card - each
@@ -447,6 +482,8 @@ def main():
                     "fixture_quantity_raw": qty_raw_by_team.get(team_id),
                     "weights_used": weights,
                     "sub_ratings": sub_ratings,
+                    "expected_minutes_fraction": emf,
+                    "opportunity_multiplier": round(opp_multiplier, 4),
                     "window_fixtures": window_fixtures_for_position,
                 }
                 rows.append((gpid, horizon, gameweek, end_gameweek, composite, sub_ratings["form"], sub_ratings["fixture_difficulty"], sub_ratings["fixture_quantity"], sub_ratings["live_odds"], inputs))

@@ -9,11 +9,24 @@ Fixtures: FanTeam's own fixture list represents the same real-world
 matches already in `fixtures` (sourced from The Odds API) - confirmed
 by cross-checking gameweek 1 team pairings and kickoff times, which
 matched exactly. So this reuses existing fixture rows (matched by team
-pair + kickoff time) instead of creating duplicates, and records the
-real gameweek number via game_fixture_gameweeks - replacing the
-period_start/period_end placeholder with FanTeam's actual calendar.
-Any fixture not already present (Odds API hasn't reached that far
-ahead yet) gets created fresh from FanTeam's own data.
+pair + competition + season, NOT kickoff time - see 2026-08-27 fix
+below) instead of creating duplicates, and records the real gameweek
+number via game_fixture_gameweeks - replacing the period_start/
+period_end placeholder with FanTeam's actual calendar. Any fixture not
+already present (Odds API hasn't reached that far ahead yet) gets
+created fresh from FanTeam's own data.
+
+2026-08-27 fix: matching used to require kickoff_at to match EXACTLY,
+which broke the moment a match got a real TV-picked kickoff slot after
+this table's own Odds-API-sourced row was created with the original
+placeholder time - the exact-match lookup then found nothing and
+inserted a whole SECOND fixture row for the same real match (confirmed
+live: 25 Premier League fixtures duplicated this way, all traced to
+one 2026-08-17 reschedule batch). The same two teams only play each
+other once at a given venue per season in a normal league competition,
+so (home, away, competition, season) alone is the real natural key -
+kickoff_at is just a fact about that row, refreshed in place below
+whenever it's moved rather than used to find the row.
 
 Players: FanTeam's live API uses a different internal ID scheme than
 last season's CSV (confirmed: CSV ids like 1677501 vs live ids like
@@ -118,12 +131,14 @@ def import_fixtures(cur, game_id, fixtures_data, team_id_by_real_id):
         kickoff = datetime.fromisoformat(m["startTime"])
 
         cur.execute(
-            "select id from fixtures where home_team_id = %s and away_team_id = %s and kickoff_at = %s",
-            (home_id, away_id, kickoff),
+            "select id, kickoff_at from fixtures where home_team_id = %s and away_team_id = %s and competition = 'soccer_epl' and season = %s",
+            (home_id, away_id, SEASON),
         )
         row = cur.fetchone()
         if row:
             fixture_id = row[0]
+            if row[1] != kickoff:
+                cur.execute("update fixtures set kickoff_at = %s where id = %s", (kickoff, fixture_id))
             matched += 1
         else:
             cur.execute(
