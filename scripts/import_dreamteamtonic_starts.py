@@ -55,6 +55,7 @@ import urllib.request
 from pathlib import Path
 
 import psycopg2
+import psycopg2.extras
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -64,6 +65,15 @@ API_BASE = "https://dtt-data-api-259295136071.europe-west2.run.app"
 SEASON = "202627"  # dreamteamtonic's own compact season code for 2026/27
 MIN_SURNAME_KEY_LEN = 2
 STARTED_MINUTES_THRESHOLD = 60  # sdt-only fallback, see module docstring
+
+# Self-contained, not imported from compute_projections.py - same
+# established convention seed_dreamteam_historical_stats.py's own
+# docstring already follows ("self-contained point-value constants, no
+# import from compute_projections.py"). Values must match compute_
+# projections.py's own HISTORICAL_SEASON/CURRENT_SEASON exactly - see
+# accumulate_dreamteam_current_season_row()'s own docstring.
+HISTORICAL_SEASON = "2025/26"
+CURRENT_SEASON = "2026/27"
 
 # game_slug -> dreamteamtonic source key + how to read that source's shape.
 SOURCES = {
@@ -321,6 +331,128 @@ def already_played_gameweeks(cur, game_id):
     return [row[0] for row in cur.fetchall()]
 
 
+def accumulate_dreamteam_current_season_row(cur, game_id, gameweeks, by_position, all_players):
+    """Real per-gameweek minutes for Dream Team (2026-08-27 user request -
+    "if we can pull everything from dream team tonic that would be
+    cleaner"). Dream Team's own official API exposes no real per-match
+    minutes field at all (see seed_dreamteam_historical_stats.py's own
+    docstring) - the ONLY reason that script had to derive a "games
+    played" proxy from a season-cumulative points ratio instead, which is
+    what let a uniform, ~1-game-deep sample crush every Dream Team
+    player's expected-minutes fraction toward zero (real user report,
+    2026-08-27 - Erling Haaland, an undisputed nailed-on starter, rated
+    3/10). DreamTeamTonic's sdt source has real per-gameweek
+    minutesPlayed - this sums it across every already-played gameweek
+    into a real PT1/PT60/PT90 season-aggregate row, feeding the SAME
+    CURRENT_SEASON merge mechanism compute_projections.py already trusts
+    for every other game's own live per-gameweek data (see that file's
+    own CURRENT_SEASON docstring) - no new mechanism, just a real data
+    source finally feeding an existing one for Dream Team specifically.
+
+    sdt's payload has no goals/assists/clean-sheets/etc at all (confirmed
+    live, see this module's own docstring - "its player rows only carry
+    gamesPlayed/minutesPlayed") - those event-stat columns are carried
+    forward unchanged from whatever's already in the HISTORICAL_SEASON
+    row (itself real, season-cumulative data from Dream Team's own
+    official API via scraper_dreamteam_stats.py/seed_dreamteam_
+    historical_stats.py) rather than zeroed out here - overwriting a real
+    signal with a fabricated absence would be a regression, not an
+    improvement. Only minutes_played/PT1/PT60/PT90 actually change - the
+    one real thing DTT knows that the official API doesn't.
+
+    Idempotent per run: sums every already-played gameweek fresh each
+    time (not an incremental += that could double-count on a re-run),
+    then deletes and re-inserts the one season-aggregate row per player -
+    same idiom seed_dreamteam_historical_stats.py already uses."""
+    if not gameweeks:
+        return 0
+
+    source = SOURCES["dreamteam"]
+    per_player = {}  # game_player_id -> {"minutes": int, "pt1": int, "pt60": int, "pt90": int}
+    team_id_cache = {}
+    for gw in gameweeks:
+        data = fetch_gameweek(source["key"], gw)
+        if not data or not data.get("players"):
+            continue
+        for p in data["players"]:
+            raw_team = p.get("squadName")
+            if raw_team not in team_id_cache:
+                team_id_cache[raw_team] = resolve_team_id(cur, source["alias_source"], source["team_overrides"], raw_team)
+            team_id = team_id_cache[raw_team]
+            live_position = POSITION_MAP.get(p.get("positionLabel") or p.get("position"))
+            display_name = p.get("displayName")
+            if not display_name or not live_position:
+                continue
+            player_id = match_player(by_position, all_players, display_name, live_position, team_id)
+            if player_id is None:
+                continue
+            cur.execute(
+                "select gp.id from game_players gp where gp.game_id = %s and gp.player_id = %s",
+                (game_id, player_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                continue
+            game_player_id = row[0]
+            minutes = int(p.get("minutesPlayed") or 0)
+            agg = per_player.setdefault(game_player_id, {"minutes": 0, "pt1": 0, "pt60": 0, "pt90": 0})
+            agg["minutes"] += minutes
+            if minutes > 0:
+                agg["pt1"] += 1
+            if minutes >= 60:
+                agg["pt60"] += 1
+            if minutes >= 90:
+                agg["pt90"] += 1
+
+    if not per_player:
+        return 0
+
+    cur.execute(
+        """
+        select gps.game_player_id, gps.total_points, gps.goals, gps.assists, gps.clean_sheets, gps.saves,
+               gps.goals_conceded, gps.yellow_cards, gps.red_cards, gps.raw_stats
+        from game_player_stats gps
+        join game_players gp on gp.id = gps.game_player_id
+        where gp.game_id = %s and gps.season = %s and gps.gameweek = 0
+        """,
+        (game_id, HISTORICAL_SEASON),
+    )
+    historical_by_game_player_id = {row[0]: row[1:] for row in cur.fetchall()}
+
+    written = 0
+    for game_player_id, agg in per_player.items():
+        hist = historical_by_game_player_id.get(game_player_id)
+        if hist:
+            total_points, goals, assists, clean_sheets, saves, goals_conceded, yellow_cards, red_cards, raw_stats = hist
+        else:
+            total_points, goals, assists, clean_sheets, saves, goals_conceded, yellow_cards, red_cards, raw_stats = (
+                0, 0, 0, 0, 0, 0, 0, 0, {}
+            )
+        raw_stats = dict(raw_stats or {})
+        raw_stats["PT1"] = agg["pt1"]
+        raw_stats["PT60"] = agg["pt60"]
+        raw_stats["PT90"] = agg["pt90"]
+
+        cur.execute(
+            "delete from game_player_stats where game_player_id = %s and season = %s and gameweek = 0",
+            (game_player_id, CURRENT_SEASON),
+        )
+        cur.execute(
+            """
+            insert into game_player_stats
+                (game_player_id, season, gameweek, minutes_played, goals, assists, clean_sheets,
+                 saves, goals_conceded, yellow_cards, red_cards, total_points, raw_stats)
+            values (%s, %s, 0, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                game_player_id, CURRENT_SEASON, agg["minutes"], goals, assists, clean_sheets,
+                saves, goals_conceded, yellow_cards, red_cards, total_points, psycopg2.extras.Json(raw_stats),
+            ),
+        )
+        written += 1
+    return written
+
+
 def run_for_game(cur, conn, game_slug, gameweeks):
     cur.execute("select id from fantasy_games where slug = %s", (game_slug,))
     row = cur.fetchone()
@@ -340,6 +472,17 @@ def run_for_game(cur, conn, game_slug, gameweeks):
         conn.commit()
 
     print(f"{game_slug}: {total_matched} matched, {total_unmatched} unmatched, {total_written} rows updated across {len(gameweeks)} gameweek(s).")
+
+    # Real per-gameweek minutes -> a real CURRENT_SEASON shrinkage-prior
+    # row (2026-08-27 - see accumulate_dreamteam_current_season_row's own
+    # docstring). Dream Team only - fanteam/cloudff/eflfantasy already
+    # get real current-season game_player_stats rows from their own
+    # dedicated live importers, this fills the one real gap Dream Team's
+    # official API structurally can't.
+    if game_slug == "dreamteam":
+        rows_written = accumulate_dreamteam_current_season_row(cur, game_id, already_played_gameweeks(cur, game_id), by_position, all_players)
+        conn.commit()
+        print(f"dreamteam: {rows_written} real current-season minutes rows written.")
 
 
 def main():
