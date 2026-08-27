@@ -22,6 +22,20 @@ const RATED_GAMES: { slug: string; label: string }[] = [
   { slug: "eflfantasy", label: "EFL Fantasy" },
 ];
 
+// Market Odds entry point for the ratings hub (2026-08-27 site-wide
+// consolidation - "a nice interface with all the downloadable markets,
+// cards, best 5 in each position"). null for a game whose market-odds
+// page isn't reachable game-wide yet - FanTeam's is still squad-scoped
+// (`/fanteam/[id]/market-odds`) until its own squad-board removal phase
+// converts it to a flat route the same way Dream Team/Cloud FF/EFL
+// Fantasy's already are.
+const MARKET_ODDS_PATH: Record<string, string | null> = {
+  dreamteam: "/dreamteam/market-odds",
+  fanteam: null,
+  cloudff: "/cloudff/market-odds",
+  eflfantasy: "/eflfantasy/market-odds",
+};
+
 // GK/DEF/MID/FWD always shown; CLUB only appears for EFL Fantasy (its
 // own 2 Club picks, migration 0087) - ranked as its own independent
 // group by get_top_rated_players, never mixed with the 4 player
@@ -195,18 +209,28 @@ export default async function HailMaryRatingsPage({
           )}
         </div>
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          {RATED_GAMES.map((g) => (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap gap-2">
+            {RATED_GAMES.map((g) => (
+              <Link
+                key={g.slug}
+                href={`/ratings?game=${g.slug}&gameweek=${viewedGameweek}&horizon=${horizonSelection}`}
+                className={`rounded-full px-3 py-1.5 text-xs font-medium ${
+                  activeSlug === g.slug ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"
+                }`}
+              >
+                {g.label}
+              </Link>
+            ))}
+          </div>
+          {MARKET_ODDS_PATH[activeSlug] && (
             <Link
-              key={g.slug}
-              href={`/ratings?game=${g.slug}&gameweek=${viewedGameweek}&horizon=${horizonSelection}`}
-              className={`rounded-full px-3 py-1.5 text-xs font-medium ${
-                activeSlug === g.slug ? "bg-sky-500 text-navy-950" : "bg-navy-800 text-navy-300 hover:bg-navy-700"
-              }`}
+              href={MARKET_ODDS_PATH[activeSlug]!}
+              className="rounded-full border border-navy-700 bg-navy-900 px-3 py-1.5 text-xs font-medium text-navy-300 hover:border-sky-500 hover:text-white"
             >
-              {g.label}
+              Market Odds →
             </Link>
-          ))}
+          )}
         </div>
 
         {/* Horizon selector (2026-08-23 user request) - "best for THIS

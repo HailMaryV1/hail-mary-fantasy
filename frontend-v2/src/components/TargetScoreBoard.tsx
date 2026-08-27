@@ -24,7 +24,6 @@ export type TargetScoreRow = {
   full_name: string;
   team_id: number;
   team_name: string;
-  hail_mary_rating: number | null;
   target_score: number | null;
   form_rating: number | null;
   fixture_difficulty_rating: number | null;
@@ -78,14 +77,12 @@ function toWindowFixtures(fixtures: WindowFixture[] | null) {
 function TargetScoreRowItem({
   row,
   rank,
-  horizon,
   isLive,
   liveGameweek,
   onOpen,
 }: {
   row: TargetScoreRow;
   rank: number;
-  horizon: number;
   isLive: boolean;
   liveGameweek: number | null;
   onOpen: (gamePlayerId: number) => void;
@@ -94,11 +91,14 @@ function TargetScoreRowItem({
   // Fantasy's club-pick naming, migration 0087) - team_name ("Millwall")
   // is the real display name everywhere else this shows up.
   const displayName = row.position === "CLUB" ? row.team_name : row.full_name;
-  // Design decision (see plan): horizon=1 keeps the EXISTING Hail Mary
-  // Rating as the headline number (it's also what actually drove this
-  // row's rank at horizon=1) - target_score only becomes the headline
-  // once it's also what's doing the ranking, horizon >= 2.
-  const headline = formatRating(horizon === 1 ? row.hail_mary_rating : row.target_score);
+  // Site-wide rating consolidation (2026-08-27): target_score is the
+  // ONLY rating shown anywhere, every horizon including horizon=1 - see
+  // get_top_target_score_players' own migration comment for why the old
+  // horizon=1-uses-hail_mary_rating special case was removed (a
+  // percentile-within-position-this-week number, not an absolute
+  // quality read - exactly why a brutal-fixture backup keeper could
+  // rate 9-10).
+  const headline = formatRating(row.target_score);
   // Live Gameweek tab: "what mary predicted... and whats actually
   // happening" - only ever shows a real actual result once this exact
   // gameweek has genuinely been graded (last_gw === liveGameweek);
@@ -189,7 +189,6 @@ export default function TargetScoreBoard({
                     key={r.game_player_id}
                     row={r}
                     rank={i + 1}
-                    horizon={horizon}
                     isLive={isLive}
                     liveGameweek={isLive ? anchorGameweek : null}
                     onOpen={setInfoPlayerId}

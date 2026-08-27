@@ -27,7 +27,14 @@ export default async function GameEntryPage({ params }: { params: Promise<{ slug
   // history separate, never a shared list mixing multiple games'
   // entities together (see gameConfig.ts's isTournamentGame comment for
   // the precedent this follows).
-  if (slug === "dreamteam") redirect("/dreamteam");
+  //
+  // 2026-08-27 site-wide rating consolidation: squad management (pitch
+  // view, transfers, Ask Mary) is being removed game-by-game in favour of
+  // a pure ratings/rankings tool - Dream Team's own homepage is now the
+  // Target Score ratings hub (/ratings?game=dreamteam) rather than the
+  // (now deleted) squad board. Each remaining game switches over the same
+  // way as its own squad board is removed.
+  if (slug === "dreamteam") redirect("/ratings?game=dreamteam");
   if (slug === "fanteam") redirect("/fanteam");
   if (slug === "cloudff") redirect("/cloudff");
   if (slug === "eflfantasy") redirect("/eflfantasy");

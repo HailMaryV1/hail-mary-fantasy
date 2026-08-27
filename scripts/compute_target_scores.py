@@ -13,24 +13,35 @@ recomputing anything, which is what lets it reuse is_rating_eligible's
 "no rubbish" gate for free: a player without a real Hail Mary Rating
 this gameweek gets no target_scores row at all, for any horizon.
 
-Four sub-ratings, each independently bucketed 1-10 via the SAME
-percentile math (assign_ratings) the engine already trusts for
-hail_mary_rating itself, so every 1-10 number in the app means the same
-thing:
+Target Score is the ONLY player-quality rating shown anywhere in the app
+(2026-08-27 site-wide consolidation - see the plan in git history for the
+full rationale). Four sub-ratings, each independently mapped 1-10 via
+absolute_rating() - a fixed, evidence-based scale (real distributions
+measured once and frozen as hardcoded thresholds, same technique already
+proven in frontend-v2/src/lib/fixtureDifficultyColor.ts), NOT a
+percentile rank against whoever else happens to be in the pool this
+gameweek. That distinction matters: a percentile-ranked "9/10" only ever
+means "best of a weak field this week", which is exactly what let a
+backup goalkeeper with a brutal fixture rate 9-10 (real user report,
+2026-08-27) - an absolute "9/10" means the same thing regardless of who
+else is around:
 
   - live_odds_rating: from real bookmaker odds only (never a fallback) -
     horizon-invariant, computed once and reused across every horizon,
     since real markets essentially never exist more than a gameweek out.
   - form_rating: from Recent Form's own real recency-weighted rate -
-    also horizon-invariant, same "as of right now" reasoning.
+    also horizon-invariant, same "as of right now" reasoning. No real
+    samples exist yet this early in the 2026/27 season - see
+    FORM_ANCHORS_BY_POSITION's own comment.
   - fixture_difficulty_rating: POSITION-AWARE (a defender's difficulty
     reflects the opponent's attacking threat, a forward's reflects the
     opponent's defensive solidity - same attack/clean_sheet position
     split compute_projections.py's own DEFAULT_WEIGHTS already uses),
     averaged across every real fixture in the selected window.
   - fixture_quantity_rating: how many real fixtures the player's team
-    has in the window, ranked against every other team in the same
-    competition's window.
+    has in the window, as a ratio against the window's own length (see
+    FIXTURE_QUANTITY_RATIO_ANCHORS) so 1.0 always means "normal" whether
+    the horizon is 1 gameweek or 5.
 
 Composite `target_score` blends whichever of the 4 are present, weighted
 per horizon (odds/form dominate short horizons, fixture components
@@ -54,7 +65,6 @@ from compute_projections import (
     DEFAULT_WEIGHTS,
     RECENT_FORM_STATS,
     STAT_RATE_SCALE,
-    assign_ratings,
     clean_sheet_reward_curve,
     fetch_scoring_rules,
     load_env,
@@ -345,23 +355,83 @@ def compute_fixture_difficulty_raw(position, fixtures_for_team):
     return sum(per_fixture) / len(per_fixture)
 
 
-def bucket_by_group(raw_by_key, group_of):
-    """raw_by_key: {key: raw_value_or_None}. group_of: {key: group_label}
-    dict, OR a callable key -> group_label. Buckets 1-10 via
-    assign_ratings independently within each distinct group (position,
-    or competition) - a key with a None raw value is excluded entirely,
-    never fabricated. Returns {key: rating}."""
-    resolve_group = group_of if callable(group_of) else group_of.__getitem__
-    by_group = {}
-    for key, raw in raw_by_key.items():
-        if raw is None:
-            continue
-        by_group.setdefault(resolve_group(key), []).append(key)
-    result = {}
-    for group, keys in by_group.items():
-        ratings = assign_ratings([raw_by_key[k] for k in keys])
-        result.update(zip(keys, ratings))
-    return result
+def absolute_rating(raw_value, anchors):
+    """Fixed, evidence-based 1-10 mapping from a raw signal to an ABSOLUTE
+    quality rating - piecewise-linear between real, hardcoded (raw_value,
+    rating) control points, NOT a percentile rank against whoever else is
+    in the pool this gameweek (that's what this replaces - see git history
+    for the old bucket_by_group/assign_ratings approach). Real user report
+    2026-08-27: a keeper with a brutal fixture was rating 9-10 purely
+    because he topped a weak GK field that particular week - percentile
+    ranking answers "who's best available right now", never "how good is
+    this, really". A 10 here means the same thing in a strong week and a
+    weak one.
+
+    anchors: sorted ascending by raw_value. None passes through as None -
+    never fabricates a rating for a signal that doesn't exist for this
+    player. A raw_value outside the anchor range clamps to the nearest
+    endpoint rating rather than extrapolating."""
+    if raw_value is None:
+        return None
+    if raw_value <= anchors[0][0]:
+        return anchors[0][1]
+    if raw_value >= anchors[-1][0]:
+        return anchors[-1][1]
+    for (x0, y0), (x1, y1) in zip(anchors, anchors[1:]):
+        if x0 <= raw_value <= x1:
+            frac = (raw_value - x0) / (x1 - x0)
+            return round(y0 + frac * (y1 - y0))
+    return anchors[-1][1]
+
+
+# Fixture Difficulty absolute anchors - same real quintile breakpoints
+# already calibrated for the Tough/Average/Easy fixture pill colors
+# (frontend-v2/src/lib/fixtureDifficultyColor.ts, 420 real fixtures'
+# attack_score measured 2026-08-27), extended from 5 labels to a smooth
+# 1-10 scale so the pill and the numeric rating always describe the same
+# fixture the same way. ease = 1 - hardship (see ease_by_team_position
+# below) - position-INDEPENDENT, since single_fixture_difficulty_raw
+# already applies the attack/clean_sheet position weighting before this
+# point, so one shared anchor list is correct here (unlike Live Odds
+# below, which is genuinely different units per position).
+FIXTURE_DIFFICULTY_EASE_ANCHORS = [(0.0, 1), (0.35, 3), (0.56, 5), (0.68, 7), (0.89, 9), (1.0, 10)]
+
+# Live Odds absolute anchors - raw is a real points-per-fixture rate
+# derived from bookmaker odds, on a genuinely different scale per position
+# (a striker's real goal-rate isn't comparable to a defender's clean-
+# sheet-adjacent rate) - frozen from the real horizon=1 raw distribution
+# measured 2026-08-27 across all 4 games (n=987-3627 samples per
+# position: min/p10/p25/median/p75/p90/max control points). No CLUB entry
+# needed - EFL Fantasy's club pick has no live-odds signal at all
+# (compute_stat_sum_raw always returns None for it, see POSITION_WEIGHTS'
+# own comment above). Revisit once a full season's real odds have
+# accumulated - this is a pre-season/early-season snapshot.
+LIVE_ODDS_ANCHORS_BY_POSITION = {
+    "GK":  [(0.0, 1), (0.148, 2), (0.311, 4), (0.455, 5), (1.484, 8), (2.695, 9), (3.773, 10)],
+    "DEF": [(0.0, 1), (0.019, 2), (0.401, 4), (2.025, 5), (2.568, 7), (2.982, 9), (4.353, 10)],
+    "MID": [(0.0, 1), (0.016, 2), (0.134, 3), (0.456, 5), (0.815, 7), (1.268, 9), (4.724, 10)],
+    "FWD": [(0.0, 1), (0.026, 2), (0.578, 4), (0.951, 5), (1.259, 7), (1.565, 9), (4.089, 10)],
+}
+
+# Fixture Quantity absolute anchors - raw fixture count is converted to a
+# RATIO against the window's horizon length before this (raw / horizon,
+# see qty_rating_by_team below) so one anchor list works across
+# horizon=1/2/3/5 without separate threshold sets: 1.0 = exactly one
+# fixture per gameweek in the window (no blanks, no doubles - the normal
+# case, rated a solid-but-unremarkable 6, not a mediocre 5). Anchors
+# frozen from the real ratio distribution measured 2026-08-27 across
+# every horizon (min observed 0.33-1.0 depending on horizon, max 1.4-2.0).
+FIXTURE_QUANTITY_RATIO_ANCHORS = [(0.0, 1), (0.5, 3), (0.8, 5), (1.0, 6), (1.2, 7), (1.5, 9), (2.0, 10)]
+
+# form_raw has zero real samples in the database as of 2026-08-27 (too
+# early in the 2026/27 season for real recency-weighted data) - there is
+# no real distribution to freeze into absolute anchors yet. Once real
+# form data starts populating, measure it the same way LIVE_ODDS_ANCHORS_
+# BY_POSITION was calibrated above and give this the same per-position
+# shape; until then form_rating stays None for everyone, which
+# compute_composite already renormalizes over correctly (see its own
+# docstring) - never a fabricated number.
+FORM_ANCHORS_BY_POSITION = None
 
 
 def compute_composite(sub_ratings, weights):
@@ -458,8 +528,13 @@ def main():
         # look ahead).
         form_raw = {p["game_player_id"]: compute_stat_sum_raw(p["inputs"], p["position"], scoring_rules, "form") for p in eligible}
         odds_raw = {p["game_player_id"]: compute_stat_sum_raw(p["inputs"], p["position"], scoring_rules, "live_odds") for p in eligible}
-        form_rating = bucket_by_group(form_raw, position_of)
-        odds_rating = bucket_by_group(odds_raw, position_of)
+        # See FORM_ANCHORS_BY_POSITION's own comment - no real data to
+        # rate against yet, so every player stays None here.
+        form_rating = {gpid: None for gpid in form_raw}
+        odds_rating = {
+            gpid: absolute_rating(raw, anchors) if (anchors := LIVE_ODDS_ANCHORS_BY_POSITION.get(position_of[gpid])) else None
+            for gpid, raw in odds_raw.items()
+        }
 
         total_written = 0
         for horizon in HORIZONS:
@@ -478,41 +553,31 @@ def main():
                 if key not in diff_raw_by_team_position:
                     diff_raw_by_team_position[key] = compute_fixture_difficulty_raw(position_of[gpid], fixtures_by_team.get(team_of[gpid], []))
             # compute_fixture_difficulty_raw returns HARDSHIP (higher =
-            # tougher fixtures) but assign_ratings ranks its input
-            # ascending-to-10 (higher input -> higher rating) - bucketing
+            # tougher fixtures) but FIXTURE_DIFFICULTY_EASE_ANCHORS maps
+            # ascending-to-10 (higher input -> higher rating) - rating
             # hardship directly would rate the TOUGHEST run of fixtures
             # 10/10 and the easiest 1/10, exactly backwards (real user
             # report 2026-08-26: Chuba Akpom's genuinely brutal fixture
             # run was rating 10 while Haaland's genuinely easy run was
-            # rating 1). Bucket EASE (1 - hardship) instead, so higher
-            # rating always means an easier run - `raw` values are
-            # bounded ~0-1 (a probability-weighted blend), so this stays
-            # comfortably positive and never trips assign_ratings' "all
-            # values <= 0" all-1s branch the way negating would have.
+            # rating 1). Rate EASE (1 - hardship) instead, so higher
+            # rating always means an easier run.
             ease_by_team_position = {k: (1.0 - v if v is not None else None) for k, v in diff_raw_by_team_position.items()}
-            diff_rating_by_team_position = bucket_by_group(ease_by_team_position, lambda k: k[1])
+            diff_rating_by_team_position = {
+                k: absolute_rating(ease, FIXTURE_DIFFICULTY_EASE_ANCHORS) for k, ease in ease_by_team_position.items()
+            }
 
             # Fixture Quantity is team-level only (not position-aware) -
-            # one raw value per team, ranked within its own competition.
-            # Summed across every competition a team has fixtures in
-            # this window (a real bug fixed live 2026-08-27: this used
-            # to OVERWRITE per competition, silently discarding a
-            # team's cup/Europe fixtures the moment they also had a
-            # real Premier League one this window - the overwhelmingly
-            # common case, and exactly what would have swallowed the
-            # projected credits added just below). 'soccer_epl' is
-            # always the group/ranking label when present - every
-            # dreamteam/fanteam/cloudff team has one, and ranking a
-            # team's TOTAL fixture count against other PL teams' is the
-            # only fair comparison; falls back to whatever single
-            # competition exists otherwise (EFL Fantasy's own call site
-            # has no cup dimension, so this is a no-op there).
+            # one raw fixture count per team, summed across every
+            # competition a team has fixtures in this window (a real bug
+            # fixed live 2026-08-27: this used to OVERWRITE per
+            # competition, silently discarding a team's cup/Europe
+            # fixtures the moment they also had a real Premier League one
+            # this window - the overwhelmingly common case, and exactly
+            # what would have swallowed the projected credits added just
+            # below).
             qty_raw_by_team = {}
-            competition_of_team = {}
             for (competition, team_id), count in fixture_counts.items():
                 qty_raw_by_team[team_id] = qty_raw_by_team.get(team_id, 0) + count
-                if team_id not in competition_of_team or competition == "soccer_epl":
-                    competition_of_team[team_id] = competition
             # Real projected cup/Europe fixtures (2026-08-27 user
             # request - "the fixture tickers show all the double
             # gameweeks coming up... it would massively help our
@@ -528,8 +593,12 @@ def main():
             projected_fixtures_by_team = fetch_window_projected_fixtures(cur, game_id, gameweek, horizon)
             for team_id, entries in projected_fixtures_by_team.items():
                 qty_raw_by_team[team_id] = qty_raw_by_team.get(team_id, 0) + sum(e["confidence"] for e in entries)
-                competition_of_team.setdefault(team_id, "soccer_epl")
-            qty_rating_by_team = bucket_by_group(qty_raw_by_team, competition_of_team)
+            # Ratio against the window length, not the raw count itself -
+            # see FIXTURE_QUANTITY_RATIO_ANCHORS' own comment for why (one
+            # absolute scale needs to work across horizon=1/2/3/5).
+            qty_rating_by_team = {
+                team_id: absolute_rating(raw / horizon, FIXTURE_QUANTITY_RATIO_ANCHORS) for team_id, raw in qty_raw_by_team.items()
+            }
 
             rows = []
             for p in eligible:

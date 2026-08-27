@@ -26,21 +26,48 @@ async function fetchLatestPerGameweek(
   const out = new Map<number, Map<number, { score: number; rating: number | null }>>();
   if (gamePlayerIds.length === 0) return out;
 
-  const { data } = await supabase
-    .from("projections")
-    .select("game_player_id, gameweek, hail_mary_score, hail_mary_rating, created_at")
-    .in("game_player_id", gamePlayerIds)
-    .gte("gameweek", fromGameweek)
-    .lt("gameweek", fromGameweek + count)
-    .order("created_at", { ascending: false })
-    .returns<
-      { game_player_id: number; gameweek: number | null; hail_mary_score: number | null; hail_mary_rating: number | null; created_at: string }[]
-    >();
+  const [{ data: projRows }, { data: targetRows }] = await Promise.all([
+    supabase
+      .from("projections")
+      .select("game_player_id, gameweek, hail_mary_score, created_at")
+      .in("game_player_id", gamePlayerIds)
+      .gte("gameweek", fromGameweek)
+      .lt("gameweek", fromGameweek + count)
+      .order("created_at", { ascending: false })
+      .returns<{ game_player_id: number; gameweek: number | null; hail_mary_score: number | null; created_at: string }[]>(),
+    // Site-wide rating consolidation (2026-08-27): target_score is the
+    // ONLY rating shown anywhere, including in this trend chart - horizon
+    // 1 means "this exact single gameweek", the same row PlayerInfoPanel's
+    // own headline badge reads for whichever gameweek is being browsed,
+    // so the trend line never contradicts the number shown above it (see
+    // get_top_target_score_players' migration comment for the full
+    // rationale behind retiring hail_mary_rating from every display).
+    supabase
+      .from("target_scores")
+      .select("game_player_id, start_gameweek, target_score")
+      .in("game_player_id", gamePlayerIds)
+      .eq("horizon", 1)
+      .gte("start_gameweek", fromGameweek)
+      .lt("start_gameweek", fromGameweek + count)
+      .returns<{ game_player_id: number; start_gameweek: number; target_score: number | null }[]>(),
+  ]);
 
-  for (const row of data ?? []) {
+  const ratingByPlayerGw = new Map<number, Map<number, number | null>>();
+  for (const row of targetRows ?? []) {
+    const byGw = ratingByPlayerGw.get(row.game_player_id) ?? new Map<number, number | null>();
+    byGw.set(row.start_gameweek, row.target_score != null ? Math.round(row.target_score) : null);
+    ratingByPlayerGw.set(row.game_player_id, byGw);
+  }
+
+  for (const row of projRows ?? []) {
     if (row.gameweek == null) continue;
     const byGw = out.get(row.game_player_id) ?? new Map<number, { score: number; rating: number | null }>();
-    if (!byGw.has(row.gameweek)) byGw.set(row.gameweek, { score: Number(row.hail_mary_score ?? 0), rating: row.hail_mary_rating });
+    if (!byGw.has(row.gameweek)) {
+      byGw.set(row.gameweek, {
+        score: Number(row.hail_mary_score ?? 0),
+        rating: ratingByPlayerGw.get(row.game_player_id)?.get(row.gameweek) ?? null,
+      });
+    }
     out.set(row.game_player_id, byGw);
   }
   return out;

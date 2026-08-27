@@ -60,7 +60,7 @@ export default async function DreamTeamMarketOddsPage({
   if (!user) redirect("/login");
 
   const { data: game } = await supabase.from("fantasy_games").select("id").eq("slug", "dreamteam").maybeSingle();
-  if (!game) redirect("/dreamteam");
+  if (!game) redirect("/ratings?game=dreamteam");
 
   const gwInfo = await getGameweekInfo(supabase, game.id);
   const planningGameweek = gwInfo.planningGameweek ?? 1;
