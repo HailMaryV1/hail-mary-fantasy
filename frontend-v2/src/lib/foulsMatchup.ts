@@ -296,6 +296,17 @@ export type DuelReconciliation = {
   /** One direction of play: `committerTeam` fouling `suffererTeam`. */
   committerTeam: string;
   suffererTeam: string;
+  /**
+   * Priced players who could not be matched to a formation slot, so they have
+   * no duel cells at all.
+   *
+   * This is not cosmetic. The simulation draws every foul from a duel cell, so
+   * an unmatched player simulates at roughly zero no matter what his ladder
+   * says - one real case showed 33% on the board against 0.7% simulated, which
+   * silently poisons any multi he appears in. Surfaced so it is visible rather
+   * than inferred from a combo that looks oddly cheap.
+   */
+  unmatched: string[];
   flows: FoulFlow[];
   /** Per-player read on the to-be-fouled board for the suffering team. */
   sufferDiagnostics: DuelDiagnostic[];
@@ -332,6 +343,10 @@ function reconcileDirection(
 
   const cRows = committers.filter((c) => slotOf(committerSlots, c.name));
   const sCols = sufferers.filter((s) => slotOf(suffererSlots, s.name));
+  const unmatched = [
+    ...committers.filter((c) => !slotOf(committerSlots, c.name)).map((c) => c.name),
+    ...sufferers.filter((s) => !slotOf(suffererSlots, s.name)).map((s) => s.name),
+  ];
 
   const W: Matrix = cRows.map((c) =>
     sCols.map((s) => {
@@ -405,6 +420,7 @@ function reconcileDirection(
   return {
     committerTeam: cRows[0]?.team ?? "",
     suffererTeam: sCols[0]?.team ?? "",
+    unmatched,
     flows,
     sufferDiagnostics,
     commitDiagnostics,

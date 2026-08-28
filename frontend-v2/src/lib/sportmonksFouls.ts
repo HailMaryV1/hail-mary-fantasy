@@ -293,12 +293,28 @@ function lineOf(label: string | null): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
+/**
+ * Build ladders and resolve every priced player onto a lineup slot.
+ *
+ * Two passes, and the order is what keeps it safe. Exact name matches are
+ * assigned first and CLAIM their slot; only then do surname fallbacks run, and
+ * only against slots nobody has claimed.
+ *
+ * The single-pass version of this was a live bug worth remembering. The
+ * fallback matched on surname alone and also renamed the player to the lineup
+ * spelling, so a priced "Alexander Moore" resolved onto the only Moore in the
+ * eleven - Kieffer Moore - and the board ended up with two ladders under one
+ * name. The simulation then drew fouls for both and reported Kieffer Moore as
+ * 76% to be fouled twice at 12/5, a price that would be free money if it were
+ * real. Claiming slots makes that collision impossible, and anything left
+ * unresolved is reported rather than guessed at.
+ */
 function laddersFrom(
   rows: OddRow[],
   matches: (row: OddRow) => boolean,
-  teamOf: (playerName: string) => string | null,
+  index: Map<string, { team: string; name: string }>,
   maxLine: number,
-): PlayerLadder[] {
+): { ladders: PlayerLadder[]; unresolved: string[] } {
   const byPlayer = new Map<string, Map<number, OddRow>>();
   for (const r of rows) {
     if (!matches(r)) continue;
@@ -306,8 +322,8 @@ function laddersFrom(
     const line = lineOf(r.label);
     if (line == null || line > maxLine) continue;
     if (!byPlayer.has(r.name)) byPlayer.set(r.name, new Map());
-    // Keep the shortest price if a rung somehow appears twice; a duplicate is
-    // an alternative-market overlap, not two independent opinions.
+    // Keep the shortest price if a rung appears twice; a duplicate is an
+    // alternative-market overlap, not two independent opinions.
     const slot = byPlayer.get(r.name)!;
     const existing = slot.get(line);
     if (!existing || parseFloat(r.value ?? "999") < parseFloat(existing.value ?? "999")) {
@@ -315,10 +331,39 @@ function laddersFrom(
     }
   }
 
-  const out: PlayerLadder[] = [];
-  for (const [name, lines] of byPlayer) {
-    const team = teamOf(name);
-    if (!team) continue; // not in a confirmed XI - skipped, never guessed at
+  const claimed = new Set<string>();
+  const assignment = new Map<string, { team: string; name: string }>();
+
+  // Pass 1 - exact.
+  for (const oddsName of byPlayer.keys()) {
+    const hit = index.get(normalise(oddsName));
+    if (hit && !claimed.has(hit.name)) {
+      claimed.add(hit.name);
+      assignment.set(oddsName, hit);
+    }
+  }
+  // Pass 2 - surname, unclaimed slots only, and only when unambiguous.
+  for (const oddsName of byPlayer.keys()) {
+    if (assignment.has(oddsName)) continue;
+    const surname = normalise(oddsName).split(" ").slice(-1)[0];
+    if (!surname || surname.length < 3) continue;
+    const candidates = [...index.values()].filter(
+      (v) => !claimed.has(v.name) && normalise(v.name).split(" ").slice(-1)[0] === surname,
+    );
+    if (candidates.length === 1) {
+      claimed.add(candidates[0].name);
+      assignment.set(oddsName, candidates[0]);
+    }
+  }
+
+  const ladders: PlayerLadder[] = [];
+  const unresolved: string[] = [];
+  for (const [oddsName, lines] of byPlayer) {
+    const resolved = assignment.get(oddsName);
+    if (!resolved) {
+      unresolved.push(oddsName);
+      continue;
+    }
     const quotes: OddsQuote[] = [];
     for (let line = 1; line <= maxLine; line++) {
       const row = lines.get(line);
@@ -333,11 +378,12 @@ function laddersFrom(
         suspended: !usable,
       });
     }
-    out.push({ name, team, quotes });
+    // The lineup spelling is carried forward so the duel map, which matches on
+    // name, agrees with the board by construction.
+    ladders.push({ name: resolved.name, team: resolved.team, quotes });
   }
-  return out;
+  return { ladders, unresolved };
 }
-
 
 /* ========================================================================== *
  * Deriving the two settings that were previously typed in by hand
@@ -533,21 +579,16 @@ export async function fetchLiveBoard(
   const isFouled = (r: OddRow) => isMarket(r, FOULED_MARKET_ID, FOULED_MARKET_NAMES);
   const hasFoulsMarkets = odds.some((r) => isCommitted(r) || isFouled(r));
 
-  const nameIndex = new Map<string, string>();
+  const nameIndex = new Map<string, { team: string; name: string }>();
   for (const f of lineups.formations) {
-    for (const s of f.slots) nameIndex.set(normalise(s.name), f.team);
+    for (const s of f.slots) nameIndex.set(normalise(s.name), { team: f.team, name: s.name });
   }
-  const teamOf = (playerName: string): string | null => {
-    const n = normalise(playerName);
-    if (nameIndex.has(n)) return nameIndex.get(n)!;
-    // Surname fallback, safe because the index holds only these 22 players.
-    const surname = n.split(" ").slice(-1)[0];
-    const hits = [...nameIndex.entries()].filter(([k]) => k.split(" ").slice(-1)[0] === surname);
-    return hits.length === 1 ? hits[0][1] : null;
-  };
 
-  const committed = laddersFrom(odds, isCommitted, teamOf, maxLine);
-  const toBeFouled = laddersFrom(odds, isFouled, teamOf, maxLine);
+  const committedResult = laddersFrom(odds, isCommitted, nameIndex, maxLine);
+  const fouledResult = laddersFrom(odds, isFouled, nameIndex, maxLine);
+  const committed = committedResult.ladders;
+  const toBeFouled = fouledResult.ladders;
+  const unresolvedNames = [...new Set([...committedResult.unresolved, ...fouledResult.unresolved])];
 
   // Never fail silently on a naming change again.
   //
@@ -571,6 +612,16 @@ export async function fetchLiveBoard(
       .join(", ");
     notes.push(
       `Unrecognised fouls market on this fixture: ${described}. It is being ignored - the market ids in sportmonksFouls.ts need extending.`,
+    );
+  }
+
+  if (unresolvedNames.length > 0) {
+    // Priced by the bookmaker but not matchable to either starting eleven -
+    // usually a substitute, occasionally a spelling the two feeds disagree on.
+    // Dropped rather than guessed onto a slot, because guessing is what merged
+    // two Moores into one and produced a 76%-to-be-fouled phantom.
+    notes.push(
+      `Priced but not matched to the starting elevens, so excluded: ${unresolvedNames.join(", ")}.`,
     );
   }
 
@@ -641,8 +692,8 @@ export async function fetchLiveBoard(
         // Key on the BOARD's spelling of the name, not the lineup's - the two
         // feeds disagree about diacritics and the engine looks these up by the
         // board's name.
-        const boardName =
-          committed.find((l) => normalise(l.name) === normalise(slot.name))?.name ?? slot.name;
+        // Ladders now carry the lineup spelling, so this is a direct match.
+        const boardName = slot.name;
         modelPlayers.push({ ...projected, playerName: boardName });
         model[`committed|${boardName}`] = { mu: projected.committed, confidence: projected.confidence };
         model[`toBeFouled|${boardName}`] = { mu: projected.suffered, confidence: projected.confidence };
@@ -657,6 +708,27 @@ export async function fetchLiveBoard(
     // A missing or unreachable history table must never stop the board being
     // analysed; the market-consistency checks stand on their own.
     notes.push(`Historical foul model unavailable: ${(err as Error).message}`);
+  }
+
+  // Surface any priced player the duel map could not place - see
+  // DuelReconciliation.unmatched for why a silent one is dangerous.
+  try {
+    const { fitBoard } = await import("./foulsEdge");
+    const { duelReconciliation } = await import("./foulsMatchup");
+    if (committed.length >= 4 && toBeFouled.length >= 4 && lineups.formations.length === 2) {
+      const probe = fitBoard({ home: lineups.formations[0].team, away: lineups.formations[1].team, committed, toBeFouled });
+      const orphaned = new Set<string>();
+      for (const d of duelReconciliation(probe, lineups.formations[0], lineups.formations[1])) {
+        for (const n of d.unmatched) orphaned.add(n);
+      }
+      if (orphaned.size > 0) {
+        notes.push(
+          `Priced but not on the pitch map: ${[...orphaned].join(", ")}. Their ladders are shown but they are excluded from the duel map and simulate at zero, so do not build a multi around them.`,
+        );
+      }
+    }
+  } catch {
+    // Diagnostic only - never block the board over it.
   }
 
   const updates = odds
