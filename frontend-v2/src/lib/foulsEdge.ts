@@ -95,40 +95,58 @@ export function toDecimal(raw: string): number | null {
 }
 
 /**
- * Decimal price -> UK fractional, snapped to the fractions bookmakers actually
- * print.
+ * The fractional prices British bookmakers actually print, smallest to
+ * largest. Snapping to this list rather than approximating freely is what
+ * stops the board showing something like 33/50, which is arithmetically a fine
+ * rendering of 1.66 and a price no book has ever displayed - it should read
+ * 2/3, and it has to match the bookmaker's screen to be checkable at a glance.
+ */
+const FRACTIONAL_LADDER: [number, number][] = [
+  [1, 100], [1, 66], [1, 50], [1, 40], [1, 33], [1, 28], [1, 25], [1, 22], [1, 20],
+  [1, 18], [1, 16], [1, 14], [1, 12], [1, 11], [1, 10], [1, 9], [1, 8], [1, 7],
+  [2, 13], [1, 6], [2, 11], [1, 5], [2, 9], [1, 4], [2, 7], [3, 10], [1, 3],
+  [4, 11], [2, 5], [4, 9], [1, 2], [8, 15], [4, 7], [8, 13], [2, 3], [8, 11],
+  [4, 5], [5, 6], [10, 11], [1, 1], [21, 20], [11, 10], [6, 5], [5, 4], [11, 8],
+  [7, 5], [3, 2], [8, 5], [13, 8], [7, 4], [9, 5], [15, 8], [2, 1], [21, 10],
+  [11, 5], [9, 4], [12, 5], [5, 2], [11, 4], [3, 1], [10, 3], [7, 2], [4, 1],
+  [9, 2], [5, 1], [11, 2], [6, 1], [13, 2], [7, 1], [15, 2], [8, 1], [17, 2],
+  [9, 1], [10, 1], [11, 1], [12, 1], [14, 1], [16, 1], [18, 1], [20, 1], [22, 1],
+  [25, 1], [28, 1], [33, 1], [40, 1], [50, 1], [66, 1], [80, 1], [100, 1],
+  [150, 1], [200, 1],
+];
+
+/**
+ * Decimal price -> the UK fractional a bookmaker would display.
  *
  * Needed because SportMonks' own `fractional` field is NOT UK fractional odds:
- * it returns the decimal expressed as a fraction, so bet365's 1/2 arrives as
- * "3/2" and 9/4 as "13/4". Showing that straight through would make the board
- * impossible to check against the bookmaker's screen, which is the first thing
- * anyone will want to do.
+ * it renders the decimal as a fraction, so bet365's 1/2 arrives as "3/2" and
+ * 9/4 as "13/4". Showing that straight through would make the board impossible
+ * to check against the bookmaker's screen, which is the first thing anyone will
+ * want to do.
  *
- * Snapping matters as much as converting. Decimals arrive rounded to two
- * places, so 8/15 shows up as 1.53; approximating 0.53 exactly gives 53/100,
- * a fraction no book has ever printed. Denominators are tried smallest-first
- * and the first one landing inside the rounding tolerance wins, which recovers
- * 8/15, 11/10, 6/5 and the rest of the standard ladder.
+ * Snapping matters as much as converting, and decimals arrive rounded to two
+ * places - 2/3 shows up as 1.66, not 1.6667 - so the nearest entry on the real
+ * ladder is the right answer rather than the closest arithmetic approximation.
  */
 export function decimalToFractional(decimal: number): string | null {
   if (!isFinite(decimal) || decimal <= 1) return null;
   const profit = decimal - 1;
-  const DENOMINATORS = [
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 25, 33, 40, 50, 66,
-    80, 100,
-  ];
-  // Decimals are published to two places, so anything within half a hundredth
-  // is the same price.
-  const tolerance = 0.005 + 1e-9;
-  let fallback: { n: number; d: number; err: number } | null = null;
-  for (const d of DENOMINATORS) {
-    const n = Math.round(profit * d);
-    if (n < 1) continue;
+  let best: [number, number] | null = null;
+  let bestErr = Infinity;
+  for (const [n, d] of FRACTIONAL_LADDER) {
     const err = Math.abs(n / d - profit);
-    if (err <= tolerance) return `${n}/${d}`;
-    if (!fallback || err < fallback.err) fallback = { n, d, err };
+    if (err < bestErr) {
+      bestErr = err;
+      best = [n, d];
+    }
   }
-  return fallback ? `${fallback.n}/${fallback.d}` : null;
+  if (!best) return null;
+  // Far outside the ladder (a price beyond 200/1) - render it plainly rather
+  // than pinning it to the last rung and implying a precision we do not have.
+  if (bestErr > Math.max(0.02, profit * 0.06)) {
+    return profit >= 10 ? `${Math.round(profit)}/1` : null;
+  }
+  return `${best[0]}/${best[1]}`;
 }
 
 /** Decimal price -> implied probability, margin still included. */

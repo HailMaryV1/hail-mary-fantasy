@@ -56,8 +56,49 @@ export const ENTITLED_LEAGUES: Record<number, string> = {
   27: "Carabao Cup",
 };
 
-const COMMITTED_MARKETS = new Set(["Player Fouls Committed", "Alternative Player Fouls Committed"]);
-const FOULED_MARKETS = new Set(["Player To Be Fouled", "Alternative Player To Be Fouled"]);
+/**
+ * Fouls markets are matched by NUMERIC MARKET ID, not by description.
+ *
+ * This is not a stylistic preference - matching on the description string was a
+ * real bug that silently returned an empty board. The same market comes back
+ * under different names on different fixtures: Fulham v Chelsea served it as
+ * "Player Fouls Committed", Crystal Palace v Man City as plain "Fouls
+ * Committed", both with market_id 338 and both the identical 1+/2+/3+/4+/5+
+ * player ladder. The "Player " prefix drops off other markets too - Shots,
+ * Tackles, Shots On Target - so this is a general inconsistency in the feed,
+ * not a one-off.
+ *
+ * The failure mode was quiet, which is the worst part: the page correctly
+ * reported "no fouls markets posted yet" for a fixture where bet365 had 176
+ * rows of them, because that is genuinely indistinguishable from a market that
+ * has not opened. Ids do not drift.
+ */
+const COMMITTED_MARKET_ID = 338;
+const FOULED_MARKET_ID = 339;
+
+/**
+ * Description fallback, used only when a row somehow carries no market_id.
+ * Compared after normalising away the "Player " and "Alternative " prefixes
+ * that come and go between fixtures.
+ */
+const COMMITTED_MARKET_NAMES = new Set(["fouls committed"]);
+const FOULED_MARKET_NAMES = new Set(["to be fouled"]);
+
+/** Strip the prefixes the feed applies inconsistently. */
+function normaliseMarket(description: string | null): string {
+  return (description ?? "")
+    .toLowerCase()
+    .replace(/^alternative\s+/, "")
+    .replace(/^player\s+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isMarket(row: { market_id?: number | null; market_description: string | null }, id: number, names: Set<string>) {
+  if (row.market_id === id) return true;
+  if (row.market_id != null) return false;
+  return names.has(normaliseMarket(row.market_description));
+}
 
 /** SportMonks position type ids seen on lineup rows. */
 const POSITION_ROLE: Record<number, Role> = { 24: "GK", 25: "DEF", 26: "MID", 27: "FWD" };
@@ -224,6 +265,8 @@ type OddRow = {
   name: string | null;
   fractional: string | null;
   market_description: string | null;
+  /** Stable across fixtures, unlike market_description - see COMMITTED_MARKET_ID. */
+  market_id?: number | null;
   bookmaker_id: number;
   stopped?: boolean;
   latest_bookmaker_update?: string;
@@ -252,13 +295,13 @@ function lineOf(label: string | null): number | null {
 
 function laddersFrom(
   rows: OddRow[],
-  markets: Set<string>,
+  matches: (row: OddRow) => boolean,
   teamOf: (playerName: string) => string | null,
   maxLine: number,
 ): PlayerLadder[] {
   const byPlayer = new Map<string, Map<number, OddRow>>();
   for (const r of rows) {
-    if (!r.market_description || !markets.has(r.market_description)) continue;
+    if (!matches(r)) continue;
     if (!r.name) continue;
     const line = lineOf(r.label);
     if (line == null || line > maxLine) continue;
@@ -337,8 +380,11 @@ const FOULS_STAT_TYPE_ID = 56;
  * near-even over/under. Treat this as a well-founded floor rather than proof.
  */
 const OVERROUND_REFERENCE_MARKETS = new Set([
-  "Player Shots Over/Under",
-  "Player Shots On Target Over/Under",
+  "shots over/under",
+  "shots on target over/under",
+  "match shots",
+  "match shots on target",
+  "match tackles",
 ]);
 
 function median(values: number[]): number | null {
@@ -351,7 +397,7 @@ function median(values: number[]): number | null {
 export function deriveOverround(rows: OddRow[]): { value: number | null; sampleSize: number } {
   const pairs = new Map<string, { over?: number; under?: number }>();
   for (const r of rows) {
-    if (!r.market_description || !OVERROUND_REFERENCE_MARKETS.has(r.market_description)) continue;
+    if (!OVERROUND_REFERENCE_MARKETS.has(normaliseMarket(r.market_description))) continue;
     const label = r.label ?? "";
     if (label !== "Over" && label !== "Under") continue;
     const key = `${r.market_description}|${r.name}|${r.total}`;
@@ -483,11 +529,9 @@ export async function fetchLiveBoard(
   const [lineups, allOdds] = await Promise.all([fetchLineups(fixtureId), fetchAllOdds(fixtureId)]);
   const odds = allOdds.filter((r) => r.bookmaker_id === bookmakerId);
 
-  const hasFoulsMarkets = odds.some(
-    (r) =>
-      r.market_description &&
-      (COMMITTED_MARKETS.has(r.market_description) || FOULED_MARKETS.has(r.market_description)),
-  );
+  const isCommitted = (r: OddRow) => isMarket(r, COMMITTED_MARKET_ID, COMMITTED_MARKET_NAMES);
+  const isFouled = (r: OddRow) => isMarket(r, FOULED_MARKET_ID, FOULED_MARKET_NAMES);
+  const hasFoulsMarkets = odds.some((r) => isCommitted(r) || isFouled(r));
 
   const nameIndex = new Map<string, string>();
   for (const f of lineups.formations) {
@@ -502,12 +546,39 @@ export async function fetchLiveBoard(
     return hits.length === 1 ? hits[0][1] : null;
   };
 
-  const committed = laddersFrom(odds, COMMITTED_MARKETS, teamOf, maxLine);
-  const toBeFouled = laddersFrom(odds, FOULED_MARKETS, teamOf, maxLine);
+  const committed = laddersFrom(odds, isCommitted, teamOf, maxLine);
+  const toBeFouled = laddersFrom(odds, isFouled, teamOf, maxLine);
+
+  // Never fail silently on a naming change again.
+  //
+  // The description string moves between fixtures ("Player Fouls Committed" on
+  // one, "Fouls Committed" on another), and when it did, this returned an empty
+  // board and reported "not posted yet" - indistinguishable from a market that
+  // genuinely had not opened, for a fixture where bet365 had 176 rows of fouls
+  // prices sitting there. Matching by id fixed that instance; this makes the
+  // NEXT instance loud instead of invisible. Anything that looks like a fouls
+  // market but did not match is surfaced with its id, so a new variant is a
+  // visible message rather than a quiet blank.
+  const unmatchedFoulMarkets = new Map<string, number | null | undefined>();
+  for (const r of odds) {
+    if (isCommitted(r) || isFouled(r)) continue;
+    const name = normaliseMarket(r.market_description);
+    if (name.includes("foul")) unmatchedFoulMarkets.set(r.market_description ?? name, r.market_id);
+  }
+  if (unmatchedFoulMarkets.size > 0) {
+    const described = [...unmatchedFoulMarkets.entries()]
+      .map(([name, id]) => `"${name}" (market_id ${id ?? "none"})`)
+      .join(", ");
+    notes.push(
+      `Unrecognised fouls market on this fixture: ${described}. It is being ignored - the market ids in sportmonksFouls.ts need extending.`,
+    );
+  }
 
   if (!hasFoulsMarkets) {
     notes.push(
-      "No fouls markets posted for this fixture yet. They open late and unevenly - often not until matchday.",
+      unmatchedFoulMarkets.size > 0
+        ? "No fouls ladders matched, but the fixture does carry fouls-like markets - see the note above; this is a feed change, not an unopened market."
+        : "No fouls markets posted for this fixture yet. They open late and unevenly - often not until matchday.",
     );
   }
   if (!lineups.confirmed) {
@@ -596,7 +667,13 @@ export async function fetchLiveBoard(
   const [home, away] = lineups.formations;
   return {
     fixtureId,
-    fixtureName: Object.values(lineups.teams).join(" vs "),
+    // Home first. Object.values() follows key insertion order, which is
+    // SportMonks' participant order, not home/away - it rendered a real
+    // fixture as "Manchester City vs Crystal Palace" when Palace were at home.
+    fixtureName:
+      lineups.formations.length === 2
+        ? `${lineups.formations[0].team} vs ${lineups.formations[1].team}`
+        : Object.values(lineups.teams).join(" vs "),
     kickoff: null,
     board: {
       home: home?.team ?? "Home",
