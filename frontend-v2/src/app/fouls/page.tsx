@@ -51,6 +51,26 @@ type LiveState = {
   fixtureName: string;
 };
 
+/**
+ * SportMonks sends kickoff as a bare "YYYY-MM-DD HH:MM:SS" string in UTC, with
+ * no timezone marker on it. Rendering that raw showed a 20:00 BST kickoff as
+ * "19:00", which is exactly the kind of quiet hour-out error that makes someone
+ * think a match has already started when there is still half an hour to bet.
+ * The "Z" is what makes the parse explicit rather than letting the browser
+ * guess local time.
+ */
+function kickoffLocal(utc: string): string {
+  const d = new Date(utc.replace(" ", "T") + "Z");
+  if (isNaN(d.getTime())) return utc.slice(0, 16);
+  return d.toLocaleString(undefined, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 const signed = (v: number) => `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`;
 
@@ -309,7 +329,7 @@ export default function FoulsPage() {
                   <option value="">Select a fixture&hellip;</option>
                   {fixtures.map((f) => (
                     <option key={f.id} value={f.id}>
-                      {f.kickoff.slice(0, 16)} · {f.league} · {f.name}
+                      {kickoffLocal(f.kickoff)} · {f.league} · {f.name}
                     </option>
                   ))}
                 </select>
