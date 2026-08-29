@@ -1,15 +1,16 @@
 /**
- * GET /api/fouls/board?fixtureId=19722194
+ * GET /api/fouls/board?fixtureId=123
  *
- * Both fouls ladders and the confirmed lineups for one fixture, shaped exactly
- * as the /fouls engine wants them. Returns 200 even when the fouls markets are
- * not posted yet or the lineups have not landed - `notes`, `hasFoulsMarkets`
- * and `lineupsConfirmed` say what is missing, because "not published yet" is a
- * normal state for this market rather than an error.
+ * Fouls Committed, Tackles and confirmed lineups for one fixture (our own
+ * fixtures.id, not a SportMonks id), shaped for the /fouls page. Returns 200
+ * even when markets are not posted yet or lineups have not landed - `notes`,
+ * `hasFoulsMarkets`/`hasTacklesMarkets` and `lineupsConfirmed` say what is
+ * missing, because "not published yet" is a normal state for this market
+ * rather than an error.
  */
 
 import { NextResponse } from "next/server";
-import { fetchLiveBoard } from "@/lib/sportmonksFouls";
+import { fetchLiveBoard } from "@/lib/spreadexFouls";
 
 export const dynamic = "force-dynamic";
 
@@ -20,12 +21,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "fixtureId is required" }, { status: 400 });
   }
 
-  const bookmakerId = parseInt(searchParams.get("bookmakerId") ?? "", 10);
-
   try {
-    const result = await fetchLiveBoard(fixtureId, {
-      bookmakerId: isFinite(bookmakerId) ? bookmakerId : undefined,
-    });
+    const result = await fetchLiveBoard(fixtureId);
     return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 502 });

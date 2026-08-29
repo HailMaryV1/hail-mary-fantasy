@@ -221,14 +221,16 @@ def run_shared_odds():
     results.append(run_step("Fixture probabilities", ["scripts/compute_fixture_probabilities.py"]))
     results.append(run_step("Clean sheet probabilities", ["scripts/compute_clean_sheet_probabilities.py"]))
     results.append(run_step("Expected goals (EFL + Premier League)", ["scripts/compute_expected_goals.py"]))
-    # Real user request 2026-08-29 - the one player-prop market
-    # DreamTeamTonic's own API doesn't carry at all (confirmed live -
-    # only scorers/assists), scraped straight from Spreadex's own retail
-    # site instead. Genuinely slower and more fragile than every other
-    # step here (a live Angular SPA, not a versioned API - see that
-    # script's own docstring) - placed last so a failure/timeout here
-    # never blocks the odds/probabilities every game actually depends on.
-    results.append(run_step("Shots on target (Spreadex direct)", ["scripts/scrape_spreadex_shots_on_target.py"]))
+    # Real user request 2026-08-29/30 - shots on target, fouls committed,
+    # tackles, real confirmed lineups, and match cards markets, all
+    # scraped straight from Spreadex's own retail site (DreamTeamTonic's
+    # API only carries scorers/assists; the Fouls board's real feed also
+    # moved here from SportMonks). Genuinely slower and more fragile than
+    # every other step here (a live Angular SPA, not a versioned API -
+    # see that script's own docstring) - placed last so a failure/timeout
+    # here never blocks the odds/probabilities every game actually
+    # depends on.
+    results.append(run_step("Player markets (Spreadex direct)", ["scripts/scrape_spreadex_player_markets.py"]))
     # Real user request 2026-08-18: alert on large player-odds swings -
     # runs last in this section so it always sees this cycle's freshest
     # bookmaker_player_probability_history rows (migration 0120).

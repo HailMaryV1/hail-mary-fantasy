@@ -1,13 +1,12 @@
 /**
  * GET /api/fouls/fixtures?days=7
  *
- * Upcoming fixtures in the leagues this SportMonks subscription covers, for the
- * fixture picker on /fouls. Server-side so the API key never reaches the
- * browser.
+ * Upcoming fixtures in the leagues the Spreadex scraper covers, for the
+ * fixture picker on /fouls.
  */
 
 import { NextResponse } from "next/server";
-import { listFixtures } from "@/lib/sportmonksFouls";
+import { listFixtures } from "@/lib/spreadexFouls";
 
 export const dynamic = "force-dynamic";
 

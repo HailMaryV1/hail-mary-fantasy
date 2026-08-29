@@ -421,7 +421,7 @@ export const DEFAULT_ASSUMED_OVERROUND = 9;
  * the target. Overround falls monotonically as kappa rises toward 1 (no
  * margin), so a plain bisection is enough.
  */
-function solveKappa(
+export function solveKappa(
   ladders: PlayerLadder[],
   market: FoulsMarket,
   size: number,

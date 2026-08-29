@@ -8,10 +8,15 @@
  * them, and per the per-game-independent-identity convention nothing here
  * branches on a game slug.
  *
- * Two input routes. LIVE pulls both ladders and the confirmed lineups straight
- * from SportMonks' bet365 feed (see sportmonksFouls.ts). PASTE stays because
- * fouls markets open late and unevenly, so there will be mornings where the
- * feed has nothing and the board is on screen in front of you.
+ * Two input routes. LIVE pulls Fouls Committed, Tackles and confirmed lineups
+ * straight from Spreadex (see spreadexFouls.ts) - Spreadex has no "To Be
+ * Fouled" market, so LIVE compares the Fouls Committed market's own fitted
+ * rate against our historical per-player model, and shows Tackles as the
+ * "who's in the battle" signal, per the 2026-08-29 redesign: a player heavily
+ * involved in tackling is more likely to be drawn into fouls one way or
+ * another. PASTE is the older two-sided (committed vs to-be-fouled) analyser -
+ * still useful for a board copied by hand from a bookmaker that does post
+ * both sides - and keeps its own duel map and combo search unchanged.
  *
  * All maths runs in the browser; nothing is written to Supabase.
  */
@@ -28,40 +33,19 @@ import {
   DEFAULT_HOME_SHEET,
   DEFAULT_AWAY_SHEET,
 } from "@/lib/foulsSampleBoard";
+import type { SpreadexBoardResult } from "@/lib/spreadexFouls";
 
 type Fixture = { id: number; name: string; league: string; kickoff: string };
 
-type LiveState = {
-  board: Board;
-  formations: Formation[];
-  lineupsConfirmed: boolean;
-  hasFoulsMarkets: boolean;
-  bookmakerUpdatedAt: string | null;
-  derivedOverround: number | null;
-  overroundSample: number;
-  derivedExpectedFouls: number;
-  expectedFoulsBasis: { team: string; mean: number; matches: number }[];
-  model: Record<string, { mu: number; confidence: number }>;
-  modelPlayers: {
-    playerName: string; team: string; committed: number; suffered: number;
-    confidence: number; effectiveNinetys: number; expectedMinutes: number;
-  }[];
-  modelCoverage: { covered: number; requested: number };
-  notes: string[];
-  fixtureName: string;
-};
-
 /**
- * SportMonks sends kickoff as a bare "YYYY-MM-DD HH:MM:SS" string in UTC, with
- * no timezone marker on it. Rendering that raw showed a 20:00 BST kickoff as
- * "19:00", which is exactly the kind of quiet hour-out error that makes someone
- * think a match has already started when there is still half an hour to bet.
- * The "Z" is what makes the parse explicit rather than letting the browser
- * guess local time.
+ * Spreadex sends kickoff as a real ISO timestamp (unlike SportMonks' bare
+ * "YYYY-MM-DD HH:MM:SS"), but this still goes through the same explicit parse
+ * the SportMonks path needed - see git history for why a raw render of that
+ * one showed a match kicking off an hour earlier than it really did.
  */
-function kickoffLocal(utc: string): string {
-  const d = new Date(utc.replace(" ", "T") + "Z");
-  if (isNaN(d.getTime())) return utc.slice(0, 16);
+function kickoffLocal(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso.slice(0, 16);
   return d.toLocaleString(undefined, {
     weekday: "short",
     day: "numeric",
@@ -74,15 +58,22 @@ function kickoffLocal(utc: string): string {
 const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 const signed = (v: number) => `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`;
 
+/** Best available rung at or above `line`, for a compact "2+ price" readout. */
+function rungAt(fit: SpreadexBoardResult["players"][number]["foulsCommitted"], line: number) {
+  return fit?.rungs.find((r) => r.line === line) ?? null;
+}
+
 export default function FoulsPage() {
   const [source, setSource] = useState<"live" | "paste">("live");
 
   // --- live ---
   const [fixtures, setFixtures] = useState<Fixture[]>([]);
   const [fixtureId, setFixtureId] = useState<number | null>(null);
-  const [live, setLive] = useState<LiveState | null>(null);
+  const [live, setLive] = useState<SpreadexBoardResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
   // --- paste ---
   const [homeTeam, setHomeTeam] = useState("Fulham");
@@ -93,16 +84,9 @@ export default function FoulsPage() {
   const [awaySheet, setAwaySheet] = useState(DEFAULT_AWAY_SHEET);
   const [committedText, setCommittedText] = useState(DEFAULT_COMMITTED);
   const [fouledText, setFouledText] = useState(DEFAULT_FOULED);
-
   const [overround, setOverround] = useState(DEFAULT_ASSUMED_OVERROUND);
   const [expectedFouls, setExpectedFouls] = useState(21);
-  const [tab, setTab] = useState<"likely" | "edges" | "duels" | "combos">("likely");
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
-  // Set true once the user edits a setting by hand, so a refresh stops
-  // overwriting their number with the derived one.
-  const [overroundTouched, setOverroundTouched] = useState(false);
-  const [foulsTouched, setFoulsTouched] = useState(false);
+  const [pasteTab, setPasteTab] = useState<"likely" | "edges" | "duels" | "combos">("likely");
 
   useEffect(() => {
     fetch("/api/fouls/fixtures?days=10")
@@ -118,46 +102,26 @@ export default function FoulsPage() {
       const r = await fetch(`/api/fouls/board?fixtureId=${id}`);
       const d = await r.json();
       if (d.error) throw new Error(d.error);
-      const board = d as LiveState;
-      setLive(board);
+      setLive(d as SpreadexBoardResult);
       setLastLoaded(new Date());
-      // Derived settings become the defaults, but never clobber a value the
-      // user has deliberately changed.
-      if (!overroundTouched && board.derivedOverround != null) {
-        setOverround(Math.round(board.derivedOverround * 10) / 10);
-      }
-      if (!foulsTouched && board.derivedExpectedFouls > 0) {
-        setExpectedFouls(Math.round(board.derivedExpectedFouls * 10) / 10);
-      }
     } catch (err) {
       setLive(null);
       setLoadError((err as Error).message);
     } finally {
       setLoading(false);
     }
-  }, [overroundTouched, foulsTouched]);
+  }, []);
 
   /**
-   * Polling cadence, matched to how this market actually behaves rather than to
-   * a round number.
-   *
-   * Hourly suits the long wait - fouls ladders open late and unevenly, so most
-   * of the time the only question is whether they have appeared yet. But the
-   * moment that matters is roughly an hour before kickoff, when the confirmed
-   * elevens land and the duel map unlocks just as the market makes its final
-   * moves. An hourly poll can miss that window by fifty-nine minutes.
-   *
-   * Written as a self-rescheduling timeout rather than a fixed interval, so the
-   * delay is recomputed from the clock on every cycle and genuinely tightens as
-   * kickoff approaches. A useMemo over Date.now() would have been frozen at
-   * whatever the gap was when the fixture was first selected - and is an impure
-   * read besides, which is what the lint rule was pointing at.
+   * Same reasoning as the old SportMonks path: fouls/tackles markets and
+   * lineups land in a narrow pre-kickoff window, so polling tightens as
+   * kickoff approaches rather than running on a flat interval.
    */
   const kickoffOf = useCallback(
     (id: number | null) => {
       const fixture = fixtures.find((f) => f.id === id);
       if (!fixture) return null;
-      return new Date(fixture.kickoff.replace(" ", "T") + "Z").getTime();
+      return new Date(fixture.kickoff).getTime();
     },
     [fixtures],
   );
@@ -193,47 +157,40 @@ export default function FoulsPage() {
     };
   }, [autoRefresh, source, fixtureId, kickoffOf, loadFixture]);
 
-  const result = useMemo(() => {
-    try {
-      let board: Board;
-      let formations: Formation[];
-      let warnings: string[] = [];
+  const liveRows = useMemo(() => {
+    if (!live) return [];
+    return [...live.players].sort((a, b) => {
+      const ae = a.edgePct ?? -Infinity;
+      const be = b.edgePct ?? -Infinity;
+      if (ae !== be) return be - ae;
+      const at = a.tackles?.mu ?? 0;
+      const bt = b.tackles?.mu ?? 0;
+      return bt - at;
+    });
+  }, [live]);
 
-      if (source === "live") {
-        if (!live) return { errors: [] as string[], idle: true };
-        if (!live.hasFoulsMarkets || live.formations.length < 2) {
-          return { errors: [] as string[], notes: live.notes, idle: true };
-        }
-        board = live.board;
-        formations = live.formations;
-        warnings = live.notes;
-      } else {
-        const home = parseTeamSheet(homeTeam, homeShape, homeSheet);
-        const away = parseTeamSheet(awayTeam, awayShape, awaySheet);
-        const errors = [...home.errors, ...away.errors];
-        if (home.formation.slots.length < 7 || away.formation.slots.length < 7) {
-          return { errors: [...errors, "Both team sheets need at least 7 players."] };
-        }
-        const built = buildBoard(committedText, fouledText, home.formation, away.formation);
-        board = built.board;
-        formations = [home.formation, away.formation];
-        warnings = built.warnings;
-        if (errors.length) warnings = [...errors, ...warnings];
+  // --- paste mode: unchanged two-sided engine ---
+  const pasteResult = useMemo(() => {
+    if (source !== "paste") return null;
+    try {
+      const home = parseTeamSheet(homeTeam, homeShape, homeSheet);
+      const away = parseTeamSheet(awayTeam, awayShape, awaySheet);
+      const errors = [...home.errors, ...away.errors];
+      if (home.formation.slots.length < 7 || away.formation.slots.length < 7) {
+        return { errors: [...errors, "Both team sheets need at least 7 players."] };
       }
+      const built = buildBoard(committedText, fouledText, home.formation, away.formation);
+      const board: Board = built.board;
+      const formations: Formation[] = [home.formation, away.formation];
+      let warnings = built.warnings;
+      if (errors.length) warnings = [...errors, ...warnings];
 
       if (board.committed.length < 4 || board.toBeFouled.length < 4) {
-        return {
-          errors: ["Need at least 4 players priced in each market."],
-          warnings,
-        };
+        return { errors: ["Need at least 4 players priced in each market."], warnings };
       }
 
       const fit = fitBoard(board, overround);
-      // The historical model only exists on the live path - a pasted board has
-      // no player ids to look anyone up by.
-      const modelMu =
-        source === "live" && live?.model ? new Map(Object.entries(live.model)) : undefined;
-      const analysis = analyseBoard(fit, formations[0], formations[1], { modelMu });
+      const analysis = analyseBoard(fit, formations[0], formations[1]);
       const sim = simulateBoard(analysis, { draws: 20000, seed: 7 });
       const temp = boardTemperature(sim, expectedFouls);
 
@@ -251,18 +208,18 @@ export default function FoulsPage() {
       const combos = searchCombos(sim, candidates, { maxLegs: 3, top: 8, minJointProb: 0.05 });
       const startersTotal = fit.committed.reduce((a, f) => a + f.mu, 0);
 
-      return { errors: [], warnings, board, fit, analysis, sim, temp, combos, startersTotal, modelMu };
+      return { errors: [], warnings, board, fit, analysis, sim, temp, combos, startersTotal };
     } catch (err) {
       return { errors: [`Could not analyse this board: ${(err as Error).message}`] };
     }
   }, [
-    source, live, homeTeam, awayTeam, homeShape, awayShape, homeSheet, awaySheet,
+    source, homeTeam, awayTeam, homeShape, awayShape, homeSheet, awaySheet,
     committedText, fouledText, overround, expectedFouls,
   ]);
 
   const likelyRows = useMemo(() => {
-    if (!("analysis" in result) || !result.analysis || !result.fit) return [];
-    const { analysis, fit } = result;
+    if (!pasteResult || !("analysis" in pasteResult) || !pasteResult.analysis || !pasteResult.fit) return [];
+    const { analysis, fit } = pasteResult;
     return fit.committed
       .map((f) => {
         const mu = analysis.consensusMu.get(`committed|${f.name}`) ?? f.mu;
@@ -274,7 +231,7 @@ export default function FoulsPage() {
         return { name: f.name, team: f.team, mu, p1, p2, oneOrTwo: p1 - p3, e1, e2 };
       })
       .sort((a, b) => b.p2 - a.p2);
-  }, [result]);
+  }, [pasteResult]);
 
   return (
     <main className="min-h-screen bg-navy-950 text-navy-100">
@@ -285,16 +242,18 @@ export default function FoulsPage() {
           </Link>
           <h1 className="mt-2 text-3xl font-semibold">Fouls Board</h1>
           <p className="mt-2 max-w-3xl text-sm text-navy-300">
-            Fits a count distribution to every price ladder, checks the two boards against
-            each other (every foul has a committer and a victim, so they must agree), maps
-            the duels from the confirmed lineups, and ranks what is worth backing.
+            Live: Spreadex&apos;s own Fouls Committed and Tackles markets, checked against our
+            historical per-player model. Heavy tackle involvement marks a player as being in the
+            battle - more duels, more chance of a foul either way. Paste: the older two-sided
+            board analyser, for when you have both a committed and a to-be-fouled ladder in front
+            of you.
           </p>
         </header>
 
         <div className="mb-6 flex gap-2">
           {(
             [
-              ["live", "Live from bet365"],
+              ["live", "Live from Spreadex"],
               ["paste", "Paste a board"],
             ] as const
           ).map(([key, label]) => (
@@ -313,82 +272,127 @@ export default function FoulsPage() {
         </div>
 
         {source === "live" ? (
-          <section className="mb-8 rounded-lg bg-navy-900 p-4 ring-1 ring-navy-700">
-            <div className="flex flex-wrap items-end gap-3">
-              <label className="block flex-1 min-w-[280px]">
-                <span className="mb-1 block text-xs font-medium text-navy-200">Fixture</span>
-                <select
-                  value={fixtureId ?? ""}
-                  onChange={(e) => {
-                    const id = parseInt(e.target.value, 10);
-                    setFixtureId(id);
-                    if (isFinite(id)) loadFixture(id);
-                  }}
-                  className="w-full rounded bg-navy-950 px-2 py-1.5 text-sm ring-1 ring-navy-700 focus:ring-sky-500"
+          <>
+            <section className="mb-8 rounded-lg bg-navy-900 p-4 ring-1 ring-navy-700">
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="block flex-1 min-w-[280px]">
+                  <span className="mb-1 block text-xs font-medium text-navy-200">Fixture</span>
+                  <select
+                    value={fixtureId ?? ""}
+                    onChange={(e) => {
+                      const id = parseInt(e.target.value, 10);
+                      setFixtureId(id);
+                      if (isFinite(id)) loadFixture(id);
+                    }}
+                    className="w-full rounded bg-navy-950 px-2 py-1.5 text-sm ring-1 ring-navy-700 focus:ring-sky-500"
+                  >
+                    <option value="">Select a fixture&hellip;</option>
+                    {fixtures.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {kickoffLocal(f.kickoff)} · {f.league} · {f.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  onClick={() => fixtureId && loadFixture(fixtureId)}
+                  disabled={!fixtureId || loading}
+                  className="rounded bg-sky-500 px-4 py-1.5 text-sm font-medium text-navy-950 disabled:opacity-40"
                 >
-                  <option value="">Select a fixture&hellip;</option>
-                  {fixtures.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {kickoffLocal(f.kickoff)} · {f.league} · {f.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                onClick={() => fixtureId && loadFixture(fixtureId)}
-                disabled={!fixtureId || loading}
-                className="rounded bg-sky-500 px-4 py-1.5 text-sm font-medium text-navy-950 disabled:opacity-40"
-              >
-                {loading ? "Loading…" : "Refresh now"}
-              </button>
-              <label
-                className="flex items-center gap-2 text-xs text-navy-300"
-                title="Every 5 min inside 3 hours of kickoff, 15 min on matchday, hourly otherwise"
-              >
-                <input
-                  type="checkbox"
-                  checked={autoRefresh}
-                  onChange={(e) => setAutoRefresh(e.target.checked)}
-                  className="accent-sky-500"
-                />
-                Auto-refresh
-              </label>
-            </div>
-
-            {loadError && <p className="mt-3 text-sm text-rose-400">{loadError}</p>}
-
-            {live && (
-              <div className="mt-4 flex flex-wrap gap-2 text-xs">
-                <Pill ok={live.hasFoulsMarkets}>
-                  {live.hasFoulsMarkets ? "Fouls markets posted" : "No fouls markets yet"}
-                </Pill>
-                <Pill ok={live.lineupsConfirmed}>
-                  {live.lineupsConfirmed ? "Lineups confirmed" : "Lineups not out yet"}
-                </Pill>
-                <Pill ok={live.modelCoverage?.covered > 0}>
-                  Foul history {live.modelCoverage?.covered ?? 0}/{live.modelCoverage?.requested ?? 0} players
-                </Pill>
-                {live.bookmakerUpdatedAt && (
-                  <span className="rounded bg-navy-800 px-2 py-1 text-navy-400">
-                    bet365 updated {live.bookmakerUpdatedAt}
-                  </span>
-                )}
-                <span className="rounded bg-navy-800 px-2 py-1 text-navy-400">
-                  {live.board.committed.length} committed · {live.board.toBeFouled.length} to-be-fouled ladders
-                </span>
-                {lastLoaded && (
-                  <span className="rounded bg-navy-800 px-2 py-1 text-navy-400">
-                    pulled {lastLoaded.toLocaleTimeString()}
-                  </span>
-                )}
+                  {loading ? "Loading…" : "Refresh now"}
+                </button>
+                <label
+                  className="flex items-center gap-2 text-xs text-navy-300"
+                  title="Every 5 min inside 3 hours of kickoff, 15 min on matchday, hourly otherwise"
+                >
+                  <input
+                    type="checkbox"
+                    checked={autoRefresh}
+                    onChange={(e) => setAutoRefresh(e.target.checked)}
+                    className="accent-sky-500"
+                  />
+                  Auto-refresh
+                </label>
               </div>
-            )}
-            {live?.notes?.map((n) => (
-              <p key={n} className="mt-2 text-xs text-amber-300/90">
-                {n}
+
+              {loadError && <p className="mt-3 text-sm text-rose-400">{loadError}</p>}
+
+              {live && (
+                <div className="mt-4 flex flex-wrap gap-2 text-xs">
+                  <Pill ok={live.hasFoulsMarkets}>
+                    {live.hasFoulsMarkets ? "Fouls Committed posted" : "No Fouls Committed yet"}
+                  </Pill>
+                  <Pill ok={live.hasTacklesMarkets}>
+                    {live.hasTacklesMarkets ? "Tackles posted" : "No Tackles market yet"}
+                  </Pill>
+                  <Pill ok={live.lineupsConfirmed}>
+                    {live.lineupsConfirmed ? "Lineups confirmed" : "Lineups not out yet"}
+                  </Pill>
+                  <Pill ok={live.modelCoverage.covered > 0}>
+                    Foul history {live.modelCoverage.covered}/{live.modelCoverage.requested} players
+                  </Pill>
+                  {live.cardsOverround != null && (
+                    <span className="rounded bg-navy-800 px-2 py-1 text-navy-400">
+                      Total Cards margin {live.cardsOverround.toFixed(1)}% ({live.cardsOverroundSample} lines)
+                    </span>
+                  )}
+                  {lastLoaded && (
+                    <span className="rounded bg-navy-800 px-2 py-1 text-navy-400">
+                      pulled {lastLoaded.toLocaleTimeString()}
+                    </span>
+                  )}
+                </div>
+              )}
+              {live?.notes.map((n) => (
+                <p key={n} className="mt-2 text-xs text-amber-300/90">
+                  {n}
+                </p>
+              ))}
+            </section>
+
+            {!live && !loadError && (
+              <p className="rounded-lg bg-navy-900 p-6 text-center text-sm text-navy-400 ring-1 ring-navy-700">
+                Pick a fixture above.
               </p>
-            ))}
-          </section>
+            )}
+
+            {live && live.players.length > 0 && (
+              <Panel title={`${live.home} vs ${live.away}`}>
+                <Table
+                  head={["Player", "Team", "Tackles 2+", "xTackles", "Fouls 2+", "xFouls (market)", "xFouls (model)", "Edge"]}
+                  rows={liveRows.map((r) => {
+                    const tk2 = rungAt(r.tackles, 2);
+                    const fc2 = rungAt(r.foulsCommitted, 2);
+                    return [
+                      r.playerName,
+                      r.team === "home" ? live.home : live.away,
+                      tk2?.fractional ?? "-",
+                      r.tackles ? r.tackles.mu.toFixed(2) : "-",
+                      fc2?.fractional ?? "-",
+                      r.foulsCommitted ? r.foulsCommitted.mu.toFixed(2) : "-",
+                      r.model?.matched ? r.model.committedMu.toFixed(2) : "-",
+                      r.edgePct != null ? <Edge key="e" v={r.edgePct / 100} /> : "-",
+                    ];
+                  })}
+                />
+                <Legend
+                  rows={[
+                    ["Tackles 2+", "Spreadex's own price for 2+ tackles - how involved this player is in the battle."],
+                    ["xTackles", "Expected tackles this match, fitted from the whole Tackles ladder."],
+                    ["Fouls 2+", "Spreadex's own price for 2+ fouls committed."],
+                    ["xFouls (market)", "Expected fouls committed, fitted from the whole Fouls Committed ladder - the market's own opinion."],
+                    ["xFouls (model)", "Our own opinion, from this player's foul history (crosswise-adjusted for tonight's actual opponent)."],
+                    ["Edge", "Model vs market on Fouls Committed, as a percentage. Positive means our model expects more fouls than the market's price implies - the Fouls Committed overs look good value. A high Tackles reading with no Fouls Committed edge yet is still worth watching: heavy duel involvement often shows up in the fouls price late."],
+                  ]}
+                />
+                <Caveat>
+                  Edge compares our history-based model against the market&apos;s own fitted rate, not
+                  two independent markets against each other - Spreadex has no To Be Fouled market to
+                  cross-check against. Treat it as one considered opinion, not a market-consistency proof.
+                </Caveat>
+              </Panel>
+            )}
+          </>
         ) : (
           <>
             <section className="mb-6 grid gap-4 lg:grid-cols-2">
@@ -419,256 +423,228 @@ export default function FoulsPage() {
                 />
               </Panel>
             </section>
-          </>
-        )}
 
-        <section className="mb-8 flex flex-wrap items-end gap-6 rounded-lg bg-navy-900 p-4 ring-1 ring-navy-700">
-          <Field
-            label="Assumed overround %"
-            hint={
-              live?.derivedOverround != null
-                ? `Measured at ${live.derivedOverround.toFixed(1)}% from ${live.overroundSample} of bet365's own two-way player props on this fixture. Override if you disagree.`
-                : "Bookmaker margin per rung. One-sided ladder prices cannot reveal it, so it is supplied."
-            }
-            value={overround}
-            onChange={(v) => {
-              setOverroundTouched(true);
-              setOverround(v);
-            }}
-          />
-          <Field
-            label="Expected match fouls"
-            hint={
-              live?.expectedFoulsBasis?.length
-                ? `From these sides' own records: ${live.expectedFoulsBasis
-                    .map((t) => `${t.team} ${t.mean.toFixed(1)} (${t.matches} games)`)
-                    .join(", ")}.`
-                : "Both full teams. Used only to judge whether the board is running hot."
-            }
-            value={expectedFouls}
-            onChange={(v) => {
-              setFoulsTouched(true);
-              setExpectedFouls(v);
-            }}
-          />
-        </section>
-
-        {"errors" in result && result.errors && result.errors.length > 0 && (
-          <Notice tone="error" items={result.errors} title="Input problems" />
-        )}
-        {"warnings" in result && result.warnings && result.warnings.length > 0 && (
-          <Notice tone="warn" items={result.warnings} title="Warnings" />
-        )}
-
-        {"idle" in result && result.idle && (
-          <p className="rounded-lg bg-navy-900 p-6 text-center text-sm text-navy-400 ring-1 ring-navy-700">
-            {source === "live"
-              ? "Pick a fixture above. If its fouls markets are not posted yet, switch to Paste a board."
-              : "Paste a board to begin."}
-          </p>
-        )}
-
-        {"analysis" in result && result.analysis && result.fit && result.temp && (
-          <>
-            <section className="mb-8 grid gap-4 md:grid-cols-3">
-              <Stat
-                label="Board implies"
-                value={`${(result.startersTotal! / STARTERS_SHARE).toFixed(1)} fouls`}
-                sub={`vs ${expectedFouls} expected · running ${result.temp.verdict}`}
-                tone={result.temp.verdict === "hot" ? "bad" : "neutral"}
+            <section className="mb-8 flex flex-wrap items-end gap-6 rounded-lg bg-navy-900 p-4 ring-1 ring-navy-700">
+              <Field
+                label="Assumed overround %"
+                hint="Bookmaker margin per rung. One-sided ladder prices cannot reveal it, so it is supplied."
+                value={overround}
+                onChange={setOverround}
               />
-              {result.analysis.conservation.map((c) => (
-                <Stat
-                  key={c.team}
-                  label={`${c.team} commit vs ${c.opponent} fouled`}
-                  value={signed(c.ratio - 1)}
-                  sub={
-                    c.ratio > 1
-                      ? `to-be-fouled board is ${(c.ratio * 100 - 100).toFixed(0)}% richer than committed supports`
-                      : "committed board is richer than to-be-fouled supports"
-                  }
-                  tone={Math.abs(c.ratio - 1) > 0.08 ? "good" : "neutral"}
-                />
-              ))}
+              <Field
+                label="Expected match fouls"
+                hint="Both full teams. Used only to judge whether the board is running hot."
+                value={expectedFouls}
+                onChange={setExpectedFouls}
+              />
             </section>
 
-            <nav className="mb-4 flex flex-wrap gap-2">
-              {(
-                [
-                  ["likely", "Most likely to commit"],
-                  ["edges", "Best value"],
-                  ["duels", "Duel map"],
-                  ["combos", "Combos"],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  onClick={() => setTab(key)}
-                  className={`rounded px-3 py-1.5 text-sm ${
-                    tab === key
-                      ? "bg-sky-500 font-medium text-navy-950"
-                      : "bg-navy-800 text-navy-300 hover:bg-navy-700"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </nav>
-
-            {tab === "likely" && (
-              <Panel title="Most likely to commit fouls">
-                <Table
-                  head={["Player", "Team", "xFouls", "1+", "price", "edge", "2+", "price", "edge", "1 or 2"]}
-                  rows={likelyRows.map((r) => [
-                    r.name, r.team, r.mu.toFixed(2), pct(r.p1), r.e1?.fractional ?? "-",
-                    r.e1 ? <Edge key="a" v={r.e1.edge} /> : "-",
-                    pct(r.p2), r.e2?.fractional ?? "-",
-                    r.e2 ? <Edge key="b" v={r.e2.edge} /> : "-",
-                    pct(r.oneOrTwo),
-                  ])}
-                />
-                <Legend
-                  rows={[
-                    ["xFouls", "How many fouls we expect this player to commit."],
-                    ["1+ / 2+", "Our chance he commits at least that many. 66% = two times in three."],
-                    ["price", "What the bookmaker is offering."],
-                    ["edge", "Green means the price is longer than the chance deserves — value. Grey means it is too short."],
-                    ["1 or 2", "Chance of exactly one or two fouls. It peaks around 1.3 expected fouls, so it comes out near 55% for almost everyone and separates players poorly. The 2+ column is the useful one."],
-                  ]}
-                />
-              </Panel>
+            {pasteResult && "errors" in pasteResult && pasteResult.errors && pasteResult.errors.length > 0 && (
+              <Notice tone="error" items={pasteResult.errors} title="Input problems" />
+            )}
+            {pasteResult && "warnings" in pasteResult && pasteResult.warnings && pasteResult.warnings.length > 0 && (
+              <Notice tone="warn" items={pasteResult.warnings} title="Warnings" />
             )}
 
-            {tab === "edges" && (
-              <Panel title="Best value on the board">
-                <Table
-                  head={["Player", "Market", "Line", "Price", "Fair", "Edge", "Kelly", "Why"]}
-                  rows={result.analysis.edges.slice(0, 25).map((e) => [
-                    e.player,
-                    e.market === "committed" ? "commits" : "fouled",
-                    `${e.line}+`,
-                    e.fractional ?? "-",
-                    e.fairDecimal.toFixed(2),
-                    <Edge key="e" v={e.edge} />,
-                    `${(e.kelly * 100).toFixed(1)}%`,
-                    <span key="w" className="text-xs text-navy-400">{e.reasons.join("; ") || "-"}</span>,
-                  ])}
-                />
-                <Legend
-                  rows={[
-                    ["Line", "“2+” means two or more fouls."],
-                    ["Price", "What the bookmaker offers."],
-                    ["Fair", "What we think it is worth, as a decimal price. If Fair is 2.10 and they offer 2.20, you are getting the better of it."],
-                    ["Edge", "The gap between those two, as a percentage. Positive is value."],
-                    ["Kelly", "The share of your betting bankroll this bet mathematically justifies. Most people bet a quarter of Kelly or less."],
-                    ["Why", "Which of the checks flagged it — the cross-board gap, the duel map, or the rung sitting off the player's own ladder."],
-                  ]}
-                />
-                <Caveat>
-                  Edge here is relative to <em>this board</em>, not a promise of profit. It moves
-                  with the assumed overround above. The ordering is far more reliable than the level.
-                </Caveat>
-              </Panel>
-            )}
+            {pasteResult && "analysis" in pasteResult && pasteResult.analysis && pasteResult.fit && pasteResult.temp && (
+              <>
+                <section className="mb-8 grid gap-4 md:grid-cols-3">
+                  <Stat
+                    label="Board implies"
+                    value={`${(pasteResult.startersTotal! / STARTERS_SHARE).toFixed(1)} fouls`}
+                    sub={`vs ${expectedFouls} expected · running ${pasteResult.temp.verdict}`}
+                    tone={pasteResult.temp.verdict === "hot" ? "bad" : "neutral"}
+                  />
+                  {pasteResult.analysis.conservation.map((c) => (
+                    <Stat
+                      key={c.team}
+                      label={`${c.team} commit vs ${c.opponent} fouled`}
+                      value={signed(c.ratio - 1)}
+                      sub={
+                        c.ratio > 1
+                          ? `to-be-fouled board is ${(c.ratio * 100 - 100).toFixed(0)}% richer than committed supports`
+                          : "committed board is richer than to-be-fouled supports"
+                      }
+                      tone={Math.abs(c.ratio - 1) > 0.08 ? "good" : "neutral"}
+                    />
+                  ))}
+                </section>
 
-            {tab === "duels" && (
-              <div className="space-y-4">
-                {result.analysis.duels.map((d) => (
-                  <Panel key={d.committerTeam} title={`${d.committerTeam} fouling ${d.suffererTeam}`}>
-                    <div className="grid gap-6 md:grid-cols-2">
-                      <div>
-                        <h4 className="mb-2 text-xs uppercase tracking-wide text-navy-400">
-                          Where the clashes are
-                        </h4>
-                        <Table
-                          head={["Committer", "Victim", "Fouls"]}
-                          rows={d.flows.slice(0, 10).map((f) => [f.committer, f.sufferer, f.fouls.toFixed(2)])}
-                        />
-                      </div>
-                      <div>
-                        <h4 className="mb-2 text-xs uppercase tracking-wide text-navy-400">
-                          Market vs duel structure
-                        </h4>
-                        <Table
-                          head={["Player", "Market", "Duels", "Ratio"]}
-                          rows={[...d.sufferDiagnostics]
-                            .sort((a, b) => b.ratio - a.ratio)
-                            .map((s) => [
-                              s.player,
-                              s.marketMu.toFixed(2),
-                              s.structuralMu.toFixed(2),
-                              <span
-                                key="r"
-                                className={
-                                  s.ratio > 1.25 ? "text-rose-400" : s.ratio < 0.8 ? "text-emerald-400" : "text-navy-300"
-                                }
-                              >
-                                {s.ratio.toFixed(2)}
-                              </span>,
-                            ])}
-                        />
-                      </div>
-                    </div>
+                <nav className="mb-4 flex flex-wrap gap-2">
+                  {(
+                    [
+                      ["likely", "Most likely to commit"],
+                      ["edges", "Best value"],
+                      ["duels", "Duel map"],
+                      ["combos", "Combos"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      onClick={() => setPasteTab(key)}
+                      className={`rounded px-3 py-1.5 text-sm ${
+                        pasteTab === key
+                          ? "bg-sky-500 font-medium text-navy-950"
+                          : "bg-navy-800 text-navy-300 hover:bg-navy-700"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </nav>
+
+                {pasteTab === "likely" && (
+                  <Panel title="Most likely to commit fouls">
+                    <Table
+                      head={["Player", "Team", "xFouls", "1+", "price", "edge", "2+", "price", "edge", "1 or 2"]}
+                      rows={likelyRows.map((r) => [
+                        r.name, r.team, r.mu.toFixed(2), pct(r.p1), r.e1?.fractional ?? "-",
+                        r.e1 ? <Edge key="a" v={r.e1.edge} /> : "-",
+                        pct(r.p2), r.e2?.fractional ?? "-",
+                        r.e2 ? <Edge key="b" v={r.e2.edge} /> : "-",
+                        pct(r.oneOrTwo),
+                      ])}
+                    />
                     <Legend
                       rows={[
-                        ["Fouls", "Expected fouls flowing from that committer to that victim over the match. It is where the game's friction actually sits."],
-                        ["Market", "Fouls the bookmaker's price says this player will suffer."],
-                        ["Duels", "Fouls the formation says he should suffer, given who he is up against."],
-                        ["Ratio", "Market divided by Duels. Red (above 1.25) means the bookmaker rates him higher than the matchup justifies — his to-be-fouled price is too short. Green (below 0.8) means the opposite, and is where value hides."],
+                        ["xFouls", "How many fouls we expect this player to commit."],
+                        ["1+ / 2+", "Our chance he commits at least that many. 66% = two times in three."],
+                        ["price", "What the bookmaker is offering."],
+                        ["edge", "Green means the price is longer than the chance deserves — value. Grey means it is too short."],
+                        ["1 or 2", "Chance of exactly one or two fouls. It peaks around 1.3 expected fouls, so it comes out near 55% for almost everyone and separates players poorly. The 2+ column is the useful one."],
                       ]}
                     />
                   </Panel>
-                ))}
-              </div>
-            )}
+                )}
 
-            {tab === "combos" && (
-              <Panel title="Multi-leg combinations">
-                <Table
-                  head={["Legs", "Joint", "Corr", "Naive", "Fair", "Edge if naive"]}
-                  rows={result.combos!.map((c) => [
-                    <span key="l" className="text-xs">
-                      {c.legs
-                        .map((l) => `${l.player} ${l.line}+ ${l.market === "committed" ? "commits" : "fouled"}`)
-                        .join("  +  ")}
-                    </span>,
-                    pct(c.jointProb),
-                    c.correlationPremium.toFixed(3),
-                    c.naiveDecimal.toFixed(2),
-                    c.fairDecimal.toFixed(2),
-                    <Edge key="e" v={c.edgeAtNaivePrice} />,
-                  ])}
-                />
-                <Legend
-                  rows={[
-                    ["Joint", "How often all the legs land together. 5% means about one time in twenty."],
-                    ["Corr", "How much more often they land together than if they were unrelated. 1.24 means 24% more often — fouls bunch up, because a fussy referee or a niggly game lifts everyone's count at once."],
-                    ["Naive", "The price you would get if your bet builder simply multiplied the legs together, like an ordinary accumulator."],
-                    ["Fair", "What the combination is genuinely worth once that bunching is accounted for."],
-                    ["Edge if naive", "The gap between Naive and Fair — but only real if your bookmaker actually multiplies. Most bet builders price correlation in, so treat Fair as the number that matters."],
-                  ]}
-                />
-                <Caveat>
-                  Use the <strong>Fair</strong> column as a price test. Build the combination in your
-                  bet builder and look at what it quotes: above Fair is worth taking, below Fair is
-                  not, however big the number looks.
-                </Caveat>
-              </Panel>
-            )}
+                {pasteTab === "edges" && (
+                  <Panel title="Best value on the board">
+                    <Table
+                      head={["Player", "Market", "Line", "Price", "Fair", "Edge", "Kelly", "Why"]}
+                      rows={pasteResult.analysis.edges.slice(0, 25).map((e) => [
+                        e.player,
+                        e.market === "committed" ? "commits" : "fouled",
+                        `${e.line}+`,
+                        e.fractional ?? "-",
+                        e.fairDecimal.toFixed(2),
+                        <Edge key="e" v={e.edge} />,
+                        `${(e.kelly * 100).toFixed(1)}%`,
+                        <span key="w" className="text-xs text-navy-400">{e.reasons.join("; ") || "-"}</span>,
+                      ])}
+                    />
+                    <Legend
+                      rows={[
+                        ["Line", "“2+” means two or more fouls."],
+                        ["Price", "What the bookmaker offers."],
+                        ["Fair", "What we think it is worth, as a decimal price. If Fair is 2.10 and they offer 2.20, you are getting the better of it."],
+                        ["Edge", "The gap between those two, as a percentage. Positive is value."],
+                        ["Kelly", "The share of your betting bankroll this bet mathematically justifies. Most people bet a quarter of Kelly or less."],
+                        ["Why", "Which of the checks flagged it — the cross-board gap, the duel map, or the rung sitting off the player's own ladder."],
+                      ]}
+                    />
+                    <Caveat>
+                      Edge here is relative to <em>this board</em>, not a promise of profit. It moves
+                      with the assumed overround above. The ordering is far more reliable than the level.
+                    </Caveat>
+                  </Panel>
+                )}
 
-            <footer className="mt-8 rounded-lg bg-navy-900 p-4 text-xs text-navy-400 ring-1 ring-navy-700">
-              <p className="mb-1">
-                Fitted dispersion {result.fit.size} · margin exponent{" "}
-                {result.fit.kappaCommitted.toFixed(3)} / {result.fit.kappaToBeFouled.toFixed(3)} ·{" "}
-                {result.sim!.draws.toLocaleString()} simulations ·{" "}
-                {(result.sim!.sharedVarianceShare * 100).toFixed(0)}% of variance is match-wide ·
-                attribution {ATTRIBUTION_RATE}
-              </p>
-              <p>
-                Ladders and lineups come from bet365 via SportMonks. Fouls markets open late and
-                unevenly, so an empty board usually means not-yet-posted rather than an error.
-              </p>
-            </footer>
+                {pasteTab === "duels" && (
+                  <div className="space-y-4">
+                    {pasteResult.analysis.duels.map((d) => (
+                      <Panel key={d.committerTeam} title={`${d.committerTeam} fouling ${d.suffererTeam}`}>
+                        <div className="grid gap-6 md:grid-cols-2">
+                          <div>
+                            <h4 className="mb-2 text-xs uppercase tracking-wide text-navy-400">
+                              Where the clashes are
+                            </h4>
+                            <Table
+                              head={["Committer", "Victim", "Fouls"]}
+                              rows={d.flows.slice(0, 10).map((f) => [f.committer, f.sufferer, f.fouls.toFixed(2)])}
+                            />
+                          </div>
+                          <div>
+                            <h4 className="mb-2 text-xs uppercase tracking-wide text-navy-400">
+                              Market vs duel structure
+                            </h4>
+                            <Table
+                              head={["Player", "Market", "Duels", "Ratio"]}
+                              rows={[...d.sufferDiagnostics]
+                                .sort((a, b) => b.ratio - a.ratio)
+                                .map((s) => [
+                                  s.player,
+                                  s.marketMu.toFixed(2),
+                                  s.structuralMu.toFixed(2),
+                                  <span
+                                    key="r"
+                                    className={
+                                      s.ratio > 1.25 ? "text-rose-400" : s.ratio < 0.8 ? "text-emerald-400" : "text-navy-300"
+                                    }
+                                  >
+                                    {s.ratio.toFixed(2)}
+                                  </span>,
+                                ])}
+                            />
+                          </div>
+                        </div>
+                        <Legend
+                          rows={[
+                            ["Fouls", "Expected fouls flowing from that committer to that victim over the match. It is where the game's friction actually sits."],
+                            ["Market", "Fouls the bookmaker's price says this player will suffer."],
+                            ["Duels", "Fouls the formation says he should suffer, given who he is up against."],
+                            ["Ratio", "Market divided by Duels. Red (above 1.25) means the bookmaker rates him higher than the matchup justifies — his to-be-fouled price is too short. Green (below 0.8) means the opposite, and is where value hides."],
+                          ]}
+                        />
+                      </Panel>
+                    ))}
+                  </div>
+                )}
+
+                {pasteTab === "combos" && (
+                  <Panel title="Multi-leg combinations">
+                    <Table
+                      head={["Legs", "Joint", "Corr", "Naive", "Fair", "Edge if naive"]}
+                      rows={pasteResult.combos!.map((c) => [
+                        <span key="l" className="text-xs">
+                          {c.legs
+                            .map((l) => `${l.player} ${l.line}+ ${l.market === "committed" ? "commits" : "fouled"}`)
+                            .join("  +  ")}
+                        </span>,
+                        pct(c.jointProb),
+                        c.correlationPremium.toFixed(3),
+                        c.naiveDecimal.toFixed(2),
+                        c.fairDecimal.toFixed(2),
+                        <Edge key="e" v={c.edgeAtNaivePrice} />,
+                      ])}
+                    />
+                    <Legend
+                      rows={[
+                        ["Joint", "How often all the legs land together. 5% means about one time in twenty."],
+                        ["Corr", "How much more often they land together than if they were unrelated. 1.24 means 24% more often — fouls bunch up, because a fussy referee or a niggly game lifts everyone's count at once."],
+                        ["Naive", "The price you would get if your bet builder simply multiplied the legs together, like an ordinary accumulator."],
+                        ["Fair", "What the combination is genuinely worth once that bunching is accounted for."],
+                        ["Edge if naive", "The gap between Naive and Fair — but only real if your bookmaker actually multiplies. Most bet builders price correlation in, so treat Fair as the number that matters."],
+                      ]}
+                    />
+                    <Caveat>
+                      Use the <strong>Fair</strong> column as a price test. Build the combination in your
+                      bet builder and look at what it quotes: above Fair is worth taking, below Fair is
+                      not, however big the number looks.
+                    </Caveat>
+                  </Panel>
+                )}
+
+                <footer className="mt-8 rounded-lg bg-navy-900 p-4 text-xs text-navy-400 ring-1 ring-navy-700">
+                  <p>
+                    Fitted dispersion {pasteResult.fit.size} · margin exponent{" "}
+                    {pasteResult.fit.kappaCommitted.toFixed(3)} / {pasteResult.fit.kappaToBeFouled.toFixed(3)} ·{" "}
+                    {pasteResult.sim!.draws.toLocaleString()} simulations ·{" "}
+                    {(pasteResult.sim!.sharedVarianceShare * 100).toFixed(0)}% of variance is match-wide ·
+                    attribution {ATTRIBUTION_RATE}
+                  </p>
+                </footer>
+              </>
+            )}
           </>
         )}
       </div>
