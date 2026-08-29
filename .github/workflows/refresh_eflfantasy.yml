@@ -2,10 +2,7 @@ name: Refresh - EFL Fantasy
 
 # Runs 12 minutes after refresh_cloudff.yml - see refresh_shared_odds.yml's
 # comment for why these are staggered rather than run all-in-one or in
-# true parallel. Also owns SportMonks' real match odds for Championship/
-# League One/League Two (see scripts/import_sportmonks_match_odds.py) and
-# its own follow-up fixture-probabilities pass, since that odds import
-# runs after refresh_shared_odds.yml already finished.
+# true parallel.
 on:
   schedule:
     - cron: "36 6 * * *"
@@ -50,5 +47,4 @@ jobs:
       - name: Run EFL Fantasy refresh
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          SPORTMONKS_API_KEY: ${{ secrets.SPORTMONKS_API_KEY }}
         run: python scripts/refresh_all.py --only eflfantasy
