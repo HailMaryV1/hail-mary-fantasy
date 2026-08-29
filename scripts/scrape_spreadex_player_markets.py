@@ -364,9 +364,18 @@ def scrape_fixture(page, url, our_fixture_id, home_team_id, away_team_id, cur):
     written = {"Shots On Target": 0, "Fouls Committed": 0, "Tackles": 0}
     unmatched = []
 
-    # --- player ladders (Shots -> Fouls Committed/Tackles are both under
-    # the "Cards" tab in this SPA's own nav, confirmed live) -------------
-    for tab_name, headers in (("Shots", ["Player Shots On Target"]), ("Cards", ["Player Fouls Committed", "Player Tackles"])):
+    # --- player ladders --------------------------------------------------
+    # Fouls Committed/Tackles live under the "Players" sub-tab, NOT "Cards"
+    # - "Cards" only has Total/team Cards O/U and card-SCORER props (who
+    # gets booked), a different market entirely. Wrongly routed to "Cards"
+    # from this script's first version onward; caught live 2026-08-29,
+    # 40 minutes before Bournemouth v Everton kickoff, by dumping every
+    # panel header text on both tabs and finding "Player Fouls Committed"/
+    # "Player Tackles" only appeared under "Players" - this is why every
+    # run all day reported Fouls=0 Tackles=0 regardless of how close to
+    # kickoff, on fixtures whose lineups had already landed: it was never a
+    # timing issue, the scraper was reading the wrong tab from the start.
+    for tab_name, headers in (("Shots", ["Player Shots On Target"]), ("Players", ["Player Fouls Committed", "Player Tackles"])):
         try:
             page.get_by_text(tab_name, exact=True).first.click(timeout=10000)
             page.wait_for_timeout(1500)
@@ -428,6 +437,15 @@ def scrape_fixture(page, url, our_fixture_id, home_team_id, away_team_id, cur):
                 written[cfg["db_market"]] += 1
 
     # --- match-level Total Cards Over/Under, for margin derivation ------
+    # Explicit tab click: the ladder loop above now ends on "Players" (see
+    # the Fouls Committed/Tackles fix above), and Total Cards O/U only
+    # renders under "Cards" - without this, extract_total_cards_ou reads
+    # whatever tab was last active and silently returns nothing.
+    try:
+        page.get_by_text("Cards", exact=True).first.click(timeout=8000)
+        page.wait_for_timeout(1000)
+    except Exception:
+        pass
     cards_rows = extract_total_cards_ou(page)
     cards_written = 0
     for row in cards_rows:
