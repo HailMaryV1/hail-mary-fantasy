@@ -172,6 +172,14 @@ def fetch_latest_projections(cur, game_id, gameweek):
     return cur.fetchall()
 
 
+UPSERT_TEMPLATE = """(
+    %(game_id)s, %(game_player_id)s, %(gameweek)s, %(algo_id)s, %(version_label)s,
+    %(expected_points)s, %(points_per_90)s, %(floor)s, %(ceiling)s,
+    %(predicted_minutes)s, %(appearance)s, %(start)s, %(goal)s,
+    %(assist)s, %(clean_sheet)s, %(confidence)s, now(), %(locked_at)s
+)"""
+
+
 def main():
     load_env()
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
@@ -183,6 +191,20 @@ def main():
         written, newly_locked = 0, 0
         now = datetime.datetime.now(datetime.timezone.utc)
 
+        # Real bottleneck found live 2026-08-29 investigating why every
+        # single Refresh - wrap-up run (chronically, not a one-off) hit
+        # its own 2-hour CI ceiling: this used to run one INSERT round
+        # trip PER PLAYER PER GAMEWEEK against a remote DB - with ~2,000
+        # active EFL Fantasy game_players alone across up to 6 published
+        # gameweeks, that's tens of thousands of individual round trips,
+        # easily accounting for the whole multi-hour stall on its own.
+        # Same class of bug already found and fixed elsewhere this session
+        # (import_sportmonks_player_props.py's own _fetch_existing_flags
+        # docstring - "a real run wrote 123,464 hub rows... together good
+        # for a quarter-million+ round trips"). Collects every row across
+        # every (game_id, gameweek) first, then writes them all in one
+        # batched execute_values call.
+        rows_to_insert = []
         for game_id, gameweek, deadline in deadlines:
             is_past_deadline = now >= deadline
             rows = fetch_latest_projections(cur, game_id, gameweek)
@@ -199,60 +221,61 @@ def main():
                 ceiling = compute_ceiling(position, expected_points)
                 confidence = compute_confidence(inputs)
 
-                cur.execute(
-                    """
-                    insert into player_gameweek_predictions (
-                        game_id, game_player_id, gameweek, algorithm_version_id, model_version_label,
-                        expected_points, expected_points_per_90, expected_floor, expected_ceiling,
-                        predicted_minutes, appearance_probability, start_probability, goal_probability,
-                        assist_probability, clean_sheet_probability, confidence, predicted_at, locked_at
-                    ) values (
-                        %(game_id)s, %(game_player_id)s, %(gameweek)s, %(algo_id)s, %(version_label)s,
-                        %(expected_points)s, %(points_per_90)s, %(floor)s, %(ceiling)s,
-                        %(predicted_minutes)s, %(appearance)s, %(start)s, %(goal)s,
-                        %(assist)s, %(clean_sheet)s, %(confidence)s, now(), %(locked_at)s
-                    )
-                    on conflict (game_player_id, gameweek) do update set
-                        algorithm_version_id = excluded.algorithm_version_id,
-                        model_version_label = excluded.model_version_label,
-                        expected_points = excluded.expected_points,
-                        expected_points_per_90 = excluded.expected_points_per_90,
-                        expected_floor = excluded.expected_floor,
-                        expected_ceiling = excluded.expected_ceiling,
-                        predicted_minutes = excluded.predicted_minutes,
-                        appearance_probability = excluded.appearance_probability,
-                        start_probability = excluded.start_probability,
-                        goal_probability = excluded.goal_probability,
-                        assist_probability = excluded.assist_probability,
-                        clean_sheet_probability = excluded.clean_sheet_probability,
-                        confidence = excluded.confidence,
-                        predicted_at = excluded.predicted_at,
-                        locked_at = excluded.locked_at
-                    where player_gameweek_predictions.locked_at is null
-                    """,
-                    {
-                        "game_id": game_id,
-                        "game_player_id": game_player_id,
-                        "gameweek": gameweek,
-                        "algo_id": algo_id,
-                        "version_label": version_label,
-                        "expected_points": expected_points,
-                        "points_per_90": inputs.get("points_per_90"),
-                        "floor": floor,
-                        "ceiling": ceiling,
-                        "predicted_minutes": fixture_field(inputs, "predicted_minutes"),
-                        "appearance": fixture_stat(inputs, "appearance"),
-                        "start": fixture_stat(inputs, "minutes_60_plus"),
-                        "goal": fixture_stat(inputs, "goal"),
-                        "assist": fixture_stat(inputs, "assist"),
-                        "clean_sheet": fixture_stat(inputs, "clean_sheet_60min"),
-                        "confidence": confidence,
-                        "locked_at": now if is_past_deadline else None,
-                    },
-                )
-                written += 1
+                rows_to_insert.append({
+                    "game_id": game_id,
+                    "game_player_id": game_player_id,
+                    "gameweek": gameweek,
+                    "algo_id": algo_id,
+                    "version_label": version_label,
+                    "expected_points": expected_points,
+                    "points_per_90": inputs.get("points_per_90"),
+                    "floor": floor,
+                    "ceiling": ceiling,
+                    "predicted_minutes": fixture_field(inputs, "predicted_minutes"),
+                    "appearance": fixture_stat(inputs, "appearance"),
+                    "start": fixture_stat(inputs, "minutes_60_plus"),
+                    "goal": fixture_stat(inputs, "goal"),
+                    "assist": fixture_stat(inputs, "assist"),
+                    "clean_sheet": fixture_stat(inputs, "clean_sheet_60min"),
+                    "confidence": confidence,
+                    "locked_at": now if is_past_deadline else None,
+                })
             if is_past_deadline:
                 newly_locked += len(rows)
+
+        if rows_to_insert:
+            psycopg2.extras.execute_values(
+                cur,
+                """
+                insert into player_gameweek_predictions (
+                    game_id, game_player_id, gameweek, algorithm_version_id, model_version_label,
+                    expected_points, expected_points_per_90, expected_floor, expected_ceiling,
+                    predicted_minutes, appearance_probability, start_probability, goal_probability,
+                    assist_probability, clean_sheet_probability, confidence, predicted_at, locked_at
+                ) values %s
+                on conflict (game_player_id, gameweek) do update set
+                    algorithm_version_id = excluded.algorithm_version_id,
+                    model_version_label = excluded.model_version_label,
+                    expected_points = excluded.expected_points,
+                    expected_points_per_90 = excluded.expected_points_per_90,
+                    expected_floor = excluded.expected_floor,
+                    expected_ceiling = excluded.expected_ceiling,
+                    predicted_minutes = excluded.predicted_minutes,
+                    appearance_probability = excluded.appearance_probability,
+                    start_probability = excluded.start_probability,
+                    goal_probability = excluded.goal_probability,
+                    assist_probability = excluded.assist_probability,
+                    clean_sheet_probability = excluded.clean_sheet_probability,
+                    confidence = excluded.confidence,
+                    predicted_at = excluded.predicted_at,
+                    locked_at = excluded.locked_at
+                where player_gameweek_predictions.locked_at is null
+                """,
+                rows_to_insert,
+                template=UPSERT_TEMPLATE,
+                page_size=1000,
+            )
+            written = len(rows_to_insert)
 
         conn.commit()
         print(f"Captured/refreshed {written} prediction row(s) across {len(deadlines)} gameweek(s), {newly_locked} at/past their deadline.")
