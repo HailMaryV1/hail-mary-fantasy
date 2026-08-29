@@ -206,29 +206,58 @@ async function fetchLatestProps(fixtureId: number, markets: string[]): Promise<P
   return [...latest.values()];
 }
 
+/**
+ * A stable cross-market identity for one real player, used to join the
+ * Fouls Committed ladder, the Tackles ladder and the lineup together.
+ *
+ * `fixture_lineups.player_name_raw` and `fixture_player_props.player_name_raw`
+ * are two INDEPENDENT scrapes of Spreadex's own text (List View's lineup
+ * spelling vs. each ladder's own price-button label) - they are not
+ * guaranteed to agree character-for-character, and a first version of this
+ * function keyed players by that raw name directly. Live check on
+ * Bournemouth v Everton (2026-08-29, 22 confirmed starters, 28 real Fouls
+ * Committed rows already in the DB) found only 3 of them actually joined -
+ * the rest silently fell out as two "different" players because the two
+ * scrapes spelled the same name differently.
+ *
+ * Both tables already carry a `player_id` resolved against our OWN
+ * `players` table by `resolve_player_id()` in the scraper - that is the
+ * real, exact bridge, and normalised name is only a fallback for the rows
+ * that resolve_player_id itself couldn't place (reported as "unmatched
+ * player name(s)" by the scraper - a real but small minority).
+ */
+function identityKey(playerId: number | null, rawName: string): string {
+  return playerId != null ? `id:${playerId}` : `name:${normalise(rawName)}`;
+}
+
 function buildLadders(
   rows: PropRow[],
   market: string,
   lineup: LineupPlayer[],
 ): PlayerLadder[] {
-  const byName = new Map<string, { playerId: number | null; team: "home" | "away" | null; quotes: Map<number, number> }>();
+  const byKey = new Map<string, { team: "home" | "away" | null; quotes: Map<number, number> }>();
   const lineupById = new Map<number, LineupPlayer>();
-  for (const p of lineup) if (p.playerId != null) lineupById.set(p.playerId, p);
+  const lineupByNormName = new Map<string, LineupPlayer>();
+  for (const p of lineup) {
+    if (p.playerId != null) lineupById.set(p.playerId, p);
+    lineupByNormName.set(normalise(p.name), p);
+  }
 
   for (const r of rows) {
     if (r.market !== market) continue;
-    const entry = byName.get(r.player_name_raw) ?? {
-      playerId: r.player_id,
-      team: r.player_id != null ? (lineupById.get(r.player_id)?.team ?? null) : null,
+    const key = identityKey(r.player_id, r.player_name_raw);
+    const lineupMatch = r.player_id != null ? lineupById.get(r.player_id) : lineupByNormName.get(normalise(r.player_name_raw));
+    const entry = byKey.get(key) ?? {
+      team: lineupMatch?.team ?? null,
       quotes: new Map<number, number>(),
     };
     entry.quotes.set(r.line, r.price);
-    byName.set(r.player_name_raw, entry);
+    byKey.set(key, entry);
   }
 
   const maxLine = Math.max(0, ...rows.map((r) => r.line));
   const ladders: PlayerLadder[] = [];
-  for (const [name, entry] of byName) {
+  for (const [key, entry] of byKey) {
     const quotes: OddsQuote[] = [];
     for (let line = 1; line <= maxLine; line++) {
       const decimal = entry.quotes.get(line) ?? null;
@@ -240,7 +269,11 @@ function buildLadders(
         suspended: !usable,
       });
     }
-    ladders.push({ name, team: entry.team ?? "unknown", quotes });
+    // `.name` carries the identity KEY here, not a display name - see
+    // fetchLiveBoard's playerNameByKey for the human-readable lookup. This
+    // keeps fitSingleMarket's fits map (keyed by `.name`) joinable across
+    // both ladders and the lineup by the same stable identity.
+    ladders.push({ name: key, team: entry.team ?? "unknown", quotes });
   }
   return ladders;
 }
@@ -563,28 +596,43 @@ export async function fetchLiveBoard(fixtureId: number): Promise<SpreadexBoardRe
       notes.push(`Historical foul model unavailable: ${(err as Error).message}`);
     }
   }
-  const modelByName = new Map(modelPlayers.map((m) => [m.playerName, m]));
+  // buildModel() only ever runs over `lineup`, so it's keyed by the
+  // lineup's own name spelling - safe to look up directly once we resolve
+  // each identity key back to its lineup entry below.
+  const modelByLineupName = new Map(modelPlayers.map((m) => [m.playerName, m]));
 
-  // Union lineup names with ladder names, not just the lineup - Fouls
-  // Committed/Tackles can post before lineups do (confirmed live 2026-08-29,
-  // ~8 min before Tottenham v Newcastle kickoff: both markets had real
-  // prices, lineups still unconfirmed), and this used to iterate the
-  // lineup alone, so a fully-priced board rendered as an empty player list
-  // right when the odds were freshest and most useful.
-  const lineupByName = new Map(lineup.map((p) => [p.name, p]));
-  const allNames = new Set<string>([...lineupByName.keys(), ...foulsLadders.map((l) => l.name), ...tacklesLadders.map((l) => l.name)]);
+  // Union lineup players with ladder players BY IDENTITY KEY (see
+  // identityKey/buildLadders above), not by raw name - Fouls Committed/
+  // Tackles can post before lineups do (confirmed live 2026-08-29, ~8 min
+  // before Tottenham v Newcastle kickoff: both markets had real prices,
+  // lineups still unconfirmed), and a raw-name union both missed that case
+  // AND silently failed to join most confirmed starters to their own
+  // ladder rows once lineups did land, because the lineup scrape and the
+  // ladder scrape don't always spell a name identically.
+  const lineupByKey = new Map(lineup.map((p) => [identityKey(p.playerId, p.name), p]));
+  // Ladder-only fallback display name (a real player_name_raw, not the
+  // identity key that LadderFit.name now carries - see buildLadders).
+  const rawNameByKey = new Map<string, string>();
+  for (const r of [...foulsRows, ...tacklesRows]) {
+    const key = identityKey(r.player_id, r.player_name_raw);
+    if (!rawNameByKey.has(key)) rawNameByKey.set(key, r.player_name_raw);
+  }
+  const allKeys = new Set<string>([...lineupByKey.keys(), ...foulsLadders.map((l) => l.name), ...tacklesLadders.map((l) => l.name)]);
 
-  const players: PlayerBoardRow[] = [...allNames].map((name) => {
-    const p = lineupByName.get(name);
-    const fc = foulsFit?.fits.get(name) ?? null;
-    const tk = tacklesFit?.fits.get(name) ?? null;
-    const model = modelByName.get(name) ?? null;
+  const players: PlayerBoardRow[] = [...allKeys].map((key) => {
+    const p = lineupByKey.get(key);
+    const fc = foulsFit?.fits.get(key) ?? null;
+    const tk = tacklesFit?.fits.get(key) ?? null;
+    const model = p ? (modelByLineupName.get(p.name) ?? null) : null;
     const team: "home" | "away" | "unknown" = p?.team ?? "unknown";
+    // Display name: prefer the lineup's own spelling once one exists,
+    // otherwise fall back to the raw name a ladder actually posted under.
+    const displayName = p?.name ?? rawNameByKey.get(key) ?? key.replace(/^(id:|name:)/, "");
     let edgePct: number | null = null;
     if (fc && model && model.matched && fc.mu > 0) {
       edgePct = ((model.committedMu - fc.mu) / fc.mu) * 100;
     }
-    return { playerName: name, team, shirt: p?.shirt ?? null, foulsCommitted: fc, tackles: tk, model, edgePct };
+    return { playerName: displayName, team, shirt: p?.shirt ?? null, foulsCommitted: fc, tackles: tk, model, edgePct };
   });
 
   return {
