@@ -31,8 +31,7 @@ surname_variants (accent-table transliteration, hyphen-boundary-safe
 truncation) - NOT scripts/import_lineup_probability.py's own local
 surname_key()/match_player(), confirmed to be an independent, drifted,
 strictly worse duplicate (no accent table). Team-scoped candidate query +
-exact-match-wins-over-substring cascade, same shape as
-scripts/sync_provider_squads.py's match_player(). player_id stays NULL on
+exact-match-wins-over-substring cascade. player_id stays NULL on
 an ambiguous/no match rather than a guess - raw_name is always kept so a
 later re-match never loses information (same discipline as
 import_lineup_probability.py).

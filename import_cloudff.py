@@ -24,8 +24,7 @@ here since it comes straight from the live pull. Candidates are existing
 `players` rows whose full_name ends with the (de-suffixed) surname AND
 whose team_id matches; the stripped initial (when present) narrows any
 remaining tie exactly the way import_fanteam_live.py's first-initial
-check does. No match -> logged and skipped, never guessed (same
-philosophy as sync_provider_squads.py's match_player).
+check does. No match -> logged and skipped, never guessed.
 
 RUN:
     python3 import_cloudff.py
