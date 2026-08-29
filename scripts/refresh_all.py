@@ -2,7 +2,7 @@
 refresh_all.py
 ----------------
 Single entrypoint for the automated data-refresh pipeline: odds -> fixture
-extras -> SportMonks player props -> probabilities -> FanTeam player
+extras -> DreamTeamTonic player props -> probabilities -> FanTeam player
 pull -> import -> recompute scores for every upcoming gameweek, then the
 same players/fixtures/recompute shape again for Cloud FF, EFL Fantasy,
 Dream Team, and Golf, finishing with the cross-game wrap-up (actuals
@@ -200,39 +200,21 @@ def run_shared_odds():
     League fixture's odds matter to FanTeam, Cloud FF, and Dream Team
     simultaneously), so this runs once, ahead of every game-specific
     section, rather than being duplicated per game (which would burn
-    through the Odds API/SportMonks quota re-fetching the same data).
+    through the Odds API quota re-fetching the same data).
 
-    2026-08-21: also owns real match-winner/clean-sheet odds (SportMonks)
-    and derived expected goals for every competition that importer covers
-    - EFL Championship/League One/League Two AND the Premier League (see
-    import_sportmonks_match_odds.py's LEAGUE_ID_BY_COMPETITION and
-    compute_expected_goals.py's MARKET_ODDS_COMPETITIONS). Previously
-    these two only ran inside run_eflfantasy(), so Dream Team/FanTeam/
-    Cloud FF's "Market Odds" pages only ever got fresh data as a
-    byproduct of EFL Fantasy's own schedule - moved here so every game
-    refreshes on the same cadence, and placed before the probabilities/
-    clean-sheet passes below so they see this cycle's freshest odds."""
+    2026-08-29: SportMonks removed entirely (real user request - "remove
+    sportmonks now we dont want them interferring with each other" -
+    real cost saving, DreamTeamTonic/Spreadex covers the same ground for
+    free, see import_dreamteamtonic_market_odds.py's own docstring for
+    exactly what it does and doesn't cover). import_fixtures_odds.py's
+    own former SportMonks-only skip for soccer_epl/soccer_fa_cup/
+    soccer_england_efl_cup is reverted too, so The Odds API resumes
+    covering FA Cup/Carabao Cup for real (DreamTeamTonic doesn't yet)."""
     results = []
     results.append(run_step("Odds: fixtures + h2h", ["scripts/import_fixtures_odds.py"]))
     results.append(
         run_step("Odds: fixture extras (team totals / player props)", ["scripts/import_fixture_extras.py", "--limit", "20"])
     )
-    results.append(
-        run_step("SportMonks: player-level bookmaker props", ["scripts/import_sportmonks_player_props.py"])
-    )
-    results.append(
-        run_step("SportMonks: match odds (EFL + Premier League)", ["scripts/import_sportmonks_match_odds.py"])
-    )
-    # 2026-08-29 user request - real cost-saving alternative to SportMonks
-    # via DreamTeamTonic's own Market Odds tool (Spreadex). Runs alongside
-    # SportMonks, not instead of it, for now - see import_dreamteamtonic_
-    # market_odds.py's own docstring for exactly what it does and doesn't
-    # cover (no FA Cup/Carabao Cup yet, no League Two player props).
-    # Deliberately AFTER the SportMonks step: both write into fixture_
-    # probabilities/fixture_clean_sheet_probabilities/bookmaker_player_
-    # features, which all already resolve "latest row wins" - so running
-    # this second just means DTT's real data is what's live right now,
-    # easy to compare against SportMonks' own prior row by computed_at.
     results.append(
         run_step("DreamTeamTonic: market odds (Premier League + EFL)", ["scripts/import_dreamteamtonic_market_odds.py"])
     )
@@ -273,11 +255,11 @@ def run_eflfantasy():
     """EFL Fantasy - players/clubs/fixtures, both endpoints real, public,
     unauthenticated JSON (see scraper_eflfantasy.py) - no login dance
     needed at all, unlike FanTeam. Its real bookmaker match-winner odds
-    (SportMonks, confirmed live 2026-08-06), the fixture-probabilities
-    pass, and expected goals now all run once for every game up front in
-    run_shared_odds() (2026-08-21 - previously duplicated here since this
-    was the only section that called the SportMonks importer at all), so
-    this section is just players/clubs/fixtures import + recompute."""
+    (DreamTeamTonic since 2026-08-29, SportMonks before that), the
+    fixture-probabilities pass, and expected goals all run once for
+    every game up front in run_shared_odds() (2026-08-21 - previously
+    duplicated here), so this section is just players/clubs/fixtures
+    import + recompute."""
     results = []
     results.append(run_step("EFL Fantasy players + clubs + fixtures (no login needed)", ["scraper_eflfantasy.py"]))
     results.append(run_step("Import EFL Fantasy players + clubs + fixtures", ["import_eflfantasy.py"]))

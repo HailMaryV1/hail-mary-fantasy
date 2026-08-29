@@ -10,10 +10,11 @@ frontend-v2's dispatchOddsRefresh server action.
 
 Re-runs the SAME odds-fetching scripts refresh_all.py already runs on
 its own schedule (match odds, player props, team-totals/clean-sheet
-market, EFL's own SportMonks match odds) - genuinely shared across
-every game (bookmaker_player_features/fixture_probabilities/etc. have
-no game_id at all, see those tables' own docstrings), so this always
-refreshes all of them regardless of which game's button was clicked.
+market - real match/player odds via DreamTeamTonic since 2026-08-29,
+SportMonks removed) - genuinely shared across every game (bookmaker_
+player_features/fixture_probabilities/etc. have no game_id at all, see
+those tables' own docstrings), so this always refreshes all of them
+regardless of which game's button was clicked.
 Only the final recompute step is game-scoped, to the game whose button
 was actually pressed - recomputing every other game's projections too
 would be wasted work nobody asked for.
@@ -82,9 +83,8 @@ def main():
     try:
         # Shared, game-independent odds sources - same steps refresh_all.py
         # runs on its own schedule (see that script for why each exists).
-        run_step("EFL real match odds (SportMonks)", ["scripts/import_sportmonks_match_odds.py"])
+        run_step("Match odds + player props (DreamTeamTonic)", ["scripts/import_dreamteamtonic_market_odds.py"])
         run_step("Fixture probabilities", ["scripts/compute_fixture_probabilities.py"])
-        run_step("Player props (goals/assists, SportMonks)", ["scripts/import_sportmonks_player_props.py"])
         run_step("Team totals / clean-sheet market (Odds API)", ["scripts/import_fixture_extras.py", "--limit", "40"])
         run_step("Clean sheet probabilities", ["scripts/compute_clean_sheet_probabilities.py"])
 
