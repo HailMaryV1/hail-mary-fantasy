@@ -223,6 +223,19 @@ def run_shared_odds():
     results.append(
         run_step("SportMonks: match odds (EFL + Premier League)", ["scripts/import_sportmonks_match_odds.py"])
     )
+    # 2026-08-29 user request - real cost-saving alternative to SportMonks
+    # via DreamTeamTonic's own Market Odds tool (Spreadex). Runs alongside
+    # SportMonks, not instead of it, for now - see import_dreamteamtonic_
+    # market_odds.py's own docstring for exactly what it does and doesn't
+    # cover (no FA Cup/Carabao Cup yet, no League Two player props).
+    # Deliberately AFTER the SportMonks step: both write into fixture_
+    # probabilities/fixture_clean_sheet_probabilities/bookmaker_player_
+    # features, which all already resolve "latest row wins" - so running
+    # this second just means DTT's real data is what's live right now,
+    # easy to compare against SportMonks' own prior row by computed_at.
+    results.append(
+        run_step("DreamTeamTonic: market odds (Premier League + EFL)", ["scripts/import_dreamteamtonic_market_odds.py"])
+    )
     results.append(run_step("Fixture probabilities", ["scripts/compute_fixture_probabilities.py"]))
     results.append(run_step("Clean sheet probabilities", ["scripts/compute_clean_sheet_probabilities.py"]))
     results.append(run_step("Expected goals (EFL + Premier League)", ["scripts/compute_expected_goals.py"]))
