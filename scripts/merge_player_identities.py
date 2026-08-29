@@ -130,6 +130,23 @@ PHASE2_PAIRS = [
     (590, 784, "C. Doucoure / Cheick Doucouré - initial-form vs full given name + accent"),
     (591, 782, "M. Franca / Matheus França - initial-form vs full given name + accent"),
     (436, 1281, "Hakon Rafn Valdimarsson / Hákon Valdimarsson - dropped middle name + accent"),
+    # Found live 2026-08-29 investigating a real Refresh - Dream Team CI
+    # failure (psycopg2.errors.UniqueViolation on game_players' own
+    # external_id unique constraint) - Dream Team's backend switched
+    # data providers this season (their own site banner: "DreamTeam &
+    # Telegraph Fantasy Football are changing data providers"), reissuing
+    # UUID-style external_ids (e.g. "97b4747c-...") in place of the old
+    # plain-numeric ones. The live import matched the new payload under
+    # "Daniel Ian Bentley" instead of the existing "Daniel Bentley" row,
+    # creating a brand new players.id (5067) rather than recognizing the
+    # same person - leaving the OLD dreamteam game_players row (id=319,
+    # under id 160) inactive with a stale numeric external_id, and every
+    # later import crashing outright once it tried to attach the new UUID
+    # to a fresh game_players row for 160 while 5067 already held it.
+    # Canonical is 160, not 5067, per Phase 4's own "more complete
+    # identity" rule - it already carries 2 games (dreamteam + an ACTIVE
+    # fanteam link with real stats), 5067 only ever had the one.
+    (160, 5067, "Daniel Bentley / Daniel Ian Bentley - Dream Team provider ID migration split off a new row"),
     # Axel Toth (id=395) / Alex Tóth (id=756) - deliberately excluded from
     # this pass per explicit direction: the official identity is "Alex
     # Tóth", so "Axel Toth" is itself the wrong record (a source-data
