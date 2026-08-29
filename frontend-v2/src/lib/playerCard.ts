@@ -119,16 +119,19 @@ function ratingTierColors(rating: number | null): { label: string; bg: string; f
   return RATING_TIER_COLORS.find((t) => rating >= t.min) ?? null;
 }
 
-// Real user request 2026-08-26: "show kick off times to GMT" - explicit
-// timeZone rather than relying on whatever timezone the render happens
-// to execute in (this route runs Node, not Edge, specifically so it can
-// read fonts/images off local disk - see api/player-card/route.tsx's
+// Explicit timeZone rather than relying on whatever timezone the render
+// happens to execute in (this route runs Node, not Edge, specifically so
+// it can read fonts/images off local disk - see api/player-card/route.tsx's
 // own docstring - but that's an unrelated reason and gives no guarantee
-// about the process's default TZ). "Etc/GMT" is always UTC+0, never
-// DST-shifted - deliberately not "Europe/London" (which becomes BST,
-// UTC+1, for most of the football season), since GMT specifically is
-// what was asked for.
-const KICKOFF_TIMEZONE = "Etc/GMT";
+// about the process's default TZ).
+//
+// 2026-08-26 this was set to "Etc/GMT" (fixed UTC+0, never DST-shifted) on
+// a request for "GMT". 2026-08-29: that was the wrong read of the request -
+// taken literally it left every kickoff shown an hour behind the real UK
+// clock for as long as BST is in effect (most of the football season).
+// "Europe/London" is what was actually wanted: real UK local time, BST-
+// aware.
+const KICKOFF_TIMEZONE = "Europe/London";
 
 export function formatKickoff(iso: string): string {
   return new Date(iso).toLocaleString("en-GB", {

@@ -30,5 +30,9 @@ export function formatFreshness(iso: string): string {
   if (hours < 48) return `Updated ${hours}h ago`;
   const days = Math.floor(hours / 24);
   if (days < 14) return `Updated ${days}d ago`;
-  return `Updated ${new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
+  // Explicit timeZone: this renders server-side (see getProjectionFreshness's
+  // Supabase server client above), with no guarantee the server's own
+  // default TZ is the UK's - see playerCard.ts's KICKOFF_TIMEZONE for the
+  // same class of bug, caught for real on 2026-08-29.
+  return `Updated ${new Date(iso).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" })}`;
 }
