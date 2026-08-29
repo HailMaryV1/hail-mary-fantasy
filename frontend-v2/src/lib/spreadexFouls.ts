@@ -57,10 +57,17 @@ function client() {
   );
 }
 
-/** Mirrors COMPETITIONS in scripts/scrape_spreadex_player_markets.py. */
+/**
+ * Mirrors COMPETITIONS in scripts/scrape_spreadex_player_markets.py - keys
+ * must match fixtures.competition's REAL stored values, not a readable
+ * guess. Caught live 2026-08-29, ~8 minutes before Tottenham v Newcastle
+ * kickoff: "premier_league"/"championship" here didn't match the real
+ * "soccer_epl"/"efl_championship" values, so the fixture picker silently
+ * only ever showed League One (the one key that happened to match).
+ */
 const COMPETITION_LABELS: Record<string, string> = {
-  premier_league: "Premier League",
-  championship: "Championship",
+  soccer_epl: "Premier League",
+  efl_championship: "Championship",
   efl_league_one: "League One",
 };
 
@@ -466,7 +473,8 @@ async function buildModel(lineup: LineupPlayer[]): Promise<{ players: ModelledPl
 
 export type PlayerBoardRow = {
   playerName: string;
-  team: "home" | "away";
+  /** "unknown" when the ladders posted before lineups did - no confirmed XI yet to assign a side from. */
+  team: "home" | "away" | "unknown";
   shirt: number | null;
   foulsCommitted: LadderFit | null;
   tackles: LadderFit | null;
@@ -557,15 +565,26 @@ export async function fetchLiveBoard(fixtureId: number): Promise<SpreadexBoardRe
   }
   const modelByName = new Map(modelPlayers.map((m) => [m.playerName, m]));
 
-  const players: PlayerBoardRow[] = lineup.map((p) => {
-    const fc = foulsFit?.fits.get(p.name) ?? null;
-    const tk = tacklesFit?.fits.get(p.name) ?? null;
-    const model = modelByName.get(p.name) ?? null;
+  // Union lineup names with ladder names, not just the lineup - Fouls
+  // Committed/Tackles can post before lineups do (confirmed live 2026-08-29,
+  // ~8 min before Tottenham v Newcastle kickoff: both markets had real
+  // prices, lineups still unconfirmed), and this used to iterate the
+  // lineup alone, so a fully-priced board rendered as an empty player list
+  // right when the odds were freshest and most useful.
+  const lineupByName = new Map(lineup.map((p) => [p.name, p]));
+  const allNames = new Set<string>([...lineupByName.keys(), ...foulsLadders.map((l) => l.name), ...tacklesLadders.map((l) => l.name)]);
+
+  const players: PlayerBoardRow[] = [...allNames].map((name) => {
+    const p = lineupByName.get(name);
+    const fc = foulsFit?.fits.get(name) ?? null;
+    const tk = tacklesFit?.fits.get(name) ?? null;
+    const model = modelByName.get(name) ?? null;
+    const team: "home" | "away" | "unknown" = p?.team ?? "unknown";
     let edgePct: number | null = null;
     if (fc && model && model.matched && fc.mu > 0) {
       edgePct = ((model.committedMu - fc.mu) / fc.mu) * 100;
     }
-    return { playerName: p.name, team: p.team, shirt: p.shirt, foulsCommitted: fc, tackles: tk, model, edgePct };
+    return { playerName: name, team, shirt: p?.shirt ?? null, foulsCommitted: fc, tackles: tk, model, edgePct };
   });
 
   return {

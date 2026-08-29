@@ -365,7 +365,7 @@ export default function FoulsPage() {
                     const fc2 = rungAt(r.foulsCommitted, 2);
                     return [
                       r.playerName,
-                      r.team === "home" ? live.home : live.away,
+                      r.team === "home" ? live.home : r.team === "away" ? live.away : "?",
                       tk2?.fractional ?? "-",
                       r.tackles ? r.tackles.mu.toFixed(2) : "-",
                       fc2?.fractional ?? "-",
