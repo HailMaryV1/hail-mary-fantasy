@@ -201,10 +201,21 @@ def extract_ladder_market(page, header_text):
     "{Player} - {N}+ Price Button" element inside just that panel (never
     a same-named market elsewhere on the page - e.g. "Player Shots" vs
     "Player Shots On Target" both have "1+" lines with an otherwise
-    identical aria-label shape, see this module's own docstring)."""
+    identical aria-label shape, see this module's own docstring).
+
+    The panel truncates to a preview and shows a real "See N more markets"
+    link rather than rendering every priced player - confirmed live
+    2026-08-30 on Sunderland v Fulham: the correct "Player Fouls Committed"
+    panel container had 29 price buttons already rendered (~7-8 players'
+    worth of rungs) plus a literal "See 72 more markets" link sitting
+    inside the same container. (An earlier fix wrongly assumed this was a
+    virtual-scrolled list and added a scroll loop, which changed nothing -
+    scrolling never triggers a click-to-expand link.) Clicks it, and keeps
+    clicking whatever "See N more" link remains, until no more link text is
+    found or a real cap is hit."""
     return page.evaluate(
         """
-        (headerText) => {
+        async (headerText) => {
             const header = [...document.querySelectorAll('*')].find(
                 el => el.children.length === 0 && el.textContent.trim() === headerText
             );
@@ -215,11 +226,25 @@ def extract_ladder_market(page, header_text):
                 container = container.parentElement;
             }
             if (!container) return [];
-            const buttons = [...container.querySelectorAll('fo-price-wrapper-button[aria-label*=" - "][aria-label*="+ Price Button"]')];
-            return buttons.map(b => ({
-                label: b.getAttribute('aria-label'),
-                price: b.textContent.trim(),
-            }));
+
+            const findSeeMore = () => [...container.querySelectorAll('*')].find(
+                el => el.children.length === 0 && /^see \\d+ more/i.test(el.textContent.trim())
+            );
+
+            for (let i = 0; i < 10; i++) {
+                const link = findSeeMore();
+                if (!link) break;
+                const clickable = link.closest('button, a, [role="button"]') || link;
+                clickable.click();
+                await new Promise(r => setTimeout(r, 500));
+            }
+
+            const seen = new Map();
+            for (const b of container.querySelectorAll('fo-price-wrapper-button[aria-label*=" - "][aria-label*="+ Price Button"]')) {
+                const label = b.getAttribute('aria-label');
+                if (!seen.has(label)) seen.set(label, b.textContent.trim());
+            }
+            return [...seen.entries()].map(([label, price]) => ({ label, price }));
         }
         """,
         header_text,
